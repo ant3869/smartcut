@@ -1,30 +1,325 @@
 const state={jobs:[],selectedJobId:null,selectedMedia:'source',playhead:0,selection:{start:0,end:2},rotation:0,serverReady:false};
 const app=document.querySelector('#app'),$=(s,r=document)=>r.querySelector(s),$$=(s,r=document)=>[...r.querySelectorAll(s)];
-const apiFile=p=>`/api/file?path=${encodeURIComponent(p)}`,round=v=>Math.round(Number(v||0)*1000)/1000;
+const apiFile=p=>'/api/file?path='+encodeURIComponent(p),round=v=>Math.round(Number(v||0)*1000)/1000;
 const basename=p=>String(p||'Unknown source').split(/[\\/]/).pop();
-const seconds=v=>{const n=Math.max(0,Number(v||0)),m=Math.floor(n/60);return `${String(m).padStart(2,'0')}:${(n%60).toFixed(1).padStart(4,'0')}`};
-const esc=v=>String(v??'').replace(/[&<>'"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;'}[c]));
-async function api(path,options={}){const res=await fetch(path,{headers:{'Content-Type':'application/json'},...options});if(!res.ok){const data=await res.json().catch(()=>({}));throw new Error(data.detail||`${res.status} ${res.statusText}`)}return res.json()}
-function toast(message,kind='info'){let region=$('.toast-region');if(!region){region=document.createElement('div');region.className='toast-region';document.body.append(region)}const n=document.createElement('div');n.className=`toast ${kind}`;n.textContent=message;region.append(n);setTimeout(()=>n.remove(),4400)}
+const seconds=v=>{const n=Math.max(0,Number(v||0)),m=Math.floor(n/60);return String(m).padStart(2,'0')+':'+(n%60).toFixed(1).padStart(4,'0')};
+const esc=v=>String(v||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;');
+async function api(path,options={}){const res=await fetch(path,{headers:{'Content-Type':'application/json'},...options});if(!res.ok){const data=await res.json().catch(()=>({}));throw new Error(data.detail||(res.status+' '+res.statusText))}return res.json()}
+function toast(message,kind='info'){let region=$('.toast-region');if(!region){region=document.createElement('div');region.className='toast-region';document.body.append(region)}const n=document.createElement('div');n.className='toast '+kind;n.textContent=message;region.append(n);setTimeout(()=>n.remove(),4400)}
 function selected(){return state.jobs.find(j=>j.id===state.selectedJobId)||state.jobs[0]||null}
 function review(job){return job.review||{source_sha256:job.source_fingerprint?.sha256||job.source_sha256||'',timebase:'source',cut_intervals:[],keep_intervals:[]}}
+
+function stopPlayback(){
+  const v=$('#review-video');
+  if(v&&!v.paused){
+    v.pause();
+    syncTransport();
+  }
+}
+
 function media(job){return state.selectedMedia==='final'?job.final_output?.path:state.selectedMedia==='preview'?job.preview_output?.path:job.source}
 async function load({quiet=false}={}){try{const [health,jobs]=await Promise.all([api('/api/health'),api('/api/jobs')]);state.serverReady=Boolean(health.ok);state.jobs=jobs;if(!state.selectedJobId||!jobs.some(j=>j.id===state.selectedJobId))state.selectedJobId=jobs[0]?.id||null;clamp(selected());render()}catch(error){state.serverReady=false;render();if(!quiet)toast(error.message,'danger')}}
 function clamp(job){if(!job)return;const duration=Number(job.duration||1);state.playhead=Math.min(state.playhead,duration);state.selection.start=Math.max(0,Math.min(state.selection.start,duration));state.selection.end=Math.max(state.selection.start+.1,Math.min(state.selection.end,duration))}
-function selectAt(time){const job=selected();if(!job)return;const start=round(Math.max(0,time-1));state.selection={start,end:round(Math.min(Number(job.duration),start+2))};state.playhead=round(time);render();const video=$('#review-video');if(video)video.currentTime=time}
-function render(){const job=selected();app.innerHTML=`<div class="cutroom"><aside class="sources"><div class="brand"><span class="brand-mark">A</span><span>Anna Cutroom</span></div><div class="source-heading"><span>Sources</span><span>${state.jobs.length}</span></div><div class="source-list">${state.jobs.map(sourceRow).join('')}</div><div class="source-footer"><span class="server-indicator ${state.serverReady?'':'off'}"></span>${state.serverReady?'local backend ready':'backend unavailable'}</div></aside><section class="workspace"><header class="toolbar"><div class="toolbar-title"><strong>${esc(job?basename(job.source):'No source selected')}</strong><span>${job?`${seconds(job.duration)} · ${job.metrics?.observation_count||0} Eye observations`:'Choose a completed plan'}</span></div><div class="toolbar-actions"><button class="button ghost" data-action="refresh">Refresh</button><button class="button primary" data-action="render" ${job?'':'disabled'}>Render approved cut</button></div></header><main id="review" class="review">${job?reviewView(job):'<div class="empty">No analyzed jobs yet.</div>'}</main></section></div>`;bind(job)}
-function sourceRow(job){return `<button class="source-row ${job.id===state.selectedJobId?'active':''}" data-job="${esc(job.id)}"><span class="source-name">${esc(basename(job.source))}</span><span class="source-meta">${seconds(job.duration)} · ${job.status}</span></button>`}
-function reviewView(job){const r=review(job),e=nearby(job),path=media(job);return `<section class="player"><div class="video-wrap">${path?`<video id="review-video" src="${apiFile(path)}" controls preload="metadata" aria-label="Video review player"></video>`:'<div class="empty">That output does not exist yet.</div>'}</div><div class="player-controls"><div class="media-switch">${['source','final','preview'].map(m=>`<button data-media="${m}" class="${m===state.selectedMedia?'active':''}" ${m!=='source'&&!job[`${m}_output`]?'disabled':''}>${m}</button>`).join('')}</div><span id="time-readout">${seconds(state.playhead)} / ${seconds(job.duration)}</span></div></section><aside class="inspector"><div class="inspector-head"><h1>Review interval</h1><p>${esc(basename(job.source))}</p></div><div class="inspector-section"><div class="selection-time"><span>${seconds(state.selection.start)}</span><span>${seconds(state.selection.end)}</span></div><div class="fields"><label class="field"><span class="field-label">Start</span><input id="cut-start" type="number" min="0" max="${job.duration}" step="0.1" value="${state.selection.start}"></label><label class="field"><span class="field-label">End</span><input id="cut-end" type="number" min="0" max="${job.duration}" step="0.1" value="${state.selection.end}"></label></div><label class="field reason"><span class="field-label">Reason</span><input id="cut-reason" value="editorial review" maxlength="120"></label></div><div class="inspector-section"><div class="decision-actions"><button class="button" data-decision="keep">Keep</button><button class="button cut" data-decision="cut">Cut</button><button class="button protect" data-decision="protect">Protect</button></div></div><div class="inspector-section"><span class="field-label">Nearest Eye evidence</span><div class="evidence">${e.map(x=>`<div class="evidence-item"><span class="evidence-dot ${x.keep?'':'cut'}"></span><span><strong>${seconds(x.timestamp)}</strong> · ${esc(x.keep?'kept':x.cull_reason||'cut')}<br>${esc(x.description||'No description')}</span></div>`).join('')||'<span class="evidence-item">No nearby evidence</span>'}</div></div></aside><section class="timeline-panel">${timeline(job,r)}</section><section class="log"><div class="decision-log"><h2>Decision history</h2><div class="history">${history(r)}</div></div><div class="render-box"><h2>Ready when you are</h2><p>Your edits save as hash-bound source ranges. Re-plan uses them; render never touches the original.</p><button class="button primary" data-action="render">Render approved cut</button></div></section>`}
-function timeline(job,r){const d=Number(job.duration||1),pct=v=>Math.max(0,Math.min(100,(Number(v||0)/d)*100)),span=(x,c)=>`<span class="span ${c}" style="left:${pct(x.start)}%;width:${Math.max(.25,pct(x.end)-pct(x.start))}%" title="${esc(x.reason||(x.reasons||[]).join(', '))}"></span>`,ticks=Array.from({length:11},(_,i)=>`<i class="tick" style="left:${i*10}%"><span>${seconds(d*i/10)}</span></i>`).join(''),reject=job.observations.filter(x=>!x.keep),cuts=r.cut_intervals||[],keeps=r.keep_intervals||[],rail=(items,c,extra='')=>`<div class="timeline-rail" data-timeline>${items.map(x=>span(x,c)).join('')}${extra}<span class="selection-span" style="left:${pct(state.selection.start)}%;width:${Math.max(.25,pct(state.selection.end)-pct(state.selection.start))}%"></span><span class="playhead" style="left:${pct(state.playhead)}%"></span></div>`;return `<div class="timeline-head"><h2>Timeline</h2><span>click anywhere to stage a 2 second decision</span></div><div class="timeline"><div class="ruler">${ticks}</div><div class="timeline-row"><div class="timeline-label">Plan</div>${rail(job.clips,'keep')}</div><div class="timeline-row"><div class="timeline-label">Your cuts</div>${rail(cuts,'cut',keeps.map(x=>span(x,'protect')).join(''))}</div><div class="timeline-row"><div class="timeline-label">Eye flags</div>${rail([],'none',reject.map(x=>`<span class="marker rejected" style="left:${pct(x.timestamp)}%" title="${esc(x.cull_reason||'rejected')}"></span>`).join(''))}</div></div>`}
-function history(r){const rows=[...(r.cut_intervals||[]).map(x=>({...x,action:'cut'})),...(r.keep_intervals||[]).map(x=>({...x,action:x.reason==='protected'?'protect':'keep'}))].sort((a,b)=>a.start-b.start);return rows.length?rows.map(x=>`<div class="history-row"><span>${seconds(x.start)}–${seconds(x.end)}</span><span class="history-action ${x.action}">${x.action}</span><span>${esc(x.reason||'editorial review')}</span></div>`).join(''):'<div class="history-row"><span>—</span><span>—</span><span>No human decisions yet.</span></div>'}
-function nearby(job){const mid=(state.selection.start+state.selection.end)/2;return[...(job.observations||[])].sort((a,b)=>Math.abs(a.timestamp-mid)-Math.abs(b.timestamp-mid)).slice(0,2)}
-function bind(job){$$('[data-job]').forEach(b=>b.addEventListener('click',()=>{state.selectedJobId=b.dataset.job;state.selectedMedia='source';state.playhead=0;state.selection={start:0,end:2};render()}));$('[data-action="refresh"]')?.addEventListener('click',()=>load());$$('[data-media]').forEach(b=>b.addEventListener('click',()=>{state.selectedMedia=b.dataset.media;render()}));const video=$('#review-video');video?.addEventListener('timeupdate',()=>{state.playhead=video.currentTime;const read=$('#time-readout');if(read)read.textContent=`${seconds(state.playhead)} / ${seconds(job.duration)}`;$$('.playhead').forEach(n=>n.style.left=`${state.playhead/job.duration*100}%`)});$$('[data-timeline]').forEach(rail=>rail.addEventListener('click',event=>{const rect=rail.getBoundingClientRect();selectAt((event.clientX-rect.left)/rect.width*Number(job.duration))}));$('#cut-start')?.addEventListener('change',event=>{state.selection.start=round(event.target.value);clamp(job);render()});$('#cut-end')?.addEventListener('change',event=>{state.selection.end=round(event.target.value);clamp(job);render()});$$('[data-decision]').forEach(b=>b.addEventListener('click',()=>saveDecision(job,b.dataset.decision)));$$('[data-action="render"]').forEach(b=>b.addEventListener('click',()=>startRender(job)))}
-async function saveDecision(job,decision){const r=review(job),reason=$('#cut-reason')?.value.trim()||'editorial review',interval={start:state.selection.start,end:state.selection.end,reason:decision==='protect'?'protected':reason};if(!(interval.end>interval.start))return toast('End needs to be after start.','danger');if(decision==='cut')r.cut_intervals=[...(r.cut_intervals||[]),interval];else r.keep_intervals=[...(r.keep_intervals||[]),interval];try{await api(`/api/jobs/${encodeURIComponent(job.id)}/review`,{method:'POST',body:JSON.stringify(r)});toast(`${decision} saved`);await load({quiet:true})}catch(error){toast(error.message,'danger')}}
-async function startRender(job){try{const task=await api(`/api/jobs/${encodeURIComponent(job.id)}/render`,{method:'POST',body:JSON.stringify({})});toast(`Render started: ${task.label}`);pollTask(task.id)}catch(error){toast(error.message,'danger')}}
-async function pollTask(id){for(let i=0;i<120;i+=1){await new Promise(resolve=>setTimeout(resolve,1500));const task=await api(`/api/tasks/${id}`);if(task.status==='running')continue;toast(task.status==='succeeded'?'Render complete':task.error||'Render failed',task.status==='succeeded'?'info':'danger');return load({quiet:true})}}
-load();
-function applyReviewRotation(){const video=$('#review-video'),wrap=video?.parentElement;if(!video||!wrap)return;const turned=state.rotation%180!==0,rect=wrap.getBoundingClientRect(),scale=turned?Math.min(rect.width/rect.height,rect.height/rect.width):1;video.style.transform=`rotate(${state.rotation}deg) scale(${scale})`}
-function ensureRotateControl(){const controls=$('.media-switch');if(!controls||controls.querySelector('[data-rotate-view]'))return;const button=document.createElement('button');button.className='rotate-button';button.dataset.rotateView='true';button.type='button';button.title='Rotate the review view 90 degrees';button.textContent=`rotate ${state.rotation}°`;controls.append(button);applyReviewRotation()}
-new MutationObserver(ensureRotateControl).observe(app,{childList:true,subtree:true});
-document.addEventListener('click',event=>{const button=event.target.closest('[data-rotate-view]');if(!button)return;state.rotation=(state.rotation+90)%360;button.textContent=`rotate ${state.rotation}°`;applyReviewRotation()});
+
+function seekTo(time){
+  const job=selected();
+  if(!job)return;
+  const d=Number(job.duration||1);
+  state.playhead=Math.max(0,Math.min(d,round(time)));
+  const v=$('#review-video');
+  if(v)v.currentTime=state.playhead;
+  syncTransport();
+  $$('.playhead').forEach(n=>n.style.left=(state.playhead/d)*100+'%');
+  const read=$('#time-readout');
+  if(read)read.textContent=seconds(state.playhead)+' / '+seconds(d);
+}
+
+function setInPoint(){
+  const job=selected();
+  if(!job)return;
+  state.selection.start=round(state.playhead);
+  if(state.selection.end<=state.selection.start){
+    state.selection.end=round(Math.min(Number(job.duration),state.selection.start+1));
+  }
+  clamp(job);
+  updateSelectionInputs();
+  renderSelectionOverlay();
+}
+
+function setOutPoint(){
+  const job=selected();
+  if(!job)return;
+  state.selection.end=round(state.playhead);
+  if(state.selection.start>=state.selection.end){
+    state.selection.start=round(Math.max(0,state.selection.end-1));
+  }
+  clamp(job);
+  updateSelectionInputs();
+  renderSelectionOverlay();
+}
+
+function updateSelectionInputs(){
+  const s=$('#cut-start'),e=$('#cut-end'),st=$('.selection-time');
+  if(s)s.value=state.selection.start;
+  if(e)e.value=state.selection.end;
+  if(st)st.innerHTML='<span>'+seconds(state.selection.start)+'</span><span>'+seconds(state.selection.end)+'</span>';
+}
+
+function renderSelectionOverlay(){
+  const job=selected();
+  if(!job)return;
+  const d=Number(job.duration||1);
+  const left=(state.selection.start/d)*100;
+  const width=Math.max(0.25,((state.selection.end-state.selection.start)/d)*100);
+  $$('.selection-span').forEach(el=>{
+    el.style.left=left+'%';
+    el.style.width=width+'%';
+  });
+}
+
+function render(){
+  const job=selected();
+  app.innerHTML='<div class="cutroom"><aside class="sources"><div class="brand"><span class="brand-mark">A</span><span>Anna Cutroom</span></div><div class="source-heading"><span>Sources</span><span>'+state.jobs.length+'</span></div><div class="source-list">'+state.jobs.map(sourceRow).join('')+'</div><div class="source-footer"><span class="server-indicator '+(state.serverReady?'':'off')+'"></span>'+(state.serverReady?'local backend ready':'backend unavailable')+'</div></aside><section class="workspace"><header class="toolbar"><div class="toolbar-title"><strong>'+esc(job?basename(job.source):'No source selected')+'</strong><span>'+(job?(seconds(job.duration)+' · '+(job.metrics?.observation_count||0)+' Eye observations'):'Choose a completed plan')+'</span></div><div class="toolbar-actions"><span class="shortcuts-hint">[Space] Play &nbsp;|&nbsp; [I] In &nbsp;|&nbsp; [O] Out &nbsp;|&nbsp; [C] Cut &nbsp;|&nbsp; [K] Keep &nbsp;|&nbsp; [P] Protect &nbsp;|&nbsp; [←/→] Scrub</span><button class="button ghost" data-action="refresh">Refresh</button><button class="button primary" data-action="render" '+(job?'':'disabled')+'>Render approved cut</button></div></header><main id="review" class="review">'+(job?reviewView(job):'<div class="empty">No analyzed jobs yet.</div>')+'</main></section></div>';
+  bind(job);
+}
+
+function sourceRow(job){
+  return '<button class="source-row '+(job.id===state.selectedJobId?'active':'')+'" data-job="'+esc(job.id)+'"><span class="source-name">'+esc(basename(job.source))+'</span><span class="source-meta">'+seconds(job.duration)+' · '+job.status+'</span></button>';
+}
+
+function reviewView(job){
+  const r=review(job),e=nearby(job),path=media(job);
+  return '<section class="player"><div class="video-wrap">'+(path?('<video id="review-video" src="'+apiFile(path)+'" preload="metadata" aria-label="Video review player"></video>'):'<div class="empty">That output does not exist yet.</div>')+'</div><div class="player-controls"><div class="media-switch">'+['source','final','preview'].map(m=>'<button data-media="'+m+'" class="'+(m===state.selectedMedia?'active':'')+'" '+(m!=='source'&&!job[m+'_output']?'disabled':'')+'>'+m+'</button>').join('')+'</div><span id="time-readout">'+seconds(state.playhead)+' / '+seconds(job.duration)+'</span></div></section><aside class="inspector"><div class="inspector-head"><h1>Review interval</h1><p>'+esc(basename(job.source))+'</p></div><div class="inspector-section"><div class="selection-time"><span>'+seconds(state.selection.start)+'</span><span>'+seconds(state.selection.end)+'</span></div><div class="fields"><label class="field"><span class="field-label">Start [I]</span><input id="cut-start" type="number" min="0" max="'+job.duration+'" step="0.1" value="'+state.selection.start+'"></label><label class="field"><span class="field-label">End [O]</span><input id="cut-end" type="number" min="0" max="'+job.duration+'" step="0.1" value="'+state.selection.end+'"></label></div><div class="mark-buttons-row"><button class="button ghost small-btn" id="set-in-btn" type="button">Set In [I]</button><button class="button ghost small-btn" id="set-out-btn" type="button">Set Out [O]</button></div><label class="field reason"><span class="field-label">Reason</span><input id="cut-reason" value="editorial review" maxlength="120"></label></div><div class="inspector-section"><div class="decision-actions"><button class="button" data-decision="keep">Keep [K]</button><button class="button cut" data-decision="cut">Cut [C]</button><button class="button protect" data-decision="protect">Protect [P]</button></div></div><div class="inspector-section"><span class="field-label">Nearest Eye evidence</span><div class="evidence">'+(e.map(x=>'<div class="evidence-item"><span class="evidence-dot '+(x.keep?'':'cut')+'"></span><span><strong>'+seconds(x.timestamp)+'</strong> · '+esc(x.keep?'kept':x.cull_reason||'cut')+'<br>'+esc(x.description||'No description')+'</span></div>').join('')||'<span class="evidence-item">No nearby evidence</span>')+'</div></div></aside><section class="timeline-panel">'+timeline(job,r)+'</section><section class="log"><div class="decision-log"><h2>Decision history</h2><div class="history">'+history(r)+'</div></div><div class="render-box"><h2>Ready when you are</h2><p>Your edits save as hash-bound source ranges. Re-plan uses them; render never touches the original.</p><button class="button primary" data-action="render">Render approved cut</button></div></section>';
+}
+
+function timeline(job,r){
+  const d=Number(job.duration||1),pct=v=>Math.max(0,Math.min(100,(Number(v||0)/d)*100)),span=(x,c)=>'<span class="span '+c+'" style="left:'+pct(x.start)+'%;width:'+Math.max(.25,pct(x.end)-pct(x.start))+'%;height:16px" title="'+esc(x.reason||(x.reasons||[]).join(', '))+'"></span>',ticks=Array.from({length:11},(_,i)=>'<i class="tick" style="left:'+(i*10)+'%"><span>'+seconds(d*i/10)+'</span></i>').join(''),reject=job.observations.filter(x=>!x.keep),cuts=r.cut_intervals||[],keeps=r.keep_intervals||[],rail=(items,c,extra='')=>'<div class="timeline-rail" data-timeline>'+items.map(x=>span(x,c)).join('')+extra+'<span class="selection-span" style="left:'+pct(state.selection.start)+'%;width:'+Math.max(.25,pct(state.selection.end)-pct(state.selection.start))+'%;"></span><span class="playhead" style="left:'+pct(state.playhead)+'%"></span></div>';
+  return '<div class="timeline-head"><h2>Timeline</h2><span>Click or drag to scrub playhead. Use I / O to set markers.</span></div><div class="timeline"><div class="ruler">'+ticks+'</div><div class="timeline-row"><div class="timeline-label">Plan</div>'+rail(job.clips,'keep')+'</div><div class="timeline-row"><div class="timeline-label">Your cuts</div>'+rail(cuts,'cut',keeps.map(x=>span(x,'protect')).join(''))+'</div><div class="timeline-row"><div class="timeline-label">Eye flags</div>'+rail([],'none',reject.map(x=>'<span class="marker rejected" style="left:'+pct(x.timestamp)+'%" title="'+esc(x.cull_reason||'rejected')+'"></span>').join(''))+'</div></div>';
+}
+
+function history(r){
+  const rows=[...(r.cut_intervals||[]).map(x=>({...x,action:'cut'})),...(r.keep_intervals||[]).map(x=>({...x,action:x.reason==='protected'?'protect':'keep'}))].sort((a,b)=>a.start-b.start);
+  return rows.length?rows.map(x=>'<div class="history-row"><span>'+seconds(x.start)+'–'+seconds(x.end)+'</span><span class="history-action '+x.action+'">'+x.action+'</span><span>'+esc(x.reason||'editorial review')+'</span></div>').join(''):'<div class="history-row"><span>—</span><span>—</span><span>No human decisions yet.</span></div>';
+}
+
+function nearby(job){
+  const mid=(state.selection.start+state.selection.end)/2;
+  return[...(job.observations||[])].sort((a,b)=>Math.abs(a.timestamp-mid)-Math.abs(b.timestamp-mid)).slice(0,2);
+}
+
+let isDraggingSeek=false;
+function bind(job){
+  if(!job)return;
+  $$('[data-job]').forEach(b=>b.addEventListener('click',()=>{
+    stopPlayback();
+    state.selectedJobId=b.dataset.job;
+    state.selectedMedia='source';
+    state.playhead=0;
+    state.selection={start:0,end:2};
+    render();
+  }));
+  $('[data-action="refresh"]')?.addEventListener('click',()=>load());
+  $$('[data-media]').forEach(b=>b.addEventListener('click',()=>{
+    stopPlayback();
+    state.selectedMedia=b.dataset.media;
+    render();
+  }));
+  const video=$('#review-video');
+  video?.addEventListener('timeupdate',()=>{
+    state.playhead=video.currentTime;
+    const read=$('#time-readout');
+    if(read)read.textContent=seconds(state.playhead)+' / '+seconds(job.duration);
+    $$('.playhead').forEach(n=>n.style.left=((state.playhead/job.duration)*100)+'%');
+    const seek=$('#review-seek');
+    if(seek&&!isDraggingSeek)seek.value=String(state.playhead);
+  });
+
+  let isDraggingTimeline=false;
+  function scrubFromEvent(event,rail){
+    const rect=rail.getBoundingClientRect();
+    const ratio=Math.max(0,Math.min(1,(event.clientX-rect.left)/rect.width));
+    seekTo(ratio*Number(job.duration));
+  }
+
+  $$('[data-timeline]').forEach(rail=>{
+    rail.addEventListener('mousedown',e=>{
+      isDraggingTimeline=true;
+      scrubFromEvent(e,rail);
+      const onMove=ev=>{if(isDraggingTimeline)scrubFromEvent(ev,rail)};
+      const onUp=()=>{
+        isDraggingTimeline=false;
+        window.removeEventListener('mousemove',onMove);
+        window.removeEventListener('mouseup',onUp);
+      };
+      window.addEventListener('mousemove',onMove);
+      window.addEventListener('mouseup',onUp);
+    });
+  });
+
+  $('#set-in-btn')?.addEventListener('click',()=>setInPoint());
+  $('#set-out-btn')?.addEventListener('click',()=>setOutPoint());
+  $('#cut-start')?.addEventListener('change',event=>{state.selection.start=round(event.target.value);clamp(job);renderSelectionOverlay();updateSelectionInputs()});
+  $('#cut-end')?.addEventListener('change',event=>{state.selection.end=round(event.target.value);clamp(job);renderSelectionOverlay();updateSelectionInputs()});
+  $$('[data-decision]').forEach(b=>b.addEventListener('click',()=>saveDecision(job,b.dataset.decision)));
+  $$('[data-action="render"]').forEach(b=>b.addEventListener('click',()=>startRender(job)));
+}
+
+async function saveDecision(job,decision){
+  const r=review(job),reason=$('#cut-reason')?.value.trim()||'editorial review';
+  const interval={start:state.selection.start,end:state.selection.end,reason:decision==='protect'?'protected':reason};
+  if(!(interval.end>interval.start))return toast('End needs to be after start.','danger');
+  if(decision==='cut')r.cut_intervals=[...(r.cut_intervals||[]),interval];
+  else r.keep_intervals=[...(r.keep_intervals||[]),interval];
+  try{
+    await api('/api/jobs/'+encodeURIComponent(job.id)+'/review',{method:'POST',body:JSON.stringify(r)});
+    toast(decision+' saved');
+    await load({quiet:true});
+  }catch(error){toast(error.message,'danger')}
+}
+
+async function startRender(job){
+  try{
+    const task=await api('/api/jobs/'+encodeURIComponent(job.id)+'/render',{method:'POST',body:JSON.stringify({})});
+    toast('Render started: '+task.label);
+    pollTask(task.id);
+  }catch(error){toast(error.message,'danger')}
+}
+
+async function pollTask(id){
+  for(let i=0;i<120;i+=1){
+    await new Promise(resolve=>setTimeout(resolve,1500));
+    const task=await api('/api/tasks/'+id);
+    if(task.status==='running')continue;
+    toast(task.status==='succeeded'?'Render complete':(task.error||'Render failed'),task.status==='succeeded'?'info':'danger');
+    return load({quiet:true});
+  }
+}
+
+function applyReviewRotation(){
+  const video=$('#review-video'),wrap=video?.parentElement;
+  if(!video||!wrap)return;
+  const turned=state.rotation%180!==0,rect=wrap.getBoundingClientRect(),scale=turned?Math.min(rect.width/rect.height,rect.height/rect.width):1;
+  video.style.transform='rotate('+state.rotation+'deg) scale('+scale+')';
+}
+
+function syncTransport(){
+  const video=$('#review-video'),play=$('[data-action="playback"]'),seek=$('#review-seek'),time=$('#transport-time');
+  if(!video)return;
+  if(play)play.textContent=video.paused?'play':'pause';
+  if(seek&&!isDraggingSeek)seek.value=String(video.currentTime||0);
+  if(time)time.textContent=seconds(video.currentTime)+' / '+seconds(video.duration||selected()?.duration);
+}
+
+function ensureTransportControls(){
+  const video=$('#review-video'),player=$('.player');
+  if(!video||!player)return;
+  video.controls=false;
+  let transport=$('.review-transport',player);
+  if(!transport){
+    transport=document.createElement('div');
+    transport.className='review-transport';
+    transport.innerHTML='<button class="transport-button" type="button" data-action="playback">play</button><input id="review-seek" type="range" min="0" step="0.01" aria-label="Playback position"><span id="transport-time"></span><button class="transport-button" type="button" data-action="mute">mute</button>';
+    player.insertBefore(transport,$('.player-controls',player));
+    video.addEventListener('timeupdate',syncTransport);
+    video.addEventListener('play',syncTransport);
+    video.addEventListener('pause',syncTransport);
+    video.addEventListener('loadedmetadata',()=>{ensureTransportControls();applyReviewRotation()});
+  }
+  const seek=$('#review-seek');
+  if(seek){
+    seek.max=String(video.duration||selected()?.duration||1);
+    if(!seek.dataset.bound){
+      seek.dataset.bound='true';
+      seek.addEventListener('mousedown',()=>{isDraggingSeek=true});
+      seek.addEventListener('input',e=>{seekTo(Number(e.target.value))});
+      seek.addEventListener('change',e=>{isDraggingSeek=false;seekTo(Number(e.target.value))});
+    }
+  }
+  syncTransport();
+}
+
+function ensureRotateControl(){
+  ensureTransportControls();
+  const controls=$('.media-switch');
+  if(!controls||controls.querySelector('[data-rotate-view]'))return;
+  const button=document.createElement('button');
+  button.className='rotate-button';
+  button.dataset.rotateView='true';
+  button.type='button';
+  button.title='Rotate the review view 90 degrees';
+  button.textContent='rotate '+state.rotation+'°';
+  controls.append(button);
+  applyReviewRotation();
+}
+
+new MutationObserver(ensureRotateControl).observe(app,{childList:true});
+
+document.addEventListener('click',event=>{
+  const rotate=event.target.closest('[data-rotate-view]');
+  if(rotate){
+    state.rotation=(state.rotation+90)%360;
+    rotate.textContent='rotate '+state.rotation+'°';
+    applyReviewRotation();
+    return;
+  }
+  const action=event.target.closest('[data-action]')?.dataset.action,video=$('#review-video');
+  if(!video)return;
+  if(action==='playback'){
+    video.paused?video.play():video.pause();
+    syncTransport();
+  }
+  if(action==='mute'){
+    video.muted=!video.muted;
+    event.target.textContent=video.muted?'unmute':'mute';
+  }
+});
+
+document.addEventListener('keydown',event=>{
+  const active=document.activeElement;
+  if(active&&(active.tagName==='INPUT'||active.tagName==='TEXTAREA'||active.isContentEditable))return;
+  const job=selected();
+  if(!job)return;
+  const video=$('#review-video');
+  const key=event.key.toLowerCase();
+  if(event.code==='Space'||key===' '){
+    event.preventDefault();
+    if(video){
+      video.paused?video.play():video.pause();
+      syncTransport();
+    }
+  }else if(key==='i'){
+    event.preventDefault();
+    setInPoint();
+    toast('Mark In: '+seconds(state.selection.start));
+  }else if(key==='o'){
+    event.preventDefault();
+    setOutPoint();
+    toast('Mark Out: '+seconds(state.selection.end));
+  }else if(key==='c'){
+    event.preventDefault();
+    saveDecision(job,'cut');
+  }else if(key==='k'){
+    event.preventDefault();
+    saveDecision(job,'keep');
+  }else if(key==='p'){
+    event.preventDefault();
+    saveDecision(job,'protect');
+  }else if(key==='arrowleft'){
+    event.preventDefault();
+    const step=event.shiftKey?1.0:0.1;
+    seekTo(state.playhead-step);
+  }else if(key==='arrowright'){
+    event.preventDefault();
+    const step=event.shiftKey?1.0:0.1;
+    seekTo(state.playhead+step);
+  }else if(key==='j'){
+    event.preventDefault();
+    seekTo(state.playhead-1.0);
+  }else if(key==='l'){
+    event.preventDefault();
+    seekTo(state.playhead+1.0);
+  }
+});
+
 window.addEventListener('resize',applyReviewRotation);
+load();
