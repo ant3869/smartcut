@@ -1,0 +1,25 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "anna-content-pipeline"
+version = "0.1.0"
+description = "Modular local video content pipeline: Whisper Ear, vision Eye, FFmpeg Blade, orchestration Brain."
+requires-python = ">=3.11"
+dependencies = [
+  "requests>=2.31",
+  "opencv-python>=4.8",
+  "scenedetect>=0.7",
+]
+
+[project.optional-dependencies]
+watch = ["watchdog>=4.0"]
+whisper = ["faster-whisper>=1.0"]
+dev = ["pytest>=8.0"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.setuptools.packages.find]
+include = ["pipeline*"]
