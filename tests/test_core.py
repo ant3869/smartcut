@@ -7,6 +7,7 @@ from pipeline.ear import WhisperEar, merge_intervals
 from pipeline.brain import PipelineBrain, _load_editorial_waste, _resolve_persona, subtract_intervals
 from pipeline.blade import FfmpegBlade
 from pipeline.eye import VisionEye, infer_cull_reason, read_frame_with_tail_fallback, resolve_reveal_continuations
+from pipeline.evaluation import EditorialInterval, evaluate_observations
 from pipeline.highlights import Highlight, plan_highlights, select_reel_highlights
 from pipeline.signals import FrameSignal, build_frame_hints, classify_motion
 from pipeline.util import require_distinct
@@ -143,6 +144,57 @@ def test_motion_signals_are_evidence_only_and_keep_frame_timestamps():
     assert set(hints) == {0.0, 2.0}
     assert "evidence only" in hints[2.0].lower()
     assert "cut" in hints[2.0].lower()
+
+
+def test_eye_persists_and_restores_partial_observations(tmp_path):
+    eye = VisionEye(
+        base_url="http://127.0.0.1:1234/v1",
+        model="test-model",
+        interval=2.0,
+        cache_dir=tmp_path,
+    )
+    cache = tmp_path / "source.vision.json"
+    expected = [Observation(0.0, 7.0, "first", True, False)]
+
+    eye._write_partial_observations(cache, expected)
+
+    assert eye._partial_cache_path(cache).exists()
+    assert eye._read_partial_observations(cache) == expected
+
+
+def test_editorial_evaluator_counts_misses_and_protected_false_cuts():
+    observations = [
+        Observation(1.5, 3.0, "off camera", False, False, "off_camera"),
+        Observation(10.0, 7.0, "good", True),
+        Observation(31.0, 3.0, "revealing action", False, False, "clothing_adjustment"),
+    ]
+    report = evaluate_observations(
+        observations,
+        duration=40.0,
+        interval=2.0,
+        expected_cuts=[
+            EditorialInterval(1.0, 2.0, "off_camera"),
+            EditorialInterval(10.0, 12.0, "leaving_chair"),
+        ],
+        protected_keeps=[EditorialInterval(30.0, 40.0, "ending_reveal")],
+    )
+    assert report["metrics"]["cut_recall"] == 0.5
+    assert report["metrics"]["missed_cuts"] == 1
+    assert report["metrics"]["protected_keep_violations"] == 1
+    assert report["protected_keep_violations"][0]["reason"] == "clothing_adjustment"
+
+
+def test_editorial_evaluator_rejects_tiny_partial_match_for_long_cut():
+    report = evaluate_observations(
+        [Observation(20.0, 3.0, "brief issue", False, False, "technical_failure")],
+        duration=60.0,
+        interval=2.0,
+        expected_cuts=[EditorialInterval(0.0, 52.0, "camera_setup")],
+        protected_keeps=[],
+    )
+
+    assert report["metrics"]["cut_recall"] == 0.0
+    assert report["missed_cuts"][0]["coverage_ratio"] == round(2.0 / 52.0, 3)
 
 
 def test_merge_intervals_keeps_reasons_and_merges_small_gaps():

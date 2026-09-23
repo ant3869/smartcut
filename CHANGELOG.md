@@ -7,6 +7,11 @@ All notable changes to this project are documented here. The project follows
 
 ### Added
 
+- Editorial evaluation harness: hash-bound gold cases now score raw Eye proposals separately from
+  manual overrides, reporting cut recall, missed cuts, protected-keep violations, and unexpected
+  proposals. Lyssa and 008 are the first committed cross-video gold cases; a long expected cut
+  requires 25% union coverage from Eye proposals, preventing tiny internal glitches from earning
+  false credit.
 - Hash-bound frame-signal evidence: OpenCV now measures motion and luminance at the same
   timestamps as Eye sampling, caches the facts in `frame_signals.json`, includes them in
   `edit_plan.json`, and supplies them to the vision prompt as non-authoritative context.

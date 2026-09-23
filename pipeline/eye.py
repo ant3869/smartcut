@@ -84,6 +84,28 @@ class VisionEye:
             f"w{self.max_width}.v{VISION_PROMPT_VERSION}.vision.json"
         )
 
+    @staticmethod
+    def _partial_cache_path(cache: Path) -> Path:
+        """Keep recoverable progress separate from a completed analysis cache."""
+        return cache.with_name(f"{cache.stem}.partial.json")
+
+    def _read_partial_observations(self, cache: Path) -> list[Observation]:
+        partial = self._partial_cache_path(cache)
+        if not partial.exists():
+            return []
+        return [
+            _observation_from_payload(item, float(item["timestamp"]))
+            for item in read_json(partial).get("observations", [])
+        ]
+
+    def _write_partial_observations(self, cache: Path, observations: list[Observation]) -> None:
+        write_json(self._partial_cache_path(cache), {
+            "model": self.model,
+            "interval": self.interval,
+            "complete": False,
+            "observations": [item.__dict__ for item in observations],
+        })
+
     def analyze(
         self,
         source: Path,
@@ -106,7 +128,8 @@ class VisionEye:
             cap.release()
             raise PipelineError("video FPS could not be detected")
 
-        observations: list[Observation] = []
+        observations = self._read_partial_observations(cache)
+        completed_timestamps = {item.timestamp for item in observations}
         pending: list[tuple[float, Any]] = []
         every = max(1, round(fps * self.interval))
         index = 0
@@ -117,6 +140,9 @@ class VisionEye:
                     break
                 if index % every == 0:
                     timestamp = round(index / fps, 3)
+                    if timestamp in completed_timestamps:
+                        index += 1
+                        continue
                     pending.append((timestamp, frame))
                     if len(pending) >= self.batch_size:
                         payloads = self._ask_batch(pending, prompt, frame_hints=frame_hints)
@@ -124,6 +150,7 @@ class VisionEye:
                             _observation_from_payload(payload, timestamp)
                             for (timestamp, _), payload in zip(pending, payloads, strict=True)
                         )
+                        self._write_partial_observations(cache, observations)
                         pending.clear()
                 index += 1
             if pending:
@@ -132,11 +159,13 @@ class VisionEye:
                     _observation_from_payload(payload, timestamp)
                     for (timestamp, _), payload in zip(pending, payloads, strict=True)
                 )
+                self._write_partial_observations(cache, observations)
         finally:
             cap.release()
         if not observations:
             raise PipelineError("Eye produced no frame observations")
         write_json(cache, {"model": self.model, "interval": self.interval, "observations": [x.__dict__ for x in observations]})
+        self._partial_cache_path(cache).unlink(missing_ok=True)
         return resolve_reveal_continuations(observations)
 
     def temporal_cull_intervals(

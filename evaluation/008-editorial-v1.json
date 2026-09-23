@@ -1,0 +1,13 @@
+{
+  "schema_version": 1,
+  "case_id": "008-editorial-v1",
+  "source_sha256": "aef29e5a96b53906839af06c91c7f4546e1b220c86fe7bc831b46dba2a28ad27",
+  "source_duration": 227.533333,
+  "frame_interval_seconds": 2.0,
+  "expected_cuts": [
+    {"start": 0.0, "end": 52.0, "reason": "camera_setup_technical_banter"},
+    {"start": 107.0, "end": 112.0, "reason": "camera_adjustment"},
+    {"start": 123.0, "end": 130.0, "reason": "unrelated_banter"}
+  ],
+  "protected_keeps": []
+}

@@ -46,7 +46,7 @@ The production path has three explicit edit modes instead of one overloaded sele
 ```powershell
 Set-Location E:\anna\content-pipeline
 python -m venv .venv
-.\.venv\Scripts\python.exe -m pip install -e ".[whisper,watch,dev]"
+.\.venv\Scripts\python.exe -m pip install -e ".[whisper,watch,web,dev]"
 $env:HF_HOME = 'E:\anna\content-pipeline\models\huggingface'
 ```
 
@@ -64,6 +64,7 @@ Copy-Item .\config.example.json .\config.json
 \.venv\Scripts\python.exe .\run_pipeline.py preview "E:\path\input.mp4" --target-seconds 20 --config .\config.json
 \.venv\Scripts\python.exe .\run_pipeline.py reel "E:\path\one.mp4" "E:\path\two.mp4" --target-seconds 45 --config .\config.json
 \.venv\Scripts\python.exe .\run_pipeline.py watch --config .\config.json
+\.venv\Scripts\python.exe -m pipeline.web --config .\config.json --host 127.0.0.1 --port 8787
 ```
 
 `analyze` and `plan` never render. `render` refuses to publish unless a plan exists, unless `--auto-plan` is passed. The default config keeps `auto_render` off.
@@ -93,6 +94,24 @@ cut as `editor-review:<reason>`. Reviews fail closed when the source hash or tim
 correction cannot silently apply to a different revision. `full_edit_min_segment_seconds` controls
 the tiny-island floor independently from preview clip length; its 0.5s default preserves useful
 material around short editor cuts instead of repeating the historical four-second-drop bug.
+
+## Evaluate editing decisions
+
+Gold cases score the Eye's raw proposals before hash-bound human correction is applied, so a plan
+cannot get credit for merely replaying prior review feedback. Lyssa and 008 are the initial
+cross-video baselines:
+
+```powershell
+.\.venv\Scripts\python.exe .\tools\evaluate_editorial_plan.py `
+  .\work\jobs\lyssa-9b3033e851f2\edit_plan.json `
+  .\evaluation\lyssa-editorial-v1.json
+```
+
+The report shows matched/missed editorial cuts, false proposals inside protected keep spans, and
+unexpected cuts. A long human cut only counts as matched when Eye covers at least 25% of that
+specific span; catching a tiny glitch inside a long camera-setup stretch is still a miss. A model,
+prompt, or planner does not become more aggressive until it improves this report without regressing
+protected content.
 
 For unattended watch mode, set `auto_render` to `true` only after the plan output and destination policy are trusted. With the default `false`, new files are analyzed and emitted as `review_required` plans.
 

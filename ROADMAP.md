@@ -109,6 +109,9 @@ exactly once only after it is complete.
 
 ### Evaluation harness
 
+- **Started:** `evaluation/lyssa-editorial-v1.json` and `tools/evaluate_editorial_plan.py` score raw
+  Eye proposals before review overrides. The first baseline is intentionally bad (1/4 labeled cuts,
+  one protected-ending violation), which prevents false claims of automated intelligence.
 - Curate representative clips: reveals, real clothing adjustments, camera setup, blur, dark spans,
   non-verbal audio, background TV, endings, mixed resolutions, and long continuous action.
 - Store expected keep/remove ranges plus acceptable boundary tolerance.
@@ -117,7 +120,7 @@ exactly once only after it is complete.
 - A/B prompt/model runs against the same cached frames.
 
 **Done when:** any model/prompt/planner change produces a comparable report before it can replace the
-current default.
+current default, and the corpus covers multiple performers/videos instead of overfitting Lyssa.
 
 ## Milestone 2 - v0.2.0: editing intelligence
 
