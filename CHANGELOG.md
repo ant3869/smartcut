@@ -7,6 +7,9 @@ All notable changes to this project are documented here. The project follows
 
 ### Added
 
+- Cutroom, a local review-first web surface over the real job API: source/final player, clickable
+  timeline, nearby Eye evidence, hash-bound Keep/Cut/Protect decisions, review history, and render
+  launch. It stays intentionally narrow instead of impersonating a full NLE.
 - Editorial evaluation harness: hash-bound gold cases now score raw Eye proposals separately from
   manual overrides, reporting cut recall, missed cuts, protected-keep violations, and unexpected
   proposals. Lyssa and 008 are the first committed cross-video gold cases; a long expected cut
@@ -32,7 +35,6 @@ All notable changes to this project are documented here. The project follows
 - Persisted stage progress and resumable jobs.
 - Stable inbox ingestion that waits for files to finish copying.
 - Music-library and beat-aware preview/reel pacing.
-- Local review frontend with timeline decisions and render controls.
 
 ## [0.1.0] - 2026-09-22
 

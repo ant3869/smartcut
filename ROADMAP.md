@@ -227,5 +227,8 @@ The correction loop starts with hash-bound `editor_review.json` files. They are 
 overrides today and golden labels tomorrow: temporal/model changes must reproduce approved removals
 without deleting protected content before they replace human feedback.
 
-After those, build the frontend against the stable job/event API, then add temporal reasoning and
-music-aware pacing behind measurable evaluation gates.
+Cutroom now covers the first review loop against the stable job API: source/final playback,
+timeline range staging, hash-bound Keep/Cut/Protect decisions, and an explicit render gate. The
+remaining frontend work is the higher-volume operator stuff above (drag handles, keyboard review,
+queue state, and version comparison), not a replacement for this usable review path. Temporal
+reasoning and music-aware pacing remain behind measurable evaluation gates.
