@@ -69,6 +69,12 @@ Copy-Item .\config.example.json .\config.json
 
 `analyze` and `plan` never render. `render` refuses to publish unless a plan exists, unless `--auto-plan` is passed. The default config keeps `auto_render` off.
 
+For review, run `start-web.bat` (or the web command above), then open `http://127.0.0.1:8787`.
+Cutroom uses the real job plan: click the timeline to stage a source-time range, add a reason, then
+**Keep**, **Cut**, or **Protect** it. Those decisions write directly to hash-bound
+`editor_review.json`; **Render approved cut** uses that policy and never overwrites the source.
+Source/final tabs and a manual rotate control handle phone footage with sideways pixels.
+
 `frame_signal_enabled` defaults to `true`. Its output is available in both the job's
 `frame_signals.json` and `edit_plan.json` for later review/UI work. Turning it off keeps the
 previous Eye behavior for A/B comparisons.

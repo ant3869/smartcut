@@ -1,0 +1,10 @@
+.git
+.venv
+.hf-cache
+.pytest_cache
+__pycache__
+work
+vault
+models
+validation
+frontend/*.map

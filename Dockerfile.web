@@ -1,0 +1,18 @@
+FROM python:3.11-slim
+
+WORKDIR /app
+
+COPY pyproject.toml ./
+RUN pip install --no-cache-dir \
+    "fastapi>=0.115" \
+    "uvicorn[standard]>=0.30" \
+    "requests>=2.31" \
+    "opencv-python-headless>=4.8" \
+    "scenedetect>=0.7"
+
+COPY pipeline ./pipeline
+COPY frontend ./frontend
+COPY config.example.json ./config.example.json
+
+EXPOSE 8787
+CMD ["python", "-m", "pipeline.web", "--config", "/app/config.json", "--host", "0.0.0.0", "--port", "8787"]
