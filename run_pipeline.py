@@ -20,6 +20,8 @@ def load_config(path: Path) -> dict:
 
 
 def main(argv: list[str] | None = None) -> int:
+    if hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(encoding="utf-8")
     parser = argparse.ArgumentParser(description="anna modular content pipeline")
     parser.add_argument("command", choices=["analyze", "plan", "render", "preview", "reel", "watch"])
     parser.add_argument("sources", nargs="*", type=Path)

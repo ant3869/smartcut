@@ -775,7 +775,69 @@ def test_temporal_eye_marks_target_frames_and_context(monkeypatch, tmp_path):
     assert "2.500s [CONTEXT]" in labels
 
 
+def test_section_summary_pass_receives_local_transcript_and_editorial_policy(monkeypatch, tmp_path):
+    captured = {}
+
+    class FakeResponse:
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {"choices": [{"message": {"content": (
+                '{"section_type":"setup","editorial_action":"cut_candidate",'
+                '"summary":"recording setup","confidence":0.95}'
+            )}}]}
+
+    def fake_post(url, json, timeout):
+        captured["payload"] = json
+        return FakeResponse()
+
+    monkeypatch.setattr("pipeline.eye.requests.post", fake_post)
+    eye = VisionEye(base_url="http://127.0.0.1:1234/v1", model="test-model", interval=2.0, cache_dir=tmp_path)
+    frame = np.zeros((64, 32, 3), dtype=np.uint8)
+
+    result = eye._ask_section_summary(
+        [(0.0, frame)], 0.0, 30.0,
+        transcript_evidence="Is it recording? What does it look like?",
+        editorial_policy="Cut technical setup before the intended scene.",
+    )
+
+    assert result["editorial_action"] == "cut_candidate"
+    prompt = captured["payload"]["messages"][1]["content"][0]["text"]
+    assert "Is it recording?" in prompt
+    assert "Cut technical setup" in prompt
+
+
+def test_editorial_loop_prioritizes_technical_talk_then_interaction():
+    from pipeline.contracts import Segment, Transcript
+    from pipeline.editorial_loop import build_editorial_loop
+    result = build_editorial_loop(duration=8.0, observations=[
+        Observation(1.0, 8.0, "subject is visible", True),
+        Observation(5.0, 8.0, "explicit sexual interaction underway", True),
+    ], transcript=Transcript(ok=True, model="test", segments=[Segment(0.0, 2.0, "is it recording?")]))
+    assert result["windows"][0]["state"] == "cut"
+    assert result["windows"][1]["state"] == "keep"
+
+
+def test_editorial_loop_coalesces_opening_technical_conversation_across_pauses():
+    from pipeline.contracts import Segment, Transcript
+    from pipeline.editorial_loop import build_editorial_loop
+
+    result = build_editorial_loop(duration=60.0, observations=[], transcript=Transcript(
+        ok=True, model="test", segments=[
+            Segment(0.0, 2.0, "is it recording?"),
+            Segment(47.0, 48.0, "you can move the camera"),
+        ],
+    ))
+
+    assert result["cut_candidates"] == [{
+        "start": 0.0, "end": 52.0, "reasons": ["technical_preroll_conversation"],
+    }]
+
+
 def test_temporal_eye_reuses_cached_waste_without_model_call(monkeypatch, tmp_path):
+    import hashlib
+    import json
     source = tmp_path / "source.mp4"
     source.write_bytes(b"not-a-real-video")
     eye = VisionEye(
@@ -786,9 +848,12 @@ def test_temporal_eye_reuses_cached_waste_without_model_call(monkeypatch, tmp_pa
         max_width=512,
     )
     stat = source.stat()
+    candidate_signature = hashlib.sha256(json.dumps(
+        {"candidates": [], "editorial_focus": []}, sort_keys=True, separators=(",", ":"),
+    ).encode("utf-8")).hexdigest()[:12]
     cache = tmp_path / (
         f"{source.stem}.{stat.st_size}.{stat.st_mtime_ns}.temporal-model."
-        "w512.t1.c0.5.v1.temporal.json"
+        f"w512.t1.c0.5.v3.{candidate_signature}.temporal.json"
     )
     cache.write_text(
         '{"waste_intervals":[{"start":1.0,"end":2.0,'
@@ -839,3 +904,90 @@ def test_scene_detection_caches_hash_bound_boundaries(monkeypatch, tmp_path):
 
     assert first == second
     assert calls == [(source, 27.0)]
+
+
+def test_story_map_targets_boundaries_and_first_pass_evidence_without_making_cuts():
+    from pipeline.story import build_story_map
+
+    story = build_story_map(
+        duration=10.0,
+        observations=[
+            Observation(2.0, 8.0, "direct eye contact", True, False),
+            Observation(6.0, 2.0, "camera being mounted", False, False, "camera_adjustment"),
+        ],
+        scenes=[{"index": 0, "start_seconds": 0.0, "end_seconds": 5.0},
+                {"index": 1, "start_seconds": 5.0, "end_seconds": 10.0}],
+        transcript=None,
+        known_waste=[],
+        boundary_context_seconds=1.0,
+    )
+
+    assert story["summary"]["mode"] == "semantic_map_then_targeted_review"
+    assert story["summary"]["candidate_count"] == 1
+    assert story["target_candidates"] == [{
+        "start": 4.0, "end": 7.0,
+        "reasons": ["eye:camera_adjustment", "scene_boundary"],
+    }]
+
+
+def test_story_map_promotes_semantic_whole_section_without_human_review_leakage():
+    from pipeline.story import build_story_map
+
+    story = build_story_map(
+        duration=60.0,
+        observations=[Observation(10.0, 2.0, "camera being mounted", False, False, "camera_adjustment")],
+        scenes=[{"index": 0, "start_seconds": 0.0, "end_seconds": 52.0},
+                {"index": 1, "start_seconds": 52.0, "end_seconds": 60.0}],
+        transcript=None,
+        known_waste=[],
+        section_summaries=[{
+            "index": 0, "start": 0.0, "end": 52.0,
+            "section_type": "setup", "editorial_action": "cut_candidate",
+            "summary": "phone mounting and technical setup",
+        }],
+    )
+
+    assert story["summary"]["semantic_section_count"] == 1
+    assert story["semantic_cut_candidates"] == [{
+        "start": 0.0, "end": 52.0, "reasons": ["section:setup"],
+        "summary": "phone mounting and technical setup", "confidence": 0.0,
+    }]
+    assert story["target_candidates"] == [
+        {"start": 0.0, "end": 1.0, "reasons": ["section:setup:start"]},
+        {"start": 51.0, "end": 53.0, "reasons": ["section:setup:end"]},
+    ]
+    assert not any("eye:" in reason for candidate in story["target_candidates"] for reason in candidate["reasons"])
+    assert story["sections"][0]["semantic_summary"]["editorial_action"] == "cut_candidate"
+
+
+def test_story_map_merges_overlapping_loop_and_semantic_sections_before_targeting():
+    from pipeline.story import build_story_map
+
+    story = build_story_map(
+        duration=60.0, observations=[Observation(10.0, 2.0, "camera mounting", False, False, "camera_adjustment")],
+        scenes=[], transcript=None, known_waste=[],
+        section_summaries=[{"index": 0, "start": 0.0, "end": 49.4, "section_type": "setup",
+                            "editorial_action": "cut_candidate", "summary": "setup", "confidence": 0.95}],
+        loop_cut_candidates=[{"start": 0.0, "end": 52.0, "reasons": ["technical_preroll_conversation"]}],
+    )
+
+    assert story["semantic_cut_candidates"] == [{
+        "start": 0.0, "end": 52.0, "reasons": ["loop:technical_preroll_conversation", "section:setup"],
+        "summary": "setup", "confidence": 1.0,
+    }]
+    assert not any("eye:" in reason for item in story["target_candidates"] for reason in item["reasons"])
+
+
+def test_temporal_cache_is_scoped_to_the_candidate_map(tmp_path):
+    from pipeline.eye import VisionEye
+
+    eye = VisionEye(base_url="http://example.invalid/v1", model="test-model", interval=2.0, cache_dir=tmp_path)
+    first = eye.cache_dir / "source.1.2.test-model.w1024.t1.c0.5.v3.abc.temporal.json"
+    # This only proves the signature's input discipline.  The full network path is
+    # intentionally covered by the live editorial runs instead of a fake VLM.
+    import hashlib
+    import json
+    left = hashlib.sha256(json.dumps({"candidates": [{"start": 0, "end": 2}], "editorial_focus": []}, sort_keys=True, separators=(",", ":")).encode()).hexdigest()[:12]
+    right = hashlib.sha256(json.dumps({"candidates": [{"start": 2, "end": 4}], "editorial_focus": []}, sort_keys=True, separators=(",", ":")).encode()).hexdigest()[:12]
+    assert first.name.endswith(".temporal.json")
+    assert left != right

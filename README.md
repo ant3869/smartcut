@@ -132,3 +132,12 @@ The implementation follows the tested results in `C:\Users\SuperHands\Desktop\as
 - account for transition overlap and FFmpeg rounding;
 - treat stabilization as a measured capability, not an unconditional success;
 - keep audio ducking and loudness operations as distinct Blade stages.
+
+## Multi-pass editorial review
+
+When multi_pass_enabled is true, analysis first writes story_map.json. It maps scene
+sections and produces bounded candidate windows from scene changes and concrete Eye/Ear evidence.
+The temporal critic then inspects those windows with before/after context. Human-cut reasons from
+earlier hash-bound reviews are prompt hints only; they never become automatic rules. Critic
+decisions are included in edit_plan.json targeted_review, while multi_pass_apply_cuts remains false
+until the labeled editorial evaluation demonstrates a win.
