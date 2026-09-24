@@ -10,12 +10,41 @@ from pipeline.brain import PipelineBrain
 from pipeline.util import PipelineError
 
 
+# Keys the pipeline actually reads. Unknown keys warn at startup so a typo or a
+# removed option can never silently do nothing again.
+KNOWN_CONFIG_KEYS = frozenset({
+    "work_dir", "analysis_dir", "output_dir", "vision_model", "lm_studio_url",
+    "caption_model", "frame_interval_seconds", "vision_max_width", "vision_batch_size",
+    "vision_cull_confidence_threshold", "vision_review_confidence_floor",
+    "whisper_model", "whisper_device", "whisper_compute_type",
+    "frame_signal_enabled", "scene_detection_enabled", "scene_threshold",
+    "waste_terms", "waste_padding_seconds",
+    "multi_pass_enabled", "multi_pass_apply_cuts", "multi_pass_section_summary_enabled",
+    "multi_pass_section_summary_frames", "multi_pass_editorial_policy",
+    "multi_pass_boundary_context_seconds", "multi_pass_max_candidates",
+    "temporal_target_seconds", "temporal_context_seconds", "temporal_confidence_threshold",
+    "full_edit_min_segment_seconds",
+    "reel_candidates_per_source", "reel_candidate_seconds_per_source", "reel_target_seconds",
+    "reel_max_clips_per_source",
+    "preview_target_seconds", "preview_min_clip_seconds", "preview_max_clip_seconds",
+    "preview_max_clips", "preview_score_threshold", "preview_target_ratio",
+    "preview_min_target_seconds", "preview_max_target_seconds",
+    "transition_seconds", "watermark_path", "bumper_path",
+    "blade_crf", "blade_preset", "blade_output_fps",
+    "caption_min_word_confidence", "input_dir", "auto_render",
+    "performer", "personas",
+})
+
+
 def load_config(path: Path) -> dict:
     data = json.loads(path.read_text(encoding="utf-8"))
     required = ["work_dir", "analysis_dir", "output_dir", "vision_model"]
     missing = [key for key in required if not data.get(key)]
     if missing:
         raise PipelineError(f"config missing: {', '.join(missing)}")
+    unknown = sorted(key for key in data if key not in KNOWN_CONFIG_KEYS)
+    if unknown:
+        print(f"config warning: unknown keys (ignored): {', '.join(unknown)}", file=sys.stderr)
     return data
 
 
@@ -39,10 +68,19 @@ def main(argv: list[str] | None = None) -> int:
             input_dir = Path(config["input_dir"])
             input_dir.mkdir(parents=True, exist_ok=True)
             known: set[Path] = set()
+            settling: dict[Path, tuple[int, int]] = {}
             print(f"watching {input_dir}; Ctrl+C to stop", flush=True)
             while True:
                 for candidate in input_dir.iterdir():
                     if candidate.is_file() and candidate.suffix.lower() in {".mp4", ".mov", ".mkv", ".avi", ".webm"} and candidate not in known:
+                        # Wait until the file's size and mtime are stable across two
+                        # polls so a copy still in progress is never ingested half-written.
+                        stat = candidate.stat()
+                        fingerprint = (stat.st_size, stat.st_mtime_ns)
+                        if settling.get(candidate) != fingerprint:
+                            settling[candidate] = fingerprint
+                            continue
+                        settling.pop(candidate, None)
                         known.add(candidate)
                         try:
                             if config.get("auto_render", False):

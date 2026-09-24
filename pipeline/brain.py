@@ -37,25 +37,32 @@ class PipelineBrain:
             cache_dir=self.analysis_dir,
             max_width=int(config.get("vision_max_width", 512)),
             batch_size=int(config.get("vision_batch_size", 4)),
+            cull_confidence_threshold=float(config.get("vision_cull_confidence_threshold", 0.6)),
+            review_confidence_floor=float(config.get("vision_review_confidence_floor", 0.3)),
         )
-        self.blade = FfmpegBlade()
+        self.blade = FfmpegBlade(
+            crf=int(config.get("blade_crf", 20)),
+            preset=str(config.get("blade_preset", "fast")),
+            output_fps=int(config.get("blade_output_fps", 30)),
+        )
         self.voice = PersonaVoice(
             base_url=config.get("lm_studio_url", "http://127.0.0.1:1234/v1"),
             model=config.get("caption_model") or config["vision_model"],
         )
 
-    def job_dir(self, source: Path) -> Path:
-        fingerprint = source_fingerprint(source)
+    def job_dir(self, source: Path, fingerprint: dict[str, str] | None = None) -> Path:
+        fingerprint = fingerprint or source_fingerprint(source)
         return self.work_dir / "jobs" / f"{source.stem}-{fingerprint['sha256'][:12]}"
 
     def analyze(self, source: Path, *, refresh: bool = False) -> dict:
         source = source.resolve()
         if not source.exists():
             raise PipelineError(f"input does not exist: {source}")
-        job = self.job_dir(source)
+        fingerprint = source_fingerprint(source)
+        job = self.job_dir(source, fingerprint)
         job.mkdir(parents=True, exist_ok=True)
         duration = media_duration(source)
-        source_sha256 = source_fingerprint(source)["sha256"]
+        source_sha256 = fingerprint["sha256"]
         transcript = self.ear.transcribe(source, refresh=refresh)
         signals = (
             detect_frame_signals(
@@ -82,7 +89,11 @@ class PipelineBrain:
                 threshold=float(self.config.get("scene_threshold", 27.0)),
                 refresh=refresh,
             )
-        transcript_waste = self.ear.waste_intervals(transcript, self.config.get("waste_terms", []))
+        transcript_waste = self.ear.waste_intervals(
+            transcript,
+            self.config.get("waste_terms", []),
+            padding=float(self.config.get("waste_padding_seconds", 0.75)),
+        )
         visual_waste = self.eye.cull_intervals(observations, duration)
         editorial_waste, editorial_keep = _load_editorial_policy(
             job, duration=duration, source_sha256=source_sha256,
@@ -114,6 +125,9 @@ class PipelineBrain:
             loop_cut_candidates=editorial_loop["cut_candidates"],
         )
         write_story_map(job / "story_map.json", story_map)
+        # The temporal pass only runs when its cuts will actually be used. The old
+        # config ran it as an expensive advisory pass (enabled, apply_cuts off) and
+        # then threw the decisions away.
         temporal_waste = (
             self.eye.temporal_cull_intervals(
                 source,
@@ -125,11 +139,10 @@ class PipelineBrain:
                 candidates=story_map["target_candidates"],
                 editorial_focus=learned_editorial_focus(self.work_dir),
             )
-            if self.config.get("multi_pass_enabled", False)
+            if self.config.get("multi_pass_enabled", False) and self.config.get("multi_pass_apply_cuts", False)
             else []
         )
-        temporal_for_plan = temporal_waste if self.config.get("multi_pass_apply_cuts", False) else []
-        model_waste = _exclude_protected_intervals(visual_waste + temporal_for_plan, editorial_keep)
+        model_waste = _exclude_protected_intervals(visual_waste + temporal_waste, editorial_keep)
         waste = merge_intervals(transcript_waste + model_waste + editorial_waste)
         min_seconds = float(self.config.get("full_edit_min_segment_seconds", 0.5))
         # Conservative like the reference cut: keep the whole timeline and only remove
@@ -158,8 +171,10 @@ class PipelineBrain:
             frame_signals=[asdict(item) for item in signals],
             story_map=story_map,
             targeted_review=self.eye.last_temporal_decisions,
+            model_disagreements=self.eye.model_disagreements,
+            review_intervals=self.eye.review_intervals(observations, duration),
         )
-        self._write_plan(job, plan)
+        self._write_plan(job, plan, fingerprint)
         return plan.to_dict()
 
     def plan(self, source: Path, *, refresh: bool = False) -> dict:
@@ -381,9 +396,9 @@ class PipelineBrain:
             self.blade.prepend_bumper(bumper, content_path, final_path)
 
     @staticmethod
-    def _write_plan(job: Path, plan: EditPlan) -> None:
+    def _write_plan(job: Path, plan: EditPlan, fingerprint: dict[str, str]) -> None:
         write_json(job / "edit_plan.json", plan.to_dict())
-        write_json(job / "source_fingerprint.json", source_fingerprint(Path(plan.source)))
+        write_json(job / "source_fingerprint.json", fingerprint)
         if plan.caption:
             (job / "caption.txt").write_text(plan.caption, encoding="utf-8")
 

@@ -18,6 +18,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from .brain import PipelineBrain
+from .contracts import Clip
 from .util import PipelineError, read_json, source_fingerprint
 
 MEDIA_EXTENSIONS = {".mp4", ".mov", ".mkv", ".avi", ".webm"}
@@ -131,12 +132,18 @@ def create_app(config_path: str | Path = DEFAULT_CONFIG) -> FastAPI:
         waste: list[dict[str, Any]] = []
         observations: list[dict[str, Any]] = []
         transcript_segments: list[dict[str, Any]] = []
+        review_intervals: list[dict[str, Any]] = []
+        model_disagreements: list[dict[str, Any]] = []
+        model_calls: dict[str, Any] = {}
         if plan:
             source_path = plan.get("source")
             duration = plan.get("duration")
             clips = plan.get("clips") or []
             waste = plan.get("waste_intervals") or []
             observations = plan.get("observations") or []
+            review_intervals = plan.get("review_intervals") or []
+            model_disagreements = plan.get("model_disagreements") or []
+            model_calls = plan.get("model_calls") or {}
             transcript = plan.get("transcript") or {}
             transcript_segments = transcript.get("segments") or []
             caption = caption or plan.get("caption") or ""
@@ -170,6 +177,9 @@ def create_app(config_path: str | Path = DEFAULT_CONFIG) -> FastAPI:
             "clips": clips,
             "waste_intervals": waste,
             "observations": observations,
+            "review_intervals": review_intervals,
+            "model_disagreements": model_disagreements,
+            "model_calls": model_calls,
             "transcript_segments": transcript_segments,
             "frame_signals": (plan or {}).get("frame_signals", []),
             "dropped_slivers": (plan or {}).get("dropped_slivers", []),
@@ -196,6 +206,7 @@ def create_app(config_path: str | Path = DEFAULT_CONFIG) -> FastAPI:
                 "editor_review": str(path / "editor_review.json") if (path / "editor_review.json").exists() else None,
                 "render_manifest": str(path / "render_manifest.json") if (path / "render_manifest.json").exists() else None,
                 "preview_manifest": str(path / "preview_manifest.json") if (path / "preview_manifest.json").exists() else None,
+                "otio_timeline": str(path / "timeline.otio") if (path / "timeline.otio").exists() else None,
                 "caption": str(path / "caption.txt") if (path / "caption.txt").exists() else None,
             },
             "updated_at": datetime.fromtimestamp(path.stat().st_mtime, tz=timezone.utc).isoformat(),
@@ -341,6 +352,26 @@ def create_app(config_path: str | Path = DEFAULT_CONFIG) -> FastAPI:
         target = request.target_seconds if request else None
         auto_plan = bool(request.auto_plan) if request else False
         return start_task(f"Preview {source.name}", lambda: brain().preview(source, auto_plan=auto_plan, target_seconds=target))
+
+    @app.post("/api/jobs/{job_id}/export-otio")
+    def action_export_otio(job_id: str):
+        """Write the approved plan clips as an .otio timeline for Resolve/Premiere."""
+        from .otio_export import export_otio_timeline
+
+        job = job_path(job_id)
+        source = source_for_job(job_id)
+        plan = safe_read_json(job / "edit_plan.json")
+        if not plan or not plan.get("clips"):
+            raise HTTPException(status_code=400, detail="no plan clips to export; analyze first")
+        clips = [
+            Clip(float(item["start"]), float(item["end"]), tuple(item.get("reasons", [])))
+            for item in plan["clips"]
+        ]
+        try:
+            out = export_otio_timeline(source, clips, job / "timeline.otio")
+        except PipelineError as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
+        return {"ok": True, "path": str(out), "job": summarize_job(job)}
 
     @app.post("/api/jobs/{job_id}/review")
     def save_review(job_id: str, payload: ReviewPayload) -> dict[str, Any]:

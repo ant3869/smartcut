@@ -31,7 +31,7 @@ def build_editorial_loop(*, duration: float, observations: list[Observation], tr
         evidence = [*talk.get(int(item.timestamp), [])]
         if evidence:
             state, reason = "cut", "technical_preroll_talk"
-        elif not item.keep or _TECHNICAL_VISUAL.search(text) and not _PERSON.search(text):
+        elif (not item.keep) or (_TECHNICAL_VISUAL.search(text) and not _PERSON.search(text)):
             state, reason = "cut", item.cull_reason or "technical_visual"
         elif _INTERACTION.search(text):
             state, reason = "keep", "interaction_underway"
