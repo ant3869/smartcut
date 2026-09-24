@@ -16,6 +16,8 @@ All notable changes to this project are documented here. The project follows
   affect the transcript itself, captions, or the editorial loop's setup-pattern matching.
 - The audio-enabled frame prompt now tells the model to ignore music, TV audio, or
   clearly misheard words in the AUDIO lines, for videos where speech and noise mix.
+- `docs/qa-runbook-008.md`: agent-ready QA runbook for the 008 gold case (preconditions,
+  commands, what to collect, v8 expectations).
 
 ### Fixed
 
