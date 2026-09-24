@@ -18,7 +18,7 @@ KNOWN_CONFIG_KEYS = frozenset({
     "vision_cull_confidence_threshold",
     "whisper_model", "whisper_device", "whisper_compute_type",
     "frame_signal_enabled", "scene_detection_enabled", "scene_threshold",
-    "waste_terms", "waste_padding_seconds",
+    "waste_terms", "waste_padding_seconds", "audio_evidence_enabled",
     "multi_pass_enabled", "multi_pass_apply_cuts", "multi_pass_section_summary_enabled",
     "multi_pass_section_summary_frames", "multi_pass_editorial_policy",
     "multi_pass_boundary_context_seconds", "multi_pass_max_candidates",

@@ -5,8 +5,41 @@ All notable changes to this project are documented here. The project follows
 
 ## [Unreleased]
 
+### Added
+
+- `audio_evidence_enabled` config flag (default `true`): a single on/off switch for
+  speech audio as edit evidence. When off, judged frames carry no transcript lines and
+  the frame prompt is rebuilt without any AUDIO mention (purely visual judging), section
+  summaries lose the section-local transcript, and `waste_terms` matches are skipped —
+  for videos where the soundtrack is music, TV, or other non-speech audio. Toggling the
+  flag busts the vision cache automatically (`.noaudio` in the filename). It does not
+  affect the transcript itself, captions, or the editorial loop's setup-pattern matching.
+- The audio-enabled frame prompt now tells the model to ignore music, TV audio, or
+  clearly misheard words in the AUDIO lines, for videos where speech and noise mix.
+
 ### Fixed
 
+- The frame description and consistency rule now say "conversing with another person
+  present", matching check 5's wording and the model-disagreement heuristic's banter
+  terms — previously the description phrase could not trip the heuristic.
+- `audio_evidence_enabled` is registered in the known config keys so it never warns as
+  unknown.
+- Removed the deleted `vision_review_confidence_floor` key from `config.example.json`.
+
+- Vision prompt v7: the banter check now gives the model a mechanical two-voice test
+  for the AUDIO (one line responding to another, casual small talk, boredom, laughing
+  together) instead of a vague "conversing" judgment, with explicit exclusions for
+  moaning, dirty talk about the act, and talking straight to the camera. The frame
+  description must call out the performer conversing with another person present so the
+  consistency rule fires. Fixes 008@123–130s, where v6 quoted the banter audio
+  ("Try to be good." / "No way." / "You do.") yet kept the frames.
+- Section banter clause is now scoped: whole-section `banter` only when conversation
+  dominates the section; brief chatter inside a longer performance section leaves the
+  section classified by dominant content (the frame layer owns short banter spans).
+- Section setup classification now needs positive evidence (setup discussion, camera
+  handling, blank/obstructed frames); a lone ambiguous utterance over sustained
+  performance frames is performance, not setup. Fixes 008's 129.7–227.5s section
+  hallucinated as "setup" from a single "Fine.".
 - Vision prompt v6: each judged frame now carries transcript lines spoken within ±4s
   (`AUDIO near Ns`), so the model can hear setup talk and banter it cannot see. The
   banter check explicitly beats intimate content: the performer conversing with another
@@ -26,6 +59,12 @@ All notable changes to this project are documented here. The project follows
 - The editorial harness now also scores plan-level proposals (waste intervals plus
   section cut candidates), so transcript-driven section wins count alongside raw
   frame observations.
+- Fixed the harness hiding grazing false positives: a proposal is only excused from
+  the unexpected list when it overlaps a target the system actually matched (was: any
+  0.25s graze of a gold span excused it).
+- Fixed the configured `multi_pass_editorial_policy` silently replacing the built-in
+  section policy: the banter clause is now composed onto any configured policy that
+  lacks it, so older configs copied from the pre-v5 default get banter detection.
 
 - Vision prompt v5 encodes the editor's decision tree as ordered checks (cut is final,
   keep is provisional): no people → cut; intimate contact → keep; device handling /

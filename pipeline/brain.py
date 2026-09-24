@@ -8,7 +8,7 @@ from pathlib import Path
 
 from .contracts import Clip, EditPlan, Observation
 from .ear import WhisperEar, merge_intervals
-from .eye import VisionEye
+from .eye import VisionEye, SECTION_SETUP_CLAUSE, compose_section_policy
 from .highlights import Highlight, plan_highlights, select_reel_highlights
 from .scenes import detect_content_scenes
 from .signals import build_frame_hints, detect_frame_signals
@@ -63,6 +63,10 @@ class PipelineBrain:
         duration = media_duration(source)
         source_sha256 = fingerprint["sha256"]
         transcript = self.ear.transcribe(source, refresh=refresh)
+        # Audio evidence (frame AUDIO lines, section audio, transcript waste terms)
+        # can be disabled for videos where the soundtrack is music, TV, or other
+        # non-speech audio that would mislead speech-based judgments.
+        audio_evidence = bool(self.config.get("audio_evidence_enabled", True))
         signals = (
             detect_frame_signals(
                 source,
@@ -79,6 +83,7 @@ class PipelineBrain:
             refresh=refresh,
             frame_hints=build_frame_hints(signals),
             transcript_segments=list(transcript.segments) if transcript.ok else None,
+            audio_enabled=audio_evidence,
         )
         scenes = []
         if self.config.get("scene_detection_enabled", True):
@@ -89,10 +94,13 @@ class PipelineBrain:
                 threshold=float(self.config.get("scene_threshold", 27.0)),
                 refresh=refresh,
             )
-        transcript_waste = self.ear.waste_intervals(
-            transcript,
-            self.config.get("waste_terms", []),
-            padding=float(self.config.get("waste_padding_seconds", 0.75)),
+        transcript_waste = (
+            self.ear.waste_intervals(
+                transcript,
+                self.config.get("waste_terms", []),
+                padding=float(self.config.get("waste_padding_seconds", 0.75)),
+            )
+            if audio_evidence else []
         )
         visual_waste = self.eye.cull_intervals(observations, duration)
         editorial_waste, editorial_keep = _load_editorial_policy(
@@ -106,14 +114,10 @@ class PipelineBrain:
                 source, sections=sections_for_summary, duration=duration,
                 cache_path=job / "section_summaries.json", refresh=refresh,
                 frames_per_section=int(self.config.get("multi_pass_section_summary_frames", 6)),
-                transcript=transcript,
-                editorial_policy=str(self.config.get(
-                    "multi_pass_editorial_policy",
-                    "Prefer removing pre-roll and technical setup before the intended scene begins. "
-                    "When the section-local transcript visibly discusses recording, camera/framing, checking how it looks, "
-                    "or moving/positioning for the camera, classify the whole section as setup and cut_candidate even if "
-                    "the frames include otherwise usable content.",
-                )),
+                transcript=transcript if audio_evidence else None,
+                editorial_policy=compose_section_policy(str(self.config.get(
+                    "multi_pass_editorial_policy", SECTION_SETUP_CLAUSE,
+                ))),
             ) if self.config.get("multi_pass_section_summary_enabled", True) else []
         )
         story_map = build_story_map(
