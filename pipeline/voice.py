@@ -2,12 +2,11 @@ from __future__ import annotations
 
 import json
 import re
+import sys
 from typing import Any
 
-import requests
-
 from .contracts import Clip, Observation, Transcript
-from .util import PipelineError
+from .util import PipelineError, post_json_with_retry
 
 DEFAULT_CAPTION_PROMPT = (
     "Write a short first-person social-media caption in this performer's voice, based only on the "
@@ -16,7 +15,7 @@ DEFAULT_CAPTION_PROMPT = (
     "could apply to any video, and never invent details that are not present in the facts. "
     "Audio can contain background TV, ads, music, or speech from someone off camera. Only use a Spoken "
     "fact when it clearly matches the performer or visible action; otherwise ignore it. "
-    "Return JSON only: {\"caption\": string}."
+    "Max 25 words. Return JSON only: {\"caption\": string}."
 )
 
 
@@ -53,6 +52,7 @@ class PersonaVoice:
         payload = {
             "model": self.model,
             "temperature": 0.7,
+            "max_tokens": 120,
             "stream": False,
             "messages": [
                 {"role": "system", "content": f"You are role-playing as this performer: {persona}"},
@@ -60,11 +60,12 @@ class PersonaVoice:
             ],
         }
         try:
-            response = requests.post(f"{self.base_url}/chat/completions", json=payload, timeout=120)
-            response.raise_for_status()
+            response = post_json_with_retry(f"{self.base_url}/chat/completions", payload, timeout=120.0)
             text = response.json()["choices"][0]["message"]["content"]
-        except (requests.RequestException, KeyError, IndexError, TypeError, ValueError) as exc:
+        except PipelineError as exc:
             raise PipelineError(f"Voice caption request failed: {exc}") from exc
+        except (KeyError, IndexError, TypeError, ValueError) as exc:
+            raise PipelineError(f"Voice caption returned an unreadable response: {exc}") from exc
         return _extract_caption(text)
 
 
@@ -114,6 +115,11 @@ def _segment_word_confidence(transcript: Transcript, start: float, end: float) -
 
 
 def _extract_caption(text: str) -> str:
+    """Pull the caption out of a JSON-only model reply.
+
+    Never publishes unparsed model text: if the model did not return a caption
+    field, the caption is empty rather than raw reasoning chatter.
+    """
     candidates = [text] + re.findall(r"```(?:json)?\s*(.*?)```", text, flags=re.DOTALL | re.IGNORECASE)
     match = re.search(r"\{.*\}", text, flags=re.DOTALL)
     if match:
@@ -125,4 +131,5 @@ def _extract_caption(text: str) -> str:
             continue
         if isinstance(value, dict) and "caption" in value:
             return str(value["caption"]).strip()
-    return text.strip()
+    print(f"Voice: model caption was not valid JSON, leaving caption empty: {text[:200]!r}", file=sys.stderr)
+    return ""

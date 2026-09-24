@@ -104,7 +104,13 @@ def plan_highlights(
             break
         selected.append(choice)
         total += choice.clip.duration
-        candidates.remove(choice if choice in candidates else next(item for item in candidates if item.peak == choice.peak))
+        if choice in candidates:
+            candidates.remove(choice)
+        else:
+            # choice was resized to fit the remaining budget, so remove the
+            # original entry (same peak) rather than scanning by value.
+            original = next(item for item in candidates if item.peak == choice.peak)
+            candidates.remove(original)
 
     return sorted(selected, key=lambda item: item.clip.start)
 

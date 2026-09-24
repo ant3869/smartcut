@@ -4,6 +4,7 @@ import base64
 import hashlib
 import json
 import re
+import sys
 from dataclasses import replace
 from pathlib import Path
 from typing import Any
@@ -14,21 +15,40 @@ import requests
 from .contracts import Clip, Observation, Transcript
 from .ear import merge_intervals
 from .highlights import plan_highlights
-from .util import PipelineError, media_duration, read_json, write_json
+from .util import (
+    PipelineError,
+    media_duration,
+    post_json_with_retry,
+    read_json_or_none,
+    write_json,
+)
 
 
-VISION_PROMPT_VERSION = 2
+VISION_PROMPT_VERSION = 3
 TEMPORAL_PROMPT_VERSION = 1
 SECTION_SUMMARY_PROMPT_VERSION = 2
 STRONG_SCORE = 7.0  # matches DEFAULT_FRAME_PROMPT's own "7-8 for strong" scale
+MAX_TEMPORAL_FALLBACK_WINDOWS = 32
 DEFAULT_FRAME_PROMPT = (
-    "Act as a ruthless video editor. Decide whether this exact moment belongs in a polished final cut. "
-    "Set keep=false for camera or tripod adjustment, reaching toward the lens, fixing clothing, searching "
-    "for a position, resetting or breaking character, obvious bloopers, empty/obstructed framing, severe blur, "
-    "or any technical failure. Use cull_reason from: camera_adjustment, clothing_adjustment, seeking_position, "
-    "blooper, out_of_character, blank_or_obstructed, technical_failure, or empty string when kept. "
-    "Score 1-3 for unusable/setup, 4-6 for ordinary, 7-8 for strong, and 9-10 only for exceptional moments. "
-    "Set dark=true only when the frame is visibly underexposed enough to need correction. Return JSON only."
+    "You are judging single moments from a creator's performance video (fashion/outfit "
+    "content, direct-to-camera). For each frame, FIRST write one sentence describing "
+    "exactly what is visible. THEN decide.\n"
+    "Set keep=false ONLY for: camera/tripod adjustment, reaching toward the lens, "
+    "seeking a position, resetting or breaking character, obvious bloopers, empty or "
+    "obstructed framing, severe blur, or technical failure.\n"
+    "Clothing rule (read carefully): a garment being moved to REVEAL or emphasize the "
+    "outfit is performance -- keep=true, score it on its merits. A garment being "
+    "straightened, re-covered, de-wrinkled, or reset between poses is practical "
+    "adjustment -- keep=false, cull_reason=\"clothing_adjustment\". When you cannot "
+    "tell which it is, keep=true and say so in the description.\n"
+    "cull_reason must be one of: camera_adjustment, clothing_adjustment, "
+    "seeking_position, blooper, out_of_character, blank_or_obstructed, "
+    "technical_failure, or \"\" when kept.\n"
+    "Score 1-3 unusable/setup, 4-6 ordinary, 7-8 strong, 9-10 exceptional. "
+    "A 9-10 means: the single best frame of its kind in this video, not just good.\n"
+    "confidence is 0-1: your certainty in THIS verdict, not how dramatic the frame is.\n"
+    "Set dark=true only if the frame is visibly underexposed enough to need correction. "
+    "Return JSON only."
 )
 
 TEMPORAL_EDIT_PROMPT = (
@@ -90,6 +110,8 @@ class VisionEye:
         cache_dir: Path,
         max_width: int = 1024,
         batch_size: int = 4,
+        cull_confidence_threshold: float = 0.6,
+        review_confidence_floor: float = 0.3,
     ):
         self.base_url = base_url.rstrip("/")
         self.model = model
@@ -97,7 +119,11 @@ class VisionEye:
         self.cache_dir = cache_dir
         self.max_width = max_width
         self.batch_size = max(1, batch_size)
+        self.cull_confidence_threshold = cull_confidence_threshold
+        self.review_confidence_floor = review_confidence_floor
         self.last_temporal_decisions: list[dict[str, Any]] = []
+        self.model_disagreements: list[dict[str, Any]] = []
+        self.model_calls: dict[str, int] = {}
 
     def _cache_path(self, source: Path) -> Path:
         stat = source.stat()
@@ -113,11 +139,12 @@ class VisionEye:
 
     def _read_partial_observations(self, cache: Path) -> list[Observation]:
         partial = self._partial_cache_path(cache)
-        if not partial.exists():
+        data = read_json_or_none(partial)
+        if not data:
             return []
         return [
-            _observation_from_payload(item, float(item["timestamp"]))
-            for item in read_json(partial).get("observations", [])
+            self._observation_from_payload(item, float(item["timestamp"]))
+            for item in data.get("observations", [])
         ]
 
     def _write_partial_observations(self, cache: Path, observations: list[Observation]) -> None:
@@ -137,51 +164,43 @@ class VisionEye:
         frame_hints: dict[float, str] | None = None,
     ) -> list[Observation]:
         cache = self._cache_path(source)
-        if cache.exists() and not refresh:
-            observations = [_observation_from_payload(item, float(item["timestamp"])) for item in read_json(cache).get("observations", [])]
-            return resolve_reveal_continuations(observations)
+        if not refresh:
+            cached = read_json_or_none(cache)
+            if cached is not None:
+                observations = [
+                    self._observation_from_payload(item, float(item["timestamp"]))
+                    for item in cached.get("observations", [])
+                ]
+                return resolve_reveal_continuations(observations)
 
         self._check_server()
+        duration = media_duration(source)
         cap = cv2.VideoCapture(str(source))
         if not cap.isOpened():
             raise PipelineError(f"OpenCV could not open video: {source}")
-        fps = cap.get(cv2.CAP_PROP_FPS) or 0.0
-        if fps <= 0:
-            cap.release()
-            raise PipelineError("video FPS could not be detected")
 
         observations = self._read_partial_observations(cache)
         completed_timestamps = {item.timestamp for item in observations}
+        self.model_disagreements = []
         pending: list[tuple[float, Any]] = []
-        every = max(1, round(fps * self.interval))
-        index = 0
         try:
-            while True:
-                ok, frame = cap.read()
-                if not ok:
-                    break
-                if index % every == 0:
-                    timestamp = round(index / fps, 3)
-                    if timestamp in completed_timestamps:
-                        index += 1
-                        continue
-                    pending.append((timestamp, frame))
-                    if len(pending) >= self.batch_size:
-                        payloads = self._ask_batch(pending, prompt, frame_hints=frame_hints)
-                        observations.extend(
-                            _observation_from_payload(payload, timestamp)
-                            for (timestamp, _), payload in zip(pending, payloads, strict=True)
-                        )
-                        self._write_partial_observations(cache, observations)
-                        pending.clear()
-                index += 1
+            # Seek straight to each sample timestamp instead of decoding every
+            # frame and keeping every Nth -- the old loop paid a full decode per
+            # frame of the whole file just to throw most of them away.
+            sample_count = max(1, int(round(duration / self.interval)) + 1)
+            for sample in range(sample_count):
+                requested = round(sample * self.interval, 3)
+                if requested > duration or requested in completed_timestamps:
+                    continue
+                actual, frame = read_frame_with_tail_fallback(cap, requested)
+                timestamp = round(actual, 3)
+                if timestamp in completed_timestamps:
+                    continue
+                pending.append((timestamp, frame))
+                if len(pending) >= self.batch_size:
+                    self._flush_batch(cache, observations, pending, prompt, frame_hints)
             if pending:
-                payloads = self._ask_batch(pending, prompt, frame_hints=frame_hints)
-                observations.extend(
-                    _observation_from_payload(payload, timestamp)
-                    for (timestamp, _), payload in zip(pending, payloads, strict=True)
-                )
-                self._write_partial_observations(cache, observations)
+                self._flush_batch(cache, observations, pending, prompt, frame_hints)
         finally:
             cap.release()
         if not observations:
@@ -189,6 +208,62 @@ class VisionEye:
         write_json(cache, {"model": self.model, "interval": self.interval, "observations": [x.__dict__ for x in observations]})
         self._partial_cache_path(cache).unlink(missing_ok=True)
         return resolve_reveal_continuations(observations)
+
+    def _flush_batch(
+        self,
+        cache: Path,
+        observations: list[Observation],
+        pending: list[tuple[float, Any]],
+        prompt: str | None,
+        frame_hints: dict[float, str] | None,
+    ) -> None:
+        payloads = self._ask_batch(pending, prompt, frame_hints=frame_hints)
+        observations.extend(
+            self._observation_from_payload(payload, timestamp)
+            for (timestamp, _), payload in zip(pending, payloads, strict=True)
+        )
+        self._write_partial_observations(cache, observations)
+        pending.clear()
+
+    def _observation_from_payload(self, payload: dict[str, Any], timestamp: float) -> Observation:
+        """Build an Observation from a model payload, trusting the model's verdict.
+
+        The old code ran `infer_cull_reason` over the description and silently flipped
+        `keep=true` into a cut on substring matches. That override is gone: the
+        model's verdict stands. When the heuristic disagrees with the model, the
+        mismatch is recorded in `self.model_disagreements` for editorial review
+        instead of being applied behind the model's back.
+        """
+        score = _parse_score(payload.get("score"), timestamp)
+        description = str(payload.get("description") or "").strip()
+        keep = _as_bool(payload.get("keep"), default=True)
+        model_reason = str(payload.get("cull_reason") or "").strip().lower()
+        confidence = _as_confidence(payload.get("confidence"))
+        reason = "" if keep else (model_reason or "quality")
+
+        if keep:
+            heuristic = infer_cull_reason(description, score=score, keep=True, model_reason="")
+            if heuristic:
+                self.model_disagreements.append({
+                    "timestamp": timestamp,
+                    "sample_interval": self.interval,
+                    "model_said": {"keep": True, "cull_reason": ""},
+                    "heuristic_suggests": heuristic,
+                    "description": description[:300],
+                    "confidence": confidence,
+                })
+        return Observation(
+            timestamp=timestamp,
+            score=score,
+            description=description,
+            keep=keep,
+            dark=_as_bool(payload.get("dark"), default=False),
+            cull_reason=reason,
+            confidence=confidence,
+        )
+
+    def _count_call(self, kind: str) -> None:
+        self.model_calls[kind] = self.model_calls.get(kind, 0) + 1
 
     def temporal_cull_intervals(
         self,
@@ -214,13 +289,14 @@ class VisionEye:
             f"{source.stem}.{stat.st_size}.{stat.st_mtime_ns}.{self.model}.w{self.max_width}."
             f"t{target_seconds:g}.c{context_seconds:g}.v{TEMPORAL_PROMPT_VERSION + 2}.{candidate_signature}.temporal.json"
         )
-        if cache.exists() and not refresh:
-            cached = read_json(cache)
-            self.last_temporal_decisions = list(cached.get("decisions", []))
-            return [
-                Clip(float(item["start"]), float(item["end"]), tuple(item.get("reasons", [])))
-                for item in cached.get("waste_intervals", [])
-            ]
+        if not refresh:
+            cached = read_json_or_none(cache)
+            if cached is not None:
+                self.last_temporal_decisions = list(cached.get("decisions", []))
+                return [
+                    Clip(float(item["start"]), float(item["end"]), tuple(item.get("reasons", [])))
+                    for item in cached.get("waste_intervals", [])
+                ]
 
         self._check_server()
         cap = cv2.VideoCapture(str(source))
@@ -228,11 +304,22 @@ class VisionEye:
             raise PipelineError(f"OpenCV could not open video: {source}")
         decisions: list[dict[str, Any]] = []
         waste: list[Clip] = []
-        intervals = candidates or [
-            {"start": start, "end": min(duration, start + target_seconds), "reasons": ["full_grid"]}
-            for start in _grid_starts(duration, target_seconds)
-        ]
+        if candidates:
+            intervals = list(candidates)
+        else:
+            # No candidates: fall back to a bounded full-video grid instead of
+            # gridding the entire duration (a 10-min video was 600 vision calls).
+            print(
+                "Eye: no temporal candidates; using capped full-video fallback grid",
+                file=sys.stderr,
+            )
+            intervals = [
+                {"start": start, "end": min(duration, start + target_seconds), "reasons": ["full_grid"]}
+                for start in _grid_starts(duration, target_seconds)
+            ]
         intervals = _target_chunks(intervals, target_seconds)
+        if not candidates:
+            intervals = intervals[:MAX_TEMPORAL_FALLBACK_WINDOWS]
         try:
             for candidate in intervals:
                 start = max(0.0, float(candidate["start"]))
@@ -306,11 +393,12 @@ class VisionEye:
             "editorial_policy": editorial_policy, "frames_per_section": frames_per_section,
             "prompt_version": SECTION_SUMMARY_PROMPT_VERSION,
         }, sort_keys=True, separators=(",", ":")).encode("utf-8")).hexdigest()[:12]
-        if cache_path.exists() and not refresh:
-            cached = read_json(cache_path)
-            if (cached.get("model") == self.model and cached.get("source") == str(source.resolve())
-                    and cached.get("cache_signature") == cache_signature):
-                return list(cached.get("sections", []))
+        if not refresh:
+            cached = read_json_or_none(cache_path)
+            if cached is not None:
+                if (cached.get("model") == self.model and cached.get("source") == str(source.resolve())
+                        and cached.get("cache_signature") == cache_signature):
+                    return list(cached.get("sections", []))
         self._check_server()
         cap = cv2.VideoCapture(str(source))
         if not cap.isOpened():
@@ -382,7 +470,12 @@ class VisionEye:
         return clips
 
     def cull_intervals(self, observations: list[Observation], duration: float) -> list[Clip]:
-        """Turn rejected sampled frames into bounded removal intervals."""
+        """Turn confident rejected verdicts into bounded removal intervals.
+
+        Only verdicts at or above `cull_confidence_threshold` become waste.
+        Uncertain rejections surface via `review_intervals` instead of being
+        cut silently.
+        """
         half_window = self.interval / 2.0
         rejected = [
             Clip(
@@ -391,10 +484,32 @@ class VisionEye:
                 (f"vision-cull:{item.cull_reason or 'quality'}",),
             )
             for item in observations
-            if not item.keep
+            if not item.keep and item.confidence >= self.cull_confidence_threshold
         ]
+        return self._merge_clips(rejected)
+
+    def review_intervals(self, observations: list[Observation], duration: float) -> list[Clip]:
+        """Rejected verdicts too uncertain to cut on, kept on the plan for review."""
+        half_window = self.interval / 2.0
+        uncertain = [
+            Clip(
+                round(max(0.0, item.timestamp - half_window), 3),
+                round(min(duration, item.timestamp + half_window), 3),
+                (
+                    f"vision-review:{item.cull_reason or 'quality'}",
+                    f"confidence:{item.confidence:.2f}",
+                ),
+            )
+            for item in observations
+            if not item.keep
+            and self.review_confidence_floor <= item.confidence < self.cull_confidence_threshold
+        ]
+        return self._merge_clips(uncertain)
+
+    @staticmethod
+    def _merge_clips(clips: list[Clip]) -> list[Clip]:
         merged: list[Clip] = []
-        for item in sorted(rejected, key=lambda clip: clip.start):
+        for item in sorted(clips, key=lambda clip: clip.start):
             if not merged or item.start > merged[-1].end:
                 merged.append(item)
                 continue
@@ -475,28 +590,33 @@ class VisionEye:
                     "image_url": {"url": f"data:image/jpeg;base64,{base64.b64encode(encoded).decode('ascii')}"},
                 },
             ])
-        response = requests.post(
-            f"{self.base_url}/chat/completions",
-            json={
-                "model": self.model,
-                "temperature": 0.1,
-                "max_tokens": 800,
-                "reasoning_effort": "none",
-                "stream": False,
-                "messages": [
-                    {"role": "system", "content": "You are a strict temporal video editor. Return JSON only."},
-                    {"role": "user", "content": content},
-                ],
-            },
-            timeout=180,
-        )
         try:
-            response.raise_for_status()
-            message = response.json()["choices"][0]["message"]
-            text = message.get("content") or message.get("reasoning_content") or message.get("analysis") or ""
-        except (requests.RequestException, KeyError, IndexError, TypeError, ValueError) as exc:
+            response = post_json_with_retry(
+                f"{self.base_url}/chat/completions",
+                {
+                    "model": self.model,
+                    "temperature": 0.1,
+                    "max_tokens": 800,
+                    "reasoning_effort": "none",
+                    "stream": False,
+                    "messages": [
+                        {"role": "system", "content": "You are a strict temporal video editor. Return JSON only."},
+                        {"role": "user", "content": content},
+                    ],
+                },
+                timeout=180.0,
+            )
+        except PipelineError as exc:
             raise PipelineError(
                 f"Temporal Eye request failed for {target_start:.3f}-{target_end:.3f}s: {exc}"
+            ) from exc
+        self._count_call("temporal")
+        try:
+            message = response.json()["choices"][0]["message"]
+            text = message.get("content") or message.get("reasoning_content") or message.get("analysis") or ""
+        except (KeyError, IndexError, TypeError, ValueError) as exc:
+            raise PipelineError(
+                f"Temporal Eye returned an unreadable response for {target_start:.3f}-{target_end:.3f}s: {exc}"
             ) from exc
         candidates = [text] + re.findall(r"```(?:json)?\s*(.*?)```", text, flags=re.DOTALL | re.IGNORECASE)
         match = re.search(r"\{.*\}", text, flags=re.DOTALL)
@@ -549,18 +669,25 @@ class VisionEye:
                 {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{base64.b64encode(encoded).decode('ascii')}"}},
             ])
         try:
-            response = requests.post(f"{self.base_url}/chat/completions", json={
-                "model": self.model, "temperature": 0.1, "max_tokens": 500,
-                "reasoning_effort": "none", "stream": False, "messages": [
-                    {"role": "system", "content": "You are a concise video-editor story analyst. Return JSON only."},
-                    {"role": "user", "content": content},
-                ],
-            }, timeout=180)
-            response.raise_for_status()
+            response = post_json_with_retry(
+                f"{self.base_url}/chat/completions",
+                {
+                    "model": self.model, "temperature": 0.1, "max_tokens": 500,
+                    "reasoning_effort": "none", "stream": False, "messages": [
+                        {"role": "system", "content": "You are a concise video-editor story analyst. Return JSON only."},
+                        {"role": "user", "content": content},
+                    ],
+                },
+                timeout=180.0,
+            )
+        except PipelineError as exc:
+            raise PipelineError(f"Story-map request failed for {start:.3f}-{end:.3f}s: {exc}") from exc
+        self._count_call("section_summaries")
+        try:
             message = response.json()["choices"][0]["message"]
             text = message.get("content") or message.get("reasoning_content") or ""
-        except (requests.RequestException, KeyError, IndexError, TypeError, ValueError) as exc:
-            raise PipelineError(f"Story-map request failed for {start:.3f}-{end:.3f}s: {exc}") from exc
+        except (KeyError, IndexError, TypeError, ValueError) as exc:
+            raise PipelineError(f"Story-map returned an unreadable response for {start:.3f}-{end:.3f}s: {exc}") from exc
         for candidate in [text, *re.findall(r"```(?:json)?\s*(.*?)```", text, flags=re.DOTALL | re.IGNORECASE)]:
             try:
                 value = json.loads(candidate)
@@ -583,10 +710,13 @@ class VisionEye:
         content: list[dict[str, Any]] = [{
             "type": "text",
             "text": (
-                f"Analyze every labeled frame independently. {instruction} "
+                f"The frames below are in time order. Judge each frame in the context of "
+                f"its neighbors: a gesture that continues across adjacent frames (an outfit "
+                f"reveal, a held pose) is performance, not a one-off adjustment. {instruction} "
                 "Return JSON only with schema: "
                 '{"observations":[{"timestamp":number,"score":number,"description":string,'
-                '"keep":boolean,"dark":boolean,"cull_reason":string}]}. '
+                '"keep":boolean,"dark":boolean,"cull_reason":string,"confidence":number}]}. '
+                "confidence is 0-1: your certainty in that frame's verdict. "
                 "Return exactly one observation per frame and preserve each timestamp."
             ),
         }]
@@ -625,15 +755,15 @@ class VisionEye:
                 {"role": "user", "content": content},
             ],
         }
-        response = requests.post(
+        response = post_json_with_retry(
             f"{self.base_url}/chat/completions",
-            json=payload,
-            timeout=180,
+            payload,
+            timeout=300.0,
         )
+        self._count_call("frame_batches")
         try:
-            response.raise_for_status()
             text = response.json()["choices"][0]["message"]["content"]
-        except (requests.RequestException, KeyError, IndexError, TypeError, ValueError) as exc:
+        except (KeyError, IndexError, TypeError, ValueError) as exc:
             raise PipelineError(f"Eye request failed for frames {requested}: {exc}") from exc
         candidates = [text] + re.findall(r"```(?:json)?\s*(.*?)```", text, flags=re.DOTALL | re.IGNORECASE)
         match = re.search(r"\{.*\}", text, flags=re.DOTALL)
@@ -654,6 +784,24 @@ class VisionEye:
             except json.JSONDecodeError:
                 continue
         raise PipelineError(f"Eye returned incomplete batch output for frames {requested}: {text[:500]}")
+
+
+def _parse_score(value: Any, timestamp: float) -> float:
+    try:
+        return float(max(0.0, min(10.0, float(value))))
+    except (TypeError, ValueError):
+        raise PipelineError(f"Eye returned an invalid score at {timestamp}s: {value!r}") from None
+
+
+def _as_confidence(value: Any) -> float:
+    """Parse the model's 0-1 verdict confidence; old payloads default to certain."""
+    try:
+        result = float(value)
+    except (TypeError, ValueError):
+        return 1.0
+    if result > 1.0:  # model answered in percent rather than a fraction
+        result /= 100.0
+    return max(0.0, min(1.0, result))
 
 
 def _as_bool(value: Any, *, default: bool) -> bool:
@@ -705,26 +853,6 @@ def resolve_reveal_continuations(observations: list[Observation]) -> list[Observ
         if any(neighbor.keep and neighbor.score >= STRONG_SCORE for neighbor in neighbors):
             resolved[index] = replace(item, keep=True, cull_reason="")
     return resolved
-
-
-def _observation_from_payload(payload: dict[str, Any], timestamp: float) -> Observation:
-    score = float(max(0.0, min(10.0, payload.get("score", 0))))
-    description = str(payload.get("description", ""))
-    keep = _as_bool(payload.get("keep"), default=True)
-    cull_reason = infer_cull_reason(
-        description,
-        score=score,
-        keep=keep,
-        model_reason=str(payload.get("cull_reason", "")),
-    )
-    return Observation(
-        timestamp=timestamp,
-        score=score,
-        description=description,
-        keep=keep and not cull_reason,
-        dark=_as_bool(payload.get("dark"), default=False),
-        cull_reason=cull_reason,
-    )
 
 
 def _grid_starts(duration: float, target_seconds: float) -> list[float]:

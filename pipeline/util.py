@@ -3,8 +3,11 @@ from __future__ import annotations
 import hashlib
 import json
 import subprocess
+import time
 from pathlib import Path
 from typing import Any, Sequence
+
+import requests
 
 
 class PipelineError(RuntimeError):
@@ -65,6 +68,47 @@ def write_json(path: Path, payload: Any) -> None:
 
 def read_json(path: Path) -> Any:
     return json.loads(path.read_text(encoding="utf-8"))
+
+
+def read_json_or_none(path: Path) -> Any | None:
+    """Read a JSON cache, tolerating absence and corruption.
+
+    A truncated or otherwise corrupt cache is deleted and treated as a miss so a
+    single bad write cannot crash-loop every later run for that source. Human-
+    authored files (editor reviews, configs) should keep using strict read_json.
+    """
+    try:
+        return read_json(path)
+    except FileNotFoundError:
+        return None
+    except json.JSONDecodeError:
+        try:
+            path.unlink()
+        except OSError:
+            pass
+        return None
+
+
+def post_json_with_retry(
+    url: str,
+    payload: Any,
+    *,
+    tries: int = 3,
+    timeout: float = 180.0,
+    backoff: float = 2.0,
+) -> requests.Response:
+    """POST JSON with exponential-backoff retries for transient failures."""
+    last: Exception | None = None
+    for attempt in range(max(1, tries)):
+        try:
+            response = requests.post(url, json=payload, timeout=timeout)
+            response.raise_for_status()
+            return response
+        except requests.RequestException as exc:
+            last = exc
+            if attempt < tries - 1:
+                time.sleep(backoff**attempt)
+    raise PipelineError(f"POST {url} failed after {tries} tries: {last}")
 
 
 def require_distinct(output: Path, *inputs: Path) -> None:

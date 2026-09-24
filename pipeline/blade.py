@@ -10,6 +10,11 @@ from .util import PipelineError, ffprobe_json, media_duration, require_distinct,
 class FfmpegBlade:
     """The only module allowed to render. Every command is explicit and checked."""
 
+    def __init__(self, *, crf: int = 20, preset: str = "fast", output_fps: int = 30):
+        self.crf = crf
+        self.preset = preset
+        self.output_fps = output_fps
+
     def render_clips(self, source: Path, clips: Iterable[Clip], output_dir: Path, *, watermark: Path | None = None) -> list[Path]:
         output_dir.mkdir(parents=True, exist_ok=True)
         outputs: list[Path] = []
@@ -32,7 +37,7 @@ class FfmpegBlade:
                 cmd += ["-vf", eq, "-map", "0:v:0"]
             else:
                 cmd += ["-map", "0:v:0"]
-            cmd += ["-map", "0:a?", "-t", str(clip.duration), "-c:v", "libx264", "-crf", "20", "-preset", "fast", "-c:a", "aac", "-movflags", "+faststart", str(output)]
+            cmd += ["-map", "0:a?", "-t", str(clip.duration), "-c:v", "libx264", "-crf", str(self.crf), "-preset", self.preset, "-c:a", "aac", "-movflags", "+faststart", str(output)]
             run_checked(cmd)
             self.verify(output)
             outputs.append(output)
@@ -114,7 +119,7 @@ class FfmpegBlade:
         cmd += ["-filter_complex", ";".join(filters), "-map", "[outv]"]
         if use_audio:
             cmd += ["-map", "[outa]"]
-        cmd += ["-c:v", "libx264", "-crf", "20", "-preset", "fast"]
+        cmd += ["-c:v", "libx264", "-crf", str(self.crf), "-preset", self.preset]
         if use_audio:
             cmd += ["-c:a", "aac"]
         cmd += ["-movflags", "+faststart", str(output)]
@@ -163,7 +168,7 @@ class FfmpegBlade:
             filters.append(
                 f"[{index}:v]scale={target_width}:{target_height}:force_original_aspect_ratio=decrease,"
                 f"pad={target_width}:{target_height}:(ow-iw)/2:(oh-ih)/2:black,setsar=1,"
-                f"fps=30,settb=AVTB,setpts=PTS-STARTPTS[v{index}]"
+                f"fps={self.output_fps},settb=AVTB,setpts=PTS-STARTPTS[v{index}]"
             )
             if has_audio:
                 filters.append(f"[{index}:a]aresample=48000,asetpts=PTS-STARTPTS[a{index}]")
@@ -188,7 +193,7 @@ class FfmpegBlade:
         if has_audio:
             cmd += ["-map", audio_label]
         cmd += [
-            "-c:v", "libx264", "-crf", "20", "-preset", "fast",
+            "-c:v", "libx264", "-crf", str(self.crf), "-preset", self.preset,
             "-c:a", "aac", "-movflags", "+faststart", str(output),
         ]
         run_checked(cmd)
