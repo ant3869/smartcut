@@ -24,38 +24,52 @@ from .util import (
 )
 
 
-VISION_PROMPT_VERSION = 5
+class TruncatedBatchError(PipelineError):
+    """The model stopped mid-batch (finish_reason=length): retry with fewer frames."""
+
+
+VISION_PROMPT_VERSION = 6
 TEMPORAL_PROMPT_VERSION = 2
 SECTION_SUMMARY_PROMPT_VERSION = 2
 STRONG_SCORE = 7.0  # matches DEFAULT_FRAME_PROMPT's own "7-8 for strong" scale
 MAX_TEMPORAL_FALLBACK_WINDOWS = 32
+# Seconds of transcript audio context attached to each judged frame.
+FRAME_AUDIO_CONTEXT_SECONDS = 4.0
 DEFAULT_FRAME_PROMPT = (
     "You are judging single moments from an adult creator's video (intimate/explicit "
-    "solo or duo performance). For each frame, FIRST write one sentence describing "
-    "exactly what is visible. THEN work through these checks in order. A CUT verdict is "
-    "final -- stop there. A KEEP verdict is provisional -- note it and keep going.\n"
+    "solo or duo performance). Each frame may include AUDIO lines: transcript words spoken "
+    "within a few seconds of that frame (noisy; ignore if clearly misheard). For each frame, "
+    "FIRST write one sentence describing exactly what is visible. THEN work through ALL of "
+    "these checks. If ANY cut check matches, keep=false with that check's reason (first match "
+    "wins). If no cut check matches, keep=true.\n"
     "1. No person or human body part visible in the frame -> CUT, "
     "cull_reason=\"blank_or_obstructed\".\n"
-    "2. Intimate contact happening (penetration, oral, direct sexual contact between people, "
-    "or explicit solo play) -> KEEP. Score it on its merits.\n"
-    "3. Technical failure: the camera or tripod itself being handled (a hand on the device, "
+    "2. Technical failure: the camera or tripod itself being handled (a hand on the device, "
     "the frame visibly tilting or shifting), the lens blocked (a hand over the lens, pointed "
     "at the floor or ceiling), the frame out of focus, or the frame disoriented (sideways, "
     "upside-down) -> CUT, cull_reason=\"camera_adjustment\" for device handling or disorientation, "
     "\"technical_failure\" otherwise.\n"
-    "4. Clothing: a garment moved to REVEAL or emphasize the body is performance -> KEEP. A "
+    "3. Clothing: a garment moved to REVEAL or emphasize the body is performance -> keep. A "
     "garment straightened, re-covered, de-wrinkled, or reset between poses is practical "
     "adjustment -> CUT, cull_reason=\"clothing_adjustment\". When you cannot tell which it is, "
-    "KEEP and say so in the description.\n"
-    "5. Genuine take-breaker: an interrupted take, someone entering the frame by accident, "
-    "visible crew or equipment, a fall -> CUT, cull_reason=\"blooper\". Repositioning between "
-    "poses -> CUT, cull_reason=\"seeking_position\".\n"
-    "6. The performer conversing with another person visible in the frame -- talking with them, "
-    "not performing and not addressing the camera -> CUT, cull_reason=\"unrelated_banter\". "
-    "Talking or vocalizing to the camera/audience during performance is content, not banter.\n"
-    "7. Otherwise -> KEEP. Intimate acts, nudity, explicit close-ups, and performing close to "
+    "keep and say so in the description.\n"
+    "4. Genuine take-breaker: an interrupted take, someone entering the frame by accident, "
+    "visible crew or equipment, a fall -> CUT, cull_reason=\"blooper\". Preparation, transition, "
+    "or repositioning between scenes, poses, or acts -> CUT, cull_reason=\"seeking_position\".\n"
+    "5. The performer conversing with another person present -- heard on the AUDIO talking with "
+    "them (not performing for the camera), or visible in the frame talking with them rather than "
+    "addressing the camera -> CUT, cull_reason=\"unrelated_banter\". This applies EVEN WHEN "
+    "intimate contact is visible: talking with the other person present beats the performance. "
+    "Talking or vocalizing TO the camera/audience during performance is content, not banter.\n"
+    "6. Intimate contact happening (penetration, oral, direct sexual contact between people, "
+    "or explicit solo play) -> keep. Score it on its merits.\n"
+    "7. Otherwise -> keep. Intimate acts, nudity, explicit close-ups, and performing close to "
     "the lens ARE the content: never cut a frame for being sexually explicit, and never call "
     "intimate content a blooper.\n"
+    "CONSISTENCY RULE: your verdict must match your own words and score. If your description says "
+    "preparation, transition, setup, repositioning, adjusting, handling the camera or device, or "
+    "conversing with someone present, keep MUST be false. Score 1-3 means keep=false; score 7-10 "
+    "means keep=true.\n"
     "cull_reason must be one of: camera_adjustment, clothing_adjustment, seeking_position, blooper, "
     "out_of_character, blank_or_obstructed, technical_failure, unrelated_banter, or \"\" when kept.\n"
     "Score 1-3 unusable/setup, 4-6 ordinary, 7-8 strong, 9-10 exceptional. "
@@ -176,6 +190,7 @@ class VisionEye:
         refresh: bool = False,
         prompt: str | None = None,
         frame_hints: dict[float, str] | None = None,
+        transcript_segments: list | None = None,
     ) -> list[Observation]:
         cache = self._cache_path(source)
         if not refresh:
@@ -212,9 +227,9 @@ class VisionEye:
                     continue
                 pending.append((timestamp, frame))
                 if len(pending) >= self.batch_size:
-                    self._flush_batch(cache, observations, pending, prompt, frame_hints)
+                    self._flush_batch(cache, observations, pending, prompt, frame_hints, transcript_segments)
             if pending:
-                self._flush_batch(cache, observations, pending, prompt, frame_hints)
+                self._flush_batch(cache, observations, pending, prompt, frame_hints, transcript_segments)
         finally:
             cap.release()
         if not observations:
@@ -230,8 +245,22 @@ class VisionEye:
         pending: list[tuple[float, Any]],
         prompt: str | None,
         frame_hints: dict[float, str] | None,
+        transcript_segments: list | None = None,
     ) -> None:
-        payloads = self._ask_batch(pending, prompt, frame_hints=frame_hints)
+        try:
+            payloads = self._ask_batch(
+                pending, prompt, frame_hints=frame_hints, transcript_segments=transcript_segments
+            )
+        except TruncatedBatchError:
+            if len(pending) <= 1:
+                raise
+            # The server ran out of context mid-batch (e.g. batch_size 4 on an 8k
+            # context). Halve the batch and retry instead of failing the run.
+            mid = len(pending) // 2
+            self._flush_batch(cache, observations, pending[:mid], prompt, frame_hints, transcript_segments)
+            self._flush_batch(cache, observations, pending[mid:], prompt, frame_hints, transcript_segments)
+            pending.clear()
+            return
         observations.extend(
             self._observation_from_payload(payload, timestamp)
             for (timestamp, _), payload in zip(pending, payloads, strict=True)
@@ -716,6 +745,7 @@ class VisionEye:
         prompt: str | None,
         *,
         frame_hints: dict[float, str] | None = None,
+        transcript_segments: list | None = None,
     ) -> list[dict[str, Any]]:
         if not frames:
             return []
@@ -761,6 +791,9 @@ class VisionEye:
             hint = (frame_hints or {}).get(round(timestamp, 3))
             if hint:
                 content.append({"type": "text", "text": hint})
+            audio = _audio_context_for_frame(transcript_segments, timestamp)
+            if audio:
+                content.append({"type": "text", "text": audio})
         payload = {
             "model": self.model, "temperature": 0.1, "max_tokens": 1000,
             "reasoning_effort": "none", "stream": False, "messages": [
@@ -775,9 +808,15 @@ class VisionEye:
         )
         self._count_call("frame_batches")
         try:
-            text = response.json()["choices"][0]["message"]["content"]
+            choice = response.json()["choices"][0]
+            text = choice["message"]["content"]
+            finish_reason = choice.get("finish_reason")
         except (KeyError, IndexError, TypeError, ValueError) as exc:
             raise PipelineError(f"Eye request failed for frames {requested}: {exc}") from exc
+        if finish_reason == "length":
+            raise TruncatedBatchError(
+                f"Eye batch truncated by the server context limit for frames {requested}"
+            )
         candidates = [text] + re.findall(r"```(?:json)?\s*(.*?)```", text, flags=re.DOTALL | re.IGNORECASE)
         match = re.search(r"\{.*\}", text, flags=re.DOTALL)
         if match:
@@ -797,6 +836,29 @@ class VisionEye:
             except json.JSONDecodeError:
                 continue
         raise PipelineError(f"Eye returned incomplete batch output for frames {requested}: {text[:500]}")
+
+
+def _segment_field(segment: Any, name: str) -> Any:
+    if isinstance(segment, dict):
+        return segment.get(name)
+    return getattr(segment, name, None)
+
+
+def _audio_context_for_frame(segments: list | None, timestamp: float) -> str:
+    """Transcript lines overlapping the frame's audio window, as a prompt line."""
+    if not segments:
+        return ""
+    window = FRAME_AUDIO_CONTEXT_SECONDS
+    parts = []
+    for segment in segments:
+        start = float(_segment_field(segment, "start") or 0)
+        end = float(_segment_field(segment, "end") or start)
+        text = str(_segment_field(segment, "text") or "").strip()
+        if text and end >= timestamp - window and start <= timestamp + window:
+            parts.append(f'"{text}" ({start:.1f}s)')
+    if not parts:
+        return ""
+    return f"AUDIO near {timestamp:.1f}s (transcript, may be misheard): {'; '.join(parts)[:500]}"
 
 
 def _parse_score(value: Any, timestamp: float) -> float:

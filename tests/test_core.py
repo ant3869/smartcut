@@ -1251,3 +1251,115 @@ def test_export_otio_endpoint_writes_timeline(tmp_path, monkeypatch):
     assert response.status_code == 200
     assert written["clips"] == [(1.0, 4.0)]
     assert response.json()["job"]["files"]["otio_timeline"].endswith("timeline.otio")
+
+
+def test_frame_prompt_v6_is_audio_aware_with_consistency_rule():
+    from pipeline.eye import DEFAULT_FRAME_PROMPT, VISION_PROMPT_VERSION
+
+    assert VISION_PROMPT_VERSION == 6
+    assert "CONSISTENCY RULE" in DEFAULT_FRAME_PROMPT
+    assert "provisional" not in DEFAULT_FRAME_PROMPT
+    assert "AUDIO" in DEFAULT_FRAME_PROMPT
+    assert "unrelated_banter" in DEFAULT_FRAME_PROMPT
+    # talking with the other person present beats intimate content
+    assert "EVEN WHEN" in DEFAULT_FRAME_PROMPT
+
+
+def test_transcript_audio_injected_per_frame(tmp_path, monkeypatch):
+    from pipeline import eye as eye_module
+
+    captured = {}
+
+    class FakeResponse:
+        def json(self):
+            return {
+                "choices": [{"finish_reason": "stop", "message": {"content": (
+                    '{"observations": ['
+                    '{"timestamp": 10.0, "score": 7, "description": "x", "keep": true, "dark": false, "cull_reason": ""},'
+                    '{"timestamp": 20.0, "score": 7, "description": "y", "keep": true, "dark": false, "cull_reason": ""}'
+                    ']}'
+                )}}]
+            }
+
+    def fake_post(url, json, timeout):
+        captured["payload"] = json
+        return FakeResponse()
+
+    monkeypatch.setattr(eye_module, "post_json_with_retry", fake_post)
+    vision = VisionEye(
+        base_url="http://127.0.0.1:1234/v1", model="test-model",
+        interval=2.0, cache_dir=tmp_path, max_width=512,
+    )
+    frame = np.zeros((32, 18, 3), dtype=np.uint8)
+    segments = [
+        Segment(9.0, 11.0, "try to be good"),
+        Segment(100.0, 101.0, "far away talk"),
+    ]
+    result = vision._ask_batch([(10.0, frame), (20.0, frame)], None, transcript_segments=segments)
+    assert [item["timestamp"] for item in result] == [10.0, 20.0]
+    content = captured["payload"]["messages"][1]["content"]
+    audio_lines = [item["text"] for item in content if item.get("type") == "text" and item.get("text", "").startswith("AUDIO")]
+    assert len(audio_lines) == 1
+    assert "try to be good" in audio_lines[0]
+    assert "far away talk" not in audio_lines[0]
+
+
+def test_truncated_batch_halves_and_retries(tmp_path):
+    from pipeline import eye as eye_module
+
+    vision = VisionEye(
+        base_url="http://127.0.0.1:1234/v1", model="test-model",
+        interval=2.0, cache_dir=tmp_path, max_width=512,
+    )
+    calls = []
+
+    def fake_ask_batch(frames, prompt, *, frame_hints=None, transcript_segments=None):
+        calls.append(len(frames))
+        if len(frames) > 1:
+            raise eye_module.TruncatedBatchError("truncated")
+        return [{
+            "timestamp": ts, "score": 7.0, "description": "ok", "keep": True,
+            "dark": False, "cull_reason": "", "confidence": 0.9,
+        } for ts, _ in frames]
+
+    vision._ask_batch = fake_ask_batch
+    frame = np.zeros((32, 18, 3), dtype=np.uint8)
+    cache = tmp_path / "cache.json"
+    observations = []
+    pending = [(float(t), frame) for t in (0.0, 2.0, 4.0, 6.0)]
+    vision._flush_batch(cache, observations, pending, None, None, None)
+
+    assert [o.timestamp for o in observations] == [0.0, 2.0, 4.0, 6.0]
+    assert pending == []
+    assert calls[0] == 4
+    assert set(calls) == {4, 2, 1}
+
+
+def test_truncated_single_frame_still_raises(tmp_path):
+    from pipeline import eye as eye_module
+
+    vision = VisionEye(
+        base_url="http://127.0.0.1:1234/v1", model="test-model",
+        interval=2.0, cache_dir=tmp_path, max_width=512,
+    )
+
+    def fake_ask_batch(frames, prompt, *, frame_hints=None, transcript_segments=None):
+        raise eye_module.TruncatedBatchError("truncated")
+
+    vision._ask_batch = fake_ask_batch
+    frame = np.zeros((32, 18, 3), dtype=np.uint8)
+    with pytest.raises(eye_module.TruncatedBatchError):
+        vision._flush_batch(tmp_path / "cache.json", [], [(0.0, frame)], None, None, None)
+
+
+def test_evaluate_proposals_scores_plan_level_waste():
+    from pipeline.evaluation import evaluate_proposals
+
+    proposals = [Clip(0.0, 49.4, ("section:setup",))]
+    result = evaluate_proposals(
+        proposals,
+        expected_cuts=[EditorialInterval(0.0, 52.0, "camera_setup_technical_banter")],
+        protected_keeps=[],
+    )
+    assert result["metrics"]["matched_cuts"] == 1
+    assert result["metrics"]["cut_recall"] == 1.0
