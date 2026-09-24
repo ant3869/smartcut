@@ -1,4 +1,4 @@
-const state={jobs:[],selectedJobId:null,selectedMedia:'source',playhead:0,selection:{start:0,end:2},rotation:0,serverReady:false,editing:null};
+const state={jobs:[],selectedJobId:null,selectedMedia:'source',playhead:0,selection:{start:0,end:2},rotation:0,serverReady:false,editing:null,resolvedQueue:new Set()};
 const app=document.querySelector('#app'),$=(s,r=document)=>r.querySelector(s),$$=(s,r=document)=>[...r.querySelectorAll(s)];
 const apiFile=p=>'/api/file?path='+encodeURIComponent(String(p).replace(/\\/g,'/')),round=v=>Math.round(Number(v||0)*1000)/1000;
 const basename=p=>String(p||'Unknown source').split(/[\\/]/).pop();
@@ -108,7 +108,7 @@ function sourceRow(job){
 function reviewView(job){
   const r=review(job),e=nearby(job),path=media(job),mode=preferredMedia(job),sourceMissing=!job.source_available;
   const editing=state.editing,editingLabel=editing?(editing.kind==='cut'?'Editing cut':'Editing keep/protect'):'New decision',editingReason=editing?((editing.kind==='cut'?r.cut_intervals:r.keep_intervals)[editing.index]?.reason||'editorial review'):'editorial review',cutLabel=editing?.kind==='cut'?'Update cut [C]':'Cut [C]',remove=editing?'<button class="button ghost remove-decision" data-action="remove-decision">Remove '+(editing.kind==='cut'?'cut':'keep/protect')+'</button>':'';
-  return '<section class="player"><div class="video-wrap">'+(path?('<video id="review-video" src="'+apiFile(path)+'" preload="metadata" aria-label="Video review player"></video>'):'<div class="empty">That output does not exist yet.</div>')+'</div><div class="player-controls"><div class="media-switch">'+['source','final','preview'].map(m=>'<button data-media="'+m+'" class="'+(m===mode?'active':'')+'" '+((m==='source'?!job.source_available:m!=='source'&&!job[m+'_output'])?'disabled':'')+'>'+m+'</button>').join('')+'</div><span id="time-readout">'+seconds(state.playhead)+' / '+seconds(job.duration)+'</span></div>'+(sourceMissing?'<div class="source-missing">original source is gone — showing the final render. source-time edits are unavailable.</div>':'')+'</section><aside class="inspector"><div class="inspector-head"><h1>'+editingLabel+'</h1><p>'+esc(basename(job.source))+'</p></div><div class="inspector-section"><div class="selection-time"><span>'+seconds(state.selection.start)+'</span><span>'+seconds(state.selection.end)+'</span></div><div class="fields"><label class="field"><span class="field-label">Start [I]</span><input id="cut-start" type="number" min="0" max="'+job.duration+'" step="0.1" value="'+state.selection.start+'"></label><label class="field"><span class="field-label">End [O]</span><input id="cut-end" type="number" min="0" max="'+job.duration+'" step="0.1" value="'+state.selection.end+'"></label></div><div class="mark-buttons-row"><button class="button ghost small-btn" id="set-in-btn" type="button">Set In [I]</button><button class="button ghost small-btn" id="set-out-btn" type="button">Set Out [O]</button></div><label class="field reason"><span class="field-label">Reason</span><input id="cut-reason" value="'+esc(editingReason)+'" maxlength="120"></label></div><div class="inspector-section"><div class="decision-actions"><button class="button" data-decision="keep">Keep [K]</button><button class="button cut" data-decision="cut">'+cutLabel+'</button><button class="button protect" data-decision="protect">Protect [P]</button></div>'+remove+'</div><div class="inspector-section"><span class="field-label">Nearest Eye evidence</span><div class="evidence">'+(e.map(x=>'<div class="evidence-item"><span class="evidence-dot '+(x.keep?'':'cut')+'"></span><span><strong>'+seconds(x.timestamp)+'</strong> '+confidenceBadge(x.confidence==null?null:Number(x.confidence))+' · '+esc(x.keep?'kept':x.cull_reason||'cut')+'<br>'+esc(x.description||'No description')+'</span></div>').join('')||'<span class="evidence-item">No nearby evidence</span>')+'</div></div></aside><section class="timeline-panel">'+timeline(job,r)+'</section>'+reviewQueue(job)+'<section class="log"><div class="decision-log"><h2>Decision history</h2><div class="history">'+history(r)+'</div></div><div class="render-box"><h2>Ready when you are</h2><p>Your edits save as hash-bound source ranges. Re-plan uses them; render never touches the original.</p><button class="button primary" data-action="render">Render approved cut</button><button class="button ghost" data-action="export-otio" style="margin-top:8px">Export timeline (.otio)</button></div></section>';
+  return '<section class="player"><div class="video-wrap">'+(path?('<video id="review-video" src="'+apiFile(path)+'" preload="metadata" aria-label="Video review player"></video>'):'<div class="empty">That output does not exist yet.</div>')+'</div><div class="player-controls"><div class="media-switch">'+['source','final','preview'].map(m=>'<button data-media="'+m+'" class="'+(m===mode?'active':'')+'" '+((m==='source'?!job.source_available:m!=='source'&&!job[m+'_output'])?'disabled':'')+'>'+m+'</button>').join('')+'</div><span id="time-readout">'+seconds(state.playhead)+' / '+seconds(job.duration)+'</span></div>'+(sourceMissing?'<div class="source-missing">original source is gone — showing the final render. source-time edits are unavailable.</div>':'')+'</section><aside class="inspector"><div class="inspector-head"><h1>'+editingLabel+'</h1><p>'+esc(basename(job.source))+'</p></div><div class="inspector-section"><div class="selection-time"><span>'+seconds(state.selection.start)+'</span><span>'+seconds(state.selection.end)+'</span></div><div class="fields"><label class="field"><span class="field-label">Start [I]</span><input id="cut-start" type="number" min="0" max="'+job.duration+'" step="0.1" value="'+state.selection.start+'"></label><label class="field"><span class="field-label">End [O]</span><input id="cut-end" type="number" min="0" max="'+job.duration+'" step="0.1" value="'+state.selection.end+'"></label></div><div class="mark-buttons-row"><button class="button ghost small-btn" id="set-in-btn" type="button">Set In [I]</button><button class="button ghost small-btn" id="set-out-btn" type="button">Set Out [O]</button></div><label class="field reason"><span class="field-label">Reason</span><input id="cut-reason" value="'+esc(editingReason)+'" maxlength="120"></label></div><div class="inspector-section"><div class="decision-actions"><button class="button" data-decision="keep">Keep [K]</button><button class="button cut" data-decision="cut">'+cutLabel+'</button><button class="button protect" data-decision="protect">Protect [P]</button></div>'+remove+'</div><div class="inspector-section"><span class="field-label">Nearest Eye evidence</span><div class="evidence">'+(e.map(x=>'<div class="evidence-item"><span class="evidence-dot '+(x.keep?'':'cut')+'"></span><span><strong>'+seconds(x.timestamp)+'</strong> '+confidenceBadge(x.confidence==null?null:Number(x.confidence))+' · '+esc(x.keep?'kept':x.cull_reason||'cut')+'<br>'+esc(x.description||'No description')+'</span></div>').join('')||'<span class="evidence-item">No nearby evidence</span>')+'</div></div></aside><section class="timeline-panel">'+timeline(job,r)+'</section>'+reviewQueue(job)+'<section class="log"><div class="decision-log"><h2>Decision history</h2><div class="history">'+history(r)+'</div></div><div class="render-box"><h2>Ready when you are</h2><p>Your edits save as hash-bound source ranges. Re-plan uses them; render never touches the original.</p><button class="button primary" data-action="render">Render approved cut</button><button class="button ghost" data-action="replan" style="margin-top:8px">Re-plan with my decisions</button><button class="button ghost" data-action="export-otio" style="margin-top:8px">Export timeline (.otio)</button></div></section>';
 }
 
 function timeline(job,r){
@@ -141,15 +141,16 @@ function confidenceBadge(conf){
 }
 
 function queueItems(job){
-  const items=[];
+  const resolved=state.resolvedQueue,items=[];
+  const push=x=>{x.key=x.kind+':'+x.start+'-'+x.end;if(!resolved.has(x.key))items.push(x)};
   (job.review_intervals||[]).forEach(x=>{
     const reasons=x.reasons||[];
     const label=(reasons.find(r=>String(r).startsWith('vision-review:'))||'uncertain verdict').replace('vision-review:','');
-    items.push({kind:'review',start:Number(x.start),end:Number(x.end),label:'Uncertain cut: '+label,confidence:parseConfidence(reasons)});
+    push({kind:'review',start:Number(x.start),end:Number(x.end),label:'Uncertain cut: '+label,confidence:parseConfidence(reasons)});
   });
   (job.model_disagreements||[]).forEach(d=>{
     const half=(Number(d.sample_interval)||2)/2;
-    items.push({kind:'disagreement',start:Math.max(0,Number(d.timestamp)-half),end:Number(d.timestamp)+half,
+    push({kind:'disagreement',start:Math.max(0,Number(d.timestamp)-half),end:Number(d.timestamp)+half,
       label:'Model kept, heuristic flagged '+d.heuristic_suggests,confidence:d.confidence==null?null:Number(d.confidence),note:d.description});
   });
   return items.sort((a,b)=>a.start-b.start);
@@ -171,7 +172,11 @@ async function resolveQueueItem(job,index,decision){
   updateSelectionInputs();
   renderSelectionOverlay();
   seekTo(state.playhead);
-  await saveDecision(job,decision,'review queue: '+item.label);
+  if(await saveDecision(job,decision,'review queue: '+item.label)){
+    state.resolvedQueue.add(item.key);
+    if(!queueItems(job).length)toast('queue clear — re-plan to apply your decisions');
+    render();
+  }
 }
 
 async function exportOtio(job){
@@ -198,6 +203,7 @@ function bind(job){
     state.selectedMedia='source';
     state.playhead=0;
     state.selection={start:0,end:2};
+    state.resolvedQueue.clear();
     clearEditing();
     render();
   }));
@@ -309,6 +315,7 @@ function bind(job){
   $$('[data-decision]').forEach(b=>b.addEventListener('click',()=>saveDecision(job,b.dataset.decision)));
   $('[data-action="remove-decision"]')?.addEventListener('click',()=>removeEditingDecision(job));
   $$('[data-action="render"]').forEach(b=>b.addEventListener('click',()=>startRender(job)));
+  $$('[data-action="replan"]').forEach(b=>b.addEventListener('click',()=>startReplan(job)));
 }
 
 async function saveDecision(job,decision,reasonOverride=null){
@@ -329,7 +336,8 @@ async function saveDecision(job,decision,reasonOverride=null){
     toast(state.editing?'decision updated':decision+' saved');
     clearEditing();
     await load({quiet:true});
-  }catch(error){toast(error.message,'danger')}
+    return true;
+  }catch(error){toast(error.message,'danger');return false}
 }
 
 async function removeEditingDecision(job){
@@ -350,16 +358,25 @@ async function startRender(job){
   try{
     const task=await api('/api/jobs/'+encodeURIComponent(job.id)+'/render',{method:'POST',body:JSON.stringify({})});
     toast('Render started: '+task.label);
-    pollTask(task.id);
+    pollTask(task.id,'Render');
   }catch(error){toast(error.message,'danger')}
 }
 
-async function pollTask(id){
+async function startReplan(job){
+  try{
+    const task=await api('/api/jobs/'+encodeURIComponent(job.id)+'/replan',{method:'POST'});
+    toast('Re-plan started: '+task.label);
+    pollTask(task.id,'Re-plan');
+  }catch(error){toast(error.message,'danger')}
+}
+
+async function pollTask(id,label){
   for(let i=0;i<120;i+=1){
     await new Promise(resolve=>setTimeout(resolve,1500));
     const task=await api('/api/tasks/'+id);
     if(task.status==='running')continue;
-    toast(task.status==='succeeded'?'Render complete':(task.error||'Render failed'),task.status==='succeeded'?'info':'danger');
+    toast(task.status==='succeeded'?label+' complete':(task.error||label+' failed'),task.status==='succeeded'?'info':'danger');
+    if(task.status==='succeeded'&&label==='Re-plan')state.resolvedQueue.clear();
     return load({quiet:true});
   }
 }
