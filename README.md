@@ -1,6 +1,10 @@
-# anna content pipeline
+# SmartCut
 
-This is the production-shaped replacement for `forge-dirty.py` and `edit.py`.
+A local, review-first video editing pipeline for creator and performance footage. Point it at raw
+video and it transcribes the audio, watches the frames with a local vision model, proposes a
+defensible edit, and then stops — a human reviews the calls in the Cutroom before anything renders.
+The finished cut can render to MP4 here or export as an OpenTimelineIO timeline that opens directly
+in DaVinci Resolve or Premiere for fine-tuning.
 
 ```text
 input video
@@ -11,133 +15,101 @@ input video
     +------+
     |      v
     |   [ Eye ]  sampled frames -> LM Studio vision observations
-    |      |
+    |      |       (+ OpenCV motion/luminance evidence as context, never as a cut rule)
+    |      v
+    |   [ Temporal critic ]  bounded candidate windows get before/after inspection
     +------v
        [ Brain ]  manifest + deterministic edit plan
            |      \
-           |       -> [ Voice ]  persona caption (transcript + observations -> caption.txt)
+           |       -> [ Voice ]  persona caption (transcript + kept observations -> caption.txt)
            v
        [ Blade ]  safe FFmpeg render + verification
-           |         (+ optional bumper prepend via ffmpeg concat)
-           v
-       vault/<job-id>/clips/*.mp4 + <source>_final.mp4 + manifest.json
+           |
+           +--> rendered MP4
+           +--> .otio timeline referencing the original source media
 ```
 
-The production path has three explicit edit modes instead of one overloaded selector:
+Three edit modes, chosen explicitly instead of one overloaded selector:
 
-- **full edit** (`render`): keep the source timeline and remove only positively identified waste;
-- **preview/trailer** (`preview`): choose variable-length 3-10 second action runs from one video;
-- **best-of reel** (`reel`): pool the same scored candidates across multiple videos, prefer source diversity, and assemble one supercut.
+- **full edit**: keep the source timeline, remove only positively identified waste;
+- **preview/trailer**: variable-length 3–10 second action runs from one video;
+- **best-of reel**: pool scored candidates across multiple videos with source diversity into one supercut.
 
-## What changed
+## The pipeline
 
-- **Ear** is local `faster-whisper`; no cloud API and no paid transcription. It caches word/segment timestamps.
-- **Eye** scores visual observations and explicitly marks camera adjustment, clothing fixes, position hunting, bloopers, broken-character moments, obstruction, and technical failures for removal. It batches four labeled frames per LM Studio request by default (`vision_batch_size`) while preserving the configured sampling interval; this cuts local-model overhead without skipping moments. It does not execute shell commands or decide file paths.
-- **Signals** (`pipeline/signals.py`) derives local motion and luminance evidence at the exact Eye
-  timestamps, writes a hash-bound `frame_signals.json`, and gives that evidence to Eye as context.
-  Signals are never a cut rule by themselves: fast movement may be setup *or* the desired reveal.
-- **Voice** (`pipeline/voice.py`) generates a short first-person, in-persona social caption from the same transcript + kept observations that made it into the final clips, using the same local LM Studio connection as Eye (no separate API integration). Low-confidence Whisper segments are excluded from caption grounding (`caption_min_word_confidence`, default `0.55`) because mostly non-verbal audio can produce fluent hallucinations; the raw transcript remains in the plan for review. Only runs when `performer` + a matching entry in `personas` are configured; otherwise the plan's `caption` field stays empty and no request is made. Written to `edit_plan.json`'s `caption` field and a sibling `caption.txt` in the job directory.
-- **Blade** is the only module allowed to invoke FFmpeg. Commands are argument arrays, outputs must differ from inputs, and non-zero exits are fatal. It renders review clips, burns the watermark, applies flagged dark-frame correction, creates a normalized 30 FPS final cut with video/audio crossfades, and -- when `bumper_path` is configured -- prepends that bumper asset via an ffmpeg concat, normalizing the bumper's resolution/fps/SAR to match the main render (letterboxed, never cropped) so mismatched source assets never produce a re-encode hitch. `bumper_path` is optional/nullable; when unset, output is byte-identical to before this feature existed.
-- **Brain** owns state, idempotency, stage manifests, human review cuts, and the final edit plan. Full edits keep the source timeline and subtract only positively identified waste; previews/reels use the separate variable-length highlight planner. It can stop after planning for human review.
-- Existing tested Resolve/FFmpeg modules are documented as optional post-processing adapters; the core highlight render is self-contained so this project is runnable without importing another checkout.
+- **Ear** (`pipeline/ear.py`) — local faster-whisper transcription with word timestamps. No cloud API,
+  no paid transcription. Low-confidence segments are excluded from caption grounding so non-verbal
+  audio can't produce fluent hallucinations.
+- **Eye** (`pipeline/eye.py`) — samples frames on a configured interval and sends labeled batches to
+  a local vision model via LM Studio. It describes what it sees first, then scores and flags waste:
+  camera adjustment, clothing fixes, position hunting, bloopers, broken-character moments,
+  obstruction, technical failures. Frame sampling seeks directly to timestamps instead of decoding
+  the whole video; motion is measured against a nearby frame at +0.2s for context.
+- **Signals** (`pipeline/signals.py`) — OpenCV measures motion and luminance at the exact Eye
+  timestamps into a hash-bound `frame_signals.json`. This is evidence for the vision prompt, never
+  an independent cut rule: fast movement can be setup *or* the intended reveal.
+- **Brain** (`pipeline/brain.py`) — owns state, idempotency, stage manifests, and the final edit
+  plan. Models provide observations; deterministic planners make bounded decisions. It can stop after
+  planning so a human can review first.
+- **Voice** (`pipeline/voice.py`) — writes a short first-person, in-persona social caption from the
+  transcript and the observations that survived into the final clips. Only runs when a performer and
+  matching persona are configured.
+- **Blade** (`pipeline/blade.py`) — the only module allowed to invoke FFmpeg. Renders review clips,
+  burns the watermark, corrects flagged dark spans, and assembles the final cut. It never touches the
+  original source file.
 
-## Setup on E:
+With multi-pass enabled, analysis first writes a `story_map.json` of scene sections and bounded
+candidate windows from scene changes plus Eye/Ear evidence; a temporal critic then inspects those
+windows with before/after context. Critic cuts stay advisory until the editorial evaluation proves
+they're a win.
 
-```powershell
-Set-Location E:\anna\content-pipeline
-python -m venv .venv
-.\.venv\Scripts\python.exe -m pip install -e ".[whisper,watch,web,dev]"
-$env:HF_HOME = 'E:\anna\content-pipeline\models\huggingface'
-```
+## Trust the model, verify the uncertainty
 
-The first Whisper run downloads the selected model into `HF_HOME`. Use `tiny` for a quick proof, `base` for the default, or `small` when accuracy matters more than speed.
+The pipeline trusts the vision model's `keep` verdicts — no hidden substring heuristics silently
+override them. But it doesn't trust its rejections blindly either:
 
-The Eye has a deliberate readiness gate: it queries LM Studio `/v1/models` and fails with the loaded model list if the configured vision model is not present. That prevents silent fallback to a text-only model or a random endpoint.
+- Confident rejections become waste.
+- Uncertain rejections become **review intervals**: they're flagged, not cut.
+- Every model/heuristic disagreement is recorded.
 
-## Run
+Both surface in the Cutroom's **Needs your eyes** queue with confidence badges. Click an item to
+jump to that timestamp, then Keep or Cut resolves it into the normal review flow. Eye flags on the
+timeline are clickable and color-coded: red for confident cuts, amber for uncertain ones.
 
-```powershell
-Copy-Item .\config.example.json .\config.json
-\.venv\Scripts\python.exe .\run_pipeline.py analyze "E:\path\input.mp4" --config .\config.json
-\.venv\Scripts\python.exe .\run_pipeline.py plan "E:\path\input.mp4" --config .\config.json
-\.venv\Scripts\python.exe .\run_pipeline.py render "E:\path\input.mp4" --config .\config.json
-\.venv\Scripts\python.exe .\run_pipeline.py preview "E:\path\input.mp4" --target-seconds 20 --config .\config.json
-\.venv\Scripts\python.exe .\run_pipeline.py reel "E:\path\one.mp4" "E:\path\two.mp4" --target-seconds 45 --config .\config.json
-\.venv\Scripts\python.exe .\run_pipeline.py watch --config .\config.json
-\.venv\Scripts\python.exe -m pipeline.web --config .\config.json --host 127.0.0.1 --port 8787
-```
+Every observation carries its confidence, and every human decision is written to a hash-bound
+`editor_review.json` in source time — a correction can't silently apply to a different revision of
+the footage. **Re-plan with my decisions** rebuilds the plan from those calls before rendering or
+exporting.
 
-`analyze` and `plan` never render. `render` refuses to publish unless a plan exists, unless `--auto-plan` is passed. The default config keeps `auto_render` off.
+## Cutroom
 
-For review, run `start-web.bat` (or the web command above), then open `http://127.0.0.1:8787`.
-Cutroom uses the real job plan: click the timeline to stage a source-time range, add a reason, then
-**Keep**, **Cut**, or **Protect** it. Those decisions write directly to hash-bound
-`editor_review.json`; **Render approved cut** uses that policy and never overwrites the source.
-Source/final tabs and a manual rotate control handle phone footage with sideways pixels.
+The local web review surface over the real job API. It's deliberately narrow: a source/final
+player, clickable timeline, one staged source-time interval with nearby Eye evidence, hash-bound
+Keep/Cut/Protect decisions, decision history, and the explicit render action. It is not trying to be
+a nonlinear editor — that's what the OTIO export is for.
 
-`frame_signal_enabled` defaults to `true`. Its output is available in both the job's
-`frame_signals.json` and `edit_plan.json` for later review/UI work. Turning it off keeps the
-previous Eye behavior for A/B comparisons.
+## OpenTimelineIO export
 
-`preview` uses the existing analysis plan and chooses clip boundaries from contiguous usable action around local score peaks. Clip duration is not the minimum-floor value: it expands and contracts with the action run, is clamped by `preview_min_clip_seconds` / `preview_max_clip_seconds`, never crosses a known waste interval, and stops at the requested or automatically calculated duration budget. `reel` reuses those exact candidates across sources, caps repeats from one source, and normalizes mixed resolutions before crossfading. Both commands accept `--auto-plan` when a source has not been analyzed yet.
+**Export timeline (.otio)** converts the approved plan clips into an OpenTimelineIO timeline that
+references the original source media with frame-accurate source ranges. Open it in Resolve or
+Premiere and keep editing there instead of being locked to the rendered MP4. One caveat worth
+knowing: the export reads the current plan clips, so re-plan after resolving review items for the
+export to reflect them.
 
-## Apply editor feedback
+## Evaluation
 
-Put source-timeline corrections in the job's `editor_review.json`, beside `edit_plan.json`:
+Gold cases score the Eye's raw proposals *before* hash-bound human correction is applied, so a plan
+can't get credit for replaying prior review feedback. The labeled corpus covers reveals, real
+clothing adjustments, camera setup, blur, dark spans, non-verbal audio, and endings across multiple
+videos. No model, prompt, or planner change becomes the default until it improves this report
+without regressing protected content.
 
-```json
-{
-  "source_sha256": "exact source SHA-256",
-  "timebase": "source",
-  "cut_intervals": [
-    {"start": 12.35, "end": 14.35, "reason": "leaving_chair"}
-  ]
-}
-```
+## Philosophy
 
-Run `plan` again, then `render`. Brain merges these intervals with Ear/Eye waste and records every
-cut as `editor-review:<reason>`. Reviews fail closed when the source hash or timebase is wrong, so a
-correction cannot silently apply to a different revision. `full_edit_min_segment_seconds` controls
-the tiny-island floor independently from preview clip length; its 0.5s default preserves useful
-material around short editor cuts instead of repeating the historical four-second-drop bug.
-
-## Evaluate editing decisions
-
-Gold cases score the Eye's raw proposals before hash-bound human correction is applied, so a plan
-cannot get credit for merely replaying prior review feedback. Lyssa and 008 are the initial
-cross-video baselines:
-
-```powershell
-.\.venv\Scripts\python.exe .\tools\evaluate_editorial_plan.py `
-  .\work\jobs\lyssa-9b3033e851f2\edit_plan.json `
-  .\evaluation\lyssa-editorial-v1.json
-```
-
-The report shows matched/missed editorial cuts, false proposals inside protected keep spans, and
-unexpected cuts. A long human cut only counts as matched when Eye covers at least 25% of that
-specific span; catching a tiny glitch inside a long camera-setup stretch is still a miss. A model,
-prompt, or planner does not become more aggressive until it improves this report without regressing
-protected content.
-
-For unattended watch mode, set `auto_render` to `true` only after the plan output and destination policy are trusted. With the default `false`, new files are analyzed and emitted as `review_required` plans.
-
-## Evidence carried forward
-
-The implementation follows the tested results in `C:\Users\SuperHands\Desktop\assets\TEST_RESULTS.md`:
-
-- preserve source hashes;
-- use explicit FFmpeg stream mapping;
-- escape Windows paths before they enter FFmpeg filters;
-- avoid alpha garbage by compositing watermark PNGs through `overlay`;
-- account for transition overlap and FFmpeg rounding;
-- treat stabilization as a measured capability, not an unconditional success;
-- keep audio ducking and loudness operations as distinct Blade stages.
-
-## Multi-pass editorial review
-
-When multi_pass_enabled is true, analysis first writes story_map.json. It maps scene
-sections and produces bounded candidate windows from scene changes and concrete Eye/Ear evidence.
-The temporal critic then inspects those windows with before/after context. Human-cut reasons from
-earlier hash-bound reviews are prompt hints only; they never become automatic rules. Critic
-decisions are included in edit_plan.json targeted_review, while multi_pass_apply_cuts remains false
-until the labeled editorial evaluation demonstrates a win.
+- **Review-first.** Analysis can run unattended; publishing stays explicit until a measured
+  evaluation set says the cut policy is reliable.
+- **Uncertainty goes to humans.** The model says what it's unsure about instead of guessing.
+- **Deterministic where it counts.** Models observe; planners decide, within bounds.
+- **Local.** Transcription, vision, and rendering all run on your own hardware. No cloud inference,
+  no paid services.
+- **Inspectable.** Every cut carries its reason, every decision its hash, every stage its manifest.
