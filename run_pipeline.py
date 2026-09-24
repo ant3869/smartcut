@@ -15,7 +15,7 @@ from pipeline.util import PipelineError
 KNOWN_CONFIG_KEYS = frozenset({
     "work_dir", "analysis_dir", "output_dir", "vision_model", "lm_studio_url",
     "caption_model", "frame_interval_seconds", "vision_max_width", "vision_batch_size",
-    "vision_cull_confidence_threshold", "vision_review_confidence_floor",
+    "vision_cull_confidence_threshold",
     "whisper_model", "whisper_device", "whisper_compute_type",
     "frame_signal_enabled", "scene_detection_enabled", "scene_threshold",
     "waste_terms", "waste_padding_seconds",
