@@ -78,6 +78,7 @@ class PipelineBrain:
             source,
             refresh=refresh,
             frame_hints=build_frame_hints(signals),
+            transcript_segments=list(transcript.segments) if transcript.ok else None,
         )
         scenes = []
         if self.config.get("scene_detection_enabled", True):
