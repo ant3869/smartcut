@@ -109,7 +109,7 @@ def test_eye_batches_multiple_labeled_frames_in_one_request(monkeypatch, tmp_pat
         captured["payload"] = json
         return FakeResponse()
 
-    monkeypatch.setattr("pipeline.eye.requests.post", fake_post)
+    monkeypatch.setattr("pipeline.eye.post_json_with_retry", fake_post)
     eye = VisionEye(
         base_url="http://127.0.0.1:1234/v1",
         model="test-model",
@@ -569,7 +569,7 @@ def test_resolve_persona_returns_style_when_configured():
 
 def test_persona_voice_skips_request_when_no_facts_available(monkeypatch):
     called = []
-    monkeypatch.setattr("pipeline.voice.requests.post", lambda *a, **k: called.append(1))
+    monkeypatch.setattr("pipeline.voice.post_json_with_retry", lambda *a, **k: called.append(1))
 
     result = PersonaVoice(base_url="http://127.0.0.1:1234/v1", model="test-model").caption(
         persona="playful and confident", transcript=None, observations=[], clips=[],
@@ -594,7 +594,7 @@ def test_persona_voice_grounds_prompt_in_real_clip_facts_and_parses_json_reply(m
         captured["payload"] = json
         return FakeResponse()
 
-    monkeypatch.setattr("pipeline.voice.requests.post", fake_post)
+    monkeypatch.setattr("pipeline.voice.post_json_with_retry", fake_post)
 
     transcript = Transcript(
         True,
@@ -635,7 +635,7 @@ def test_persona_voice_excludes_low_confidence_whisper_hallucination(monkeypatch
         captured["payload"] = json
         return FakeResponse()
 
-    monkeypatch.setattr("pipeline.voice.requests.post", fake_post)
+    monkeypatch.setattr("pipeline.voice.post_json_with_retry", fake_post)
     transcript = Transcript(
         True,
         "base",
@@ -753,7 +753,7 @@ def test_temporal_eye_marks_target_frames_and_context(monkeypatch, tmp_path):
         captured["payload"] = json
         return FakeResponse()
 
-    monkeypatch.setattr("pipeline.eye.requests.post", fake_post)
+    monkeypatch.setattr("pipeline.eye.post_json_with_retry", fake_post)
     eye = VisionEye(
         base_url="http://127.0.0.1:1234/v1",
         model="temporal-model",
@@ -792,7 +792,7 @@ def test_section_summary_pass_receives_local_transcript_and_editorial_policy(mon
         captured["payload"] = json
         return FakeResponse()
 
-    monkeypatch.setattr("pipeline.eye.requests.post", fake_post)
+    monkeypatch.setattr("pipeline.eye.post_json_with_retry", fake_post)
     eye = VisionEye(base_url="http://127.0.0.1:1234/v1", model="test-model", interval=2.0, cache_dir=tmp_path)
     frame = np.zeros((64, 32, 3), dtype=np.uint8)
 
@@ -973,7 +973,7 @@ def test_story_map_merges_overlapping_loop_and_semantic_sections_before_targetin
 
     assert story["semantic_cut_candidates"] == [{
         "start": 0.0, "end": 52.0, "reasons": ["loop:technical_preroll_conversation", "section:setup"],
-        "summary": "setup", "confidence": 1.0,
+        "summary": "setup", "confidence": 0.95, "source": "heuristic",
     }]
     assert not any("eye:" in reason for item in story["target_candidates"] for reason in item["reasons"])
 
@@ -991,3 +991,125 @@ def test_temporal_cache_is_scoped_to_the_candidate_map(tmp_path):
     right = hashlib.sha256(json.dumps({"candidates": [{"start": 2, "end": 4}], "editorial_focus": []}, sort_keys=True, separators=(",", ":")).encode()).hexdigest()[:12]
     assert first.name.endswith(".temporal.json")
     assert left != right
+
+
+def test_model_keep_verdict_is_trusted_and_disagreement_logged(tmp_path):
+    eye = VisionEye(
+        base_url="http://127.0.0.1:1234/v1",
+        model="test-model",
+        interval=2.0,
+        cache_dir=tmp_path,
+    )
+    payload = {
+        "score": 6, "keep": True, "dark": False, "cull_reason": "",
+        "description": "The subject is actively pulling up and adjusting their shorts with both hands.",
+        "confidence": 0.9,
+    }
+
+    observation = eye._observation_from_payload(payload, 4.0)
+
+    assert observation.keep is True
+    assert observation.cull_reason == ""
+    assert observation.confidence == 0.9
+    assert len(eye.model_disagreements) == 1
+    assert eye.model_disagreements[0]["heuristic_suggests"] == "clothing_adjustment"
+    assert eye.model_disagreements[0]["timestamp"] == 4.0
+
+
+def test_model_rejection_keeps_its_own_reason(tmp_path):
+    eye = VisionEye(
+        base_url="http://127.0.0.1:1234/v1",
+        model="test-model",
+        interval=2.0,
+        cache_dir=tmp_path,
+    )
+    payload = {
+        "score": 2, "keep": False, "dark": False, "cull_reason": "camera_adjustment",
+        "description": "hand adjusting camera", "confidence": 0.95,
+    }
+
+    observation = eye._observation_from_payload(payload, 4.0)
+
+    assert observation.keep is False
+    assert observation.cull_reason == "camera_adjustment"
+    assert eye.model_disagreements == []
+
+
+def test_low_confidence_rejections_go_to_review_not_waste(tmp_path):
+    eye = VisionEye(
+        base_url="http://127.0.0.1:1234/v1",
+        model="test-model",
+        interval=2.0,
+        cache_dir=tmp_path,
+    )
+    observations = [
+        Observation(4.0, 2.0, "maybe adjusting camera", False, False, "camera_adjustment", 0.4),
+        Observation(8.0, 2.0, "definitely adjusting camera", False, False, "camera_adjustment", 0.9),
+    ]
+
+    waste = eye.cull_intervals(observations, 12.0)
+    review = eye.review_intervals(observations, 12.0)
+
+    assert waste == [Clip(7.0, 9.0, ("vision-cull:camera_adjustment",))]
+    assert review == [Clip(3.0, 5.0, ("vision-review:camera_adjustment", "confidence:0.40"))]
+
+
+def test_old_cached_observations_without_confidence_default_to_certain(tmp_path):
+    eye = VisionEye(
+        base_url="http://127.0.0.1:1234/v1",
+        model="test-model",
+        interval=2.0,
+        cache_dir=tmp_path,
+    )
+    legacy = {"timestamp": 4.0, "score": 2.0, "description": "adjusting camera",
+              "keep": False, "dark": False, "cull_reason": "camera_adjustment"}
+
+    observation = eye._observation_from_payload(legacy, 4.0)
+
+    assert observation.confidence == 1.0
+    assert eye.cull_intervals([observation], 10.0) == [
+        Clip(3.0, 5.0, ("vision-cull:camera_adjustment",))
+    ]
+
+
+def test_confidence_percent_values_are_normalized():
+    from pipeline.eye import _as_confidence
+
+    assert _as_confidence(85) == 0.85
+    assert _as_confidence(0.7) == 0.7
+    assert _as_confidence(None) == 1.0
+    assert _as_confidence("bad") == 1.0
+
+
+def test_batch_prompt_asks_for_confidence_and_temporal_context(monkeypatch, tmp_path):
+    captured = {}
+
+    class FakeResponse:
+        def json(self):
+            return {"choices": [{"message": {"content": (
+                '{"observations": ['
+                '{"timestamp": 0.0, "score": 7, "description": "first", "keep": true, "dark": false, "cull_reason": "", "confidence": 0.8}'
+                ']}'
+            )}}]}
+
+    def fake_post(url, payload, timeout):
+        captured["payload"] = payload
+        return FakeResponse()
+
+    monkeypatch.setattr("pipeline.eye.post_json_with_retry", fake_post)
+    eye = VisionEye(
+        base_url="http://127.0.0.1:1234/v1",
+        model="test-model",
+        interval=2.0,
+        cache_dir=tmp_path,
+        max_width=512,
+    )
+    frame = np.zeros((32, 18, 3), dtype=np.uint8)
+
+    result = eye._ask_batch([(0.0, frame)], None)
+
+    instruction = captured["payload"]["messages"][1]["content"][0]["text"]
+    assert "confidence" in instruction
+    assert "time order" in instruction
+    assert "Analyze every labeled frame independently" not in instruction
+    assert result[0]["confidence"] == 0.8

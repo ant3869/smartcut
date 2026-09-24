@@ -56,7 +56,8 @@ def build_story_map(
         start, end = float(item["start"]), float(item["end"])
         reason = f"loop:{(item.get('reasons') or ['cut'])[0]}"
         semantic_cut_candidates.append({"start": round(start, 3), "end": round(end, 3),
-                                        "reasons": [reason], "summary": "editorial state loop", "confidence": 1.0})
+                                        "reasons": [reason], "summary": "editorial state loop",
+                                        "confidence": 0.5, "source": "heuristic"})
         candidates.extend([(max(0.0, start - boundary_context_seconds), min(duration, start + boundary_context_seconds), f"{reason}:start", 5),
                            (max(0.0, end - boundary_context_seconds), min(duration, end + boundary_context_seconds), f"{reason}:end", 5)])
     semantic_cut_candidates = _merge_semantic_cut_candidates(semantic_cut_candidates)
@@ -149,6 +150,11 @@ def _merge_semantic_cut_candidates(candidates: list[dict[str, Any]]) -> list[dic
             current["end"] = max(current["end"], item["end"])
             current["reasons"] = sorted(set(current["reasons"] + item["reasons"]))
             current["confidence"] = max(float(current["confidence"]), float(item["confidence"]))
+            sources = {current.get("source"), item.get("source")} - {None}
+            if sources:
+                current["source"] = "+".join(sorted(sources))
+            elif "source" in current:
+                del current["source"]
             if not current["summary"] and item["summary"]:
                 current["summary"] = item["summary"]
         else:
