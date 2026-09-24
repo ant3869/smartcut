@@ -28,6 +28,10 @@ human feedback rather than stacking more brittle keywords.
 
 ### In flight (unreleased)
 
+- Vision prompt v7 — replaces v6: two-voice banter test on the AUDIO (turn-taking =
+  conversation, with explicit exclusions), description must flag performer-conversing
+  so the consistency rule fires. Section layer: banter scoped to conversation-dominant
+  sections, setup needs positive evidence. Cache-busting via prompt version.
 - Vision prompt v6 — replaces v5: per-frame transcript audio context (±4s), verdict
   consistency rule (verdict must match description and score band), audio-aware banter
   check that beats intimate content, widened preparation/transition check. Cache-busting

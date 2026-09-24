@@ -1253,16 +1253,41 @@ def test_export_otio_endpoint_writes_timeline(tmp_path, monkeypatch):
     assert response.json()["job"]["files"]["otio_timeline"].endswith("timeline.otio")
 
 
-def test_frame_prompt_v6_is_audio_aware_with_consistency_rule():
+def test_frame_prompt_v7_two_voice_banter_test():
     from pipeline.eye import DEFAULT_FRAME_PROMPT, VISION_PROMPT_VERSION
 
-    assert VISION_PROMPT_VERSION == 6
+    assert VISION_PROMPT_VERSION == 7
     assert "CONSISTENCY RULE" in DEFAULT_FRAME_PROMPT
     assert "provisional" not in DEFAULT_FRAME_PROMPT
     assert "AUDIO" in DEFAULT_FRAME_PROMPT
     assert "unrelated_banter" in DEFAULT_FRAME_PROMPT
     # talking with the other person present beats intimate content
     assert "EVEN WHEN" in DEFAULT_FRAME_PROMPT
+    # v7: mechanical two-voice test instead of a vague "conversing" judgment
+    assert "two-voice test" in DEFAULT_FRAME_PROMPT
+    assert "no responding voice" in DEFAULT_FRAME_PROMPT
+    # description must use the consistency rule's trigger phrase
+    assert "conversing with someone present" in DEFAULT_FRAME_PROMPT
+
+
+def test_section_policy_banter_scoped_to_dominant_content():
+    from pipeline.eye import (
+        DEFAULT_SECTION_EDITORIAL_POLICY,
+        SECTION_BANTER_CLAUSE,
+        SECTION_SETUP_CLAUSE,
+        SECTION_SUMMARY_PROMPT,
+        compose_section_policy,
+    )
+
+    assert DEFAULT_SECTION_EDITORIAL_POLICY == SECTION_SETUP_CLAUSE + " " + SECTION_BANTER_CLAUSE
+    assert "most of the section" in SECTION_BANTER_CLAUSE
+    assert "dominant content" in SECTION_BANTER_CLAUSE
+    # whole-section banter must not nuke a performance section over brief chatter
+    assert "lone ambiguous utterance" in SECTION_SUMMARY_PROMPT.lower()
+    # compose still appends the clause to legacy policies
+    composed = compose_section_policy(SECTION_SETUP_CLAUSE)
+    assert "most of the section" in composed
+    assert compose_section_policy(composed).count("conversing") == 1
 
 
 def test_transcript_audio_injected_per_frame(tmp_path, monkeypatch):
