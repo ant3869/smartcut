@@ -11,6 +11,49 @@ All notable changes to this project are documented here. The project follows
 - Stable inbox ingestion that waits for files to finish copying.
 - Music-library and beat-aware preview/reel pacing.
 
+## [0.3.0] - 2026-09-23
+
+### Added
+
+- Cutroom **Needs your eyes** review queue: uncertain model verdicts (`review_intervals`) and
+  model/heuristic disagreements surface as a list with confidence badges. Click to seek to the
+  span, then Keep or Cut resolves it into the normal review flow. Resolved items hide immediately
+  until the next re-plan.
+- Cutroom **Re-plan with my decisions** button wired to the existing `POST /api/jobs/{id}/replan`
+  endpoint with task polling — resolving queue items now has a visible path to a fresh plan.
+- OpenTimelineIO export: **Export timeline (.otio)** beside Render, backed by
+  `POST /api/jobs/{id}/export-otio` (`pipeline/otio_export.py`). Converts approved plan clips
+  into an `.otio` timeline referencing the original source media with frame-accurate source
+  ranges, so the cut opens directly in Resolve or Premiere instead of being locked to the
+  rendered MP4. Verified with an OpenTimelineIO read/write round trip against real video.
+  Adds `opentimelineio>=0.17` to project dependencies.
+- Clickable Eye flags on the timeline, color-coded red for confident cuts and amber for uncertain
+  ones; per-observation confidence badges in the evidence panel.
+
+### Changed
+
+- Eye sampling and frame-signal detection now seek directly to timestamps instead of decoding
+  every video frame; motion is measured against a nearby frame at +0.2s.
+- Vision prompt v3: creator/performance-video context, describe-first workflow, outfit-reveal vs.
+  practical clothing-adjustment guidance, calibrated scores, strict cull reasons, confidence output.
+- Model `keep` verdicts are trusted — substring heuristics no longer silently override them.
+  Model/heuristic disagreements are recorded for human review instead of being hidden.
+- Confidence-gated culling: confident rejections become waste, uncertain ones become
+  `review_intervals`. Old cached observations default to confidence 1.0.
+- Model-call counters, shared retry transport for model calls, corrupt caches rebuild as misses,
+  temporal fallback capped at 32 windows, temporal review runs only when its cuts will apply,
+  source fingerprint computed once per analysis, stricter caption parsing, configurable blade
+  CRF/preset/output FPS and waste transcript padding, watch mode requires stable file size and
+  mtime before ingest, unknown config keys warn, dead example config keys removed, heuristic
+  editorial candidates report `confidence: 0.5` / `source: heuristic`.
+- `pipeline/web.py` now exposes `review_intervals`, `model_disagreements`, and `model_calls` per job.
+
+### Verified
+
+- 60 automated tests passing; `node --check frontend/app.js` passes.
+- Eye seek sampling and cache reuse validated against a real synthetic video.
+- OTIO export produced correct 30 fps timecode ranges and survived a read/write round trip.
+
 ## [0.2.0] - 2026-09-23
 
 ### Added
