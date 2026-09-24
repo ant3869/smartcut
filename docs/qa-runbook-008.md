@@ -36,20 +36,18 @@ fresh vision run. No rendering — analysis + evaluation only.
 - section summaries, especially 49.4–129.7s and 129.7–227.5s (section_type,
   editorial_action, confidence, reasoning)
 
-## Expected (v8, unverified)
+## Expected (v8 — verified 2026-09-24, fresh Nexus run)
 
-- 0–52s matches (setup).
-- 107–112s matched by coverage (v7 classified it `unrelated_banter` rather than
-  `camera_adjustment`; either cut reason counts as a match).
-- 123–130s cut as `unrelated_banter` at frame level (the v7 miss: the model
-  described banter but returned keep=true).
+- 0–52s matches (setup; 98.1% plan coverage).
+- 107–112s matched by coverage as `unrelated_banter` (either cut reason counts).
+- 123–130s cut as `unrelated_banter` at 100% frame coverage — the v8 fix.
 - 129.7–227.5s stays performance (the v6 bug: hallucinated setup from a lone
   "Fine.").
 - 49.4–129.7s stays performance-dominant; the frame layer owns the short banter
   span inside it.
-- Zero unexpected proposals.
-- Any residual description/verdict contradiction at 123–130 should now surface in
-  `model_disagreements` (heuristic widened in v8).
+- Zero unexpected proposals, zero missed cuts.
+- Residual description/verdict contradictions surface in `model_disagreements`
+  (advisory review queue; they do not become cuts on their own).
 
 ## Notes
 
