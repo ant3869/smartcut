@@ -7,6 +7,20 @@ All notable changes to this project are documented here. The project follows
 
 ### Fixed
 
+- Vision prompt v7: the banter check now gives the model a mechanical two-voice test
+  for the AUDIO (one line responding to another, casual small talk, boredom, laughing
+  together) instead of a vague "conversing" judgment, with explicit exclusions for
+  moaning, dirty talk about the act, and talking straight to the camera. The frame
+  description must call out performer-conversing-with-someone-present so the
+  consistency rule fires. Fixes 008@123–130s, where v6 quoted the banter audio
+  ("Try to be good." / "No way." / "You do.") yet kept the frames.
+- Section banter clause is now scoped: whole-section `banter` only when conversation
+  dominates the section; brief chatter inside a longer performance section leaves the
+  section classified by dominant content (the frame layer owns short banter spans).
+- Section setup classification now needs positive evidence (setup discussion, camera
+  handling, blank/obstructed frames); a lone ambiguous utterance over sustained
+  performance frames is performance, not setup. Fixes 008's 129.7–227.5s section
+  hallucinated as "setup" from a single "Fine.".
 - Vision prompt v6: each judged frame now carries transcript lines spoken within ±4s
   (`AUDIO near Ns`), so the model can hear setup talk and banter it cannot see. The
   banter check explicitly beats intimate content: the performer conversing with another

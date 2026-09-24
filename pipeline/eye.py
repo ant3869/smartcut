@@ -28,9 +28,9 @@ class TruncatedBatchError(PipelineError):
     """The model stopped mid-batch (finish_reason=length): retry with fewer frames."""
 
 
-VISION_PROMPT_VERSION = 6
+VISION_PROMPT_VERSION = 7
 TEMPORAL_PROMPT_VERSION = 2
-SECTION_SUMMARY_PROMPT_VERSION = 2
+SECTION_SUMMARY_PROMPT_VERSION = 3
 STRONG_SCORE = 7.0  # matches DEFAULT_FRAME_PROMPT's own "7-8 for strong" scale
 MAX_TEMPORAL_FALLBACK_WINDOWS = 32
 # Seconds of transcript audio context attached to each judged frame.
@@ -39,7 +39,8 @@ DEFAULT_FRAME_PROMPT = (
     "You are judging single moments from an adult creator's video (intimate/explicit "
     "solo or duo performance). Each frame may include AUDIO lines: transcript words spoken "
     "within a few seconds of that frame (noisy; ignore if clearly misheard). For each frame, "
-    "FIRST write one sentence describing exactly what is visible. THEN work through ALL of "
+    "FIRST write one sentence describing exactly what is visible, and say when the AUDIO shows "
+    "the performer conversing with someone present (two voices in a back-and-forth exchange). THEN work through ALL of "
     "these checks. If ANY cut check matches, keep=false with that check's reason (first match "
     "wins). If no cut check matches, keep=true.\n"
     "1. No person or human body part visible in the frame -> CUT, "
@@ -56,11 +57,13 @@ DEFAULT_FRAME_PROMPT = (
     "4. Genuine take-breaker: an interrupted take, someone entering the frame by accident, "
     "visible crew or equipment, a fall -> CUT, cull_reason=\"blooper\". Preparation, transition, "
     "or repositioning between scenes, poses, or acts -> CUT, cull_reason=\"seeking_position\".\n"
-    "5. The performer conversing with another person present -- heard on the AUDIO talking with "
-    "them (not performing for the camera), or visible in the frame talking with them rather than "
-    "addressing the camera -> CUT, cull_reason=\"unrelated_banter\". This applies EVEN WHEN "
-    "intimate contact is visible: talking with the other person present beats the performance. "
-    "Talking or vocalizing TO the camera/audience during performance is content, not banter.\n"
+    "5. The performer conversing with another person present -> CUT, cull_reason=\"unrelated_banter\". "
+    "Use the two-voice test on the AUDIO: one line responding to another ('No way.' answering 'Try to be good.'), "
+    "casual small talk, boredom ('I'm bored'), or laughing together means two people are conversing in the room -- "
+    "the other person may be heard but not seen. This applies EVEN WHEN "
+    "intimate contact is visible: a casual chat with someone present beats the performance. "
+    "NOT banter: moaning, dirty talk about the act itself, or talking straight TO the camera/audience "
+    "with no responding voice.\n"
     "6. Intimate contact happening (penetration, oral, direct sexual contact between people, "
     "or explicit solo play) -> keep. Score it on its merits.\n"
     "7. Otherwise -> keep. Intimate acts, nudity, explicit close-ups, and performing close to "
@@ -101,7 +104,11 @@ SECTION_SUMMARY_PROMPT = (
     "setup, technical_adjustment, repositioning, transition, banter, performance, reveal, or unknown. "
     "Set editorial_action to cut_candidate only when the whole section is visibly pre-content, technical setup, "
     "unrelated banter, or a transition/repositioning that is likely removable. Set keep_candidate for deliberate "
-    "performance or reveal. Set review when the frames do not prove either. Do not invent cut times; this is "
+    "performance or reveal. Set review when the frames do not prove either. "
+    "A setup classification needs positive evidence: the transcript discussing recording, camera, framing, or "
+    "positioning; visible camera handling; or blank/obstructed frames. A lone ambiguous utterance ('Fine.', 'Okay.') "
+    "over sustained performance frames is performance, not setup. "
+    "Do not invent cut times; this is "
     "a map pass, not the final edit. Return JSON only: "
     '{"section_type":string,"editorial_action":"cut_candidate|keep_candidate|review",'
     '"summary":string,"confidence":number}.'
@@ -114,9 +121,11 @@ SECTION_SETUP_CLAUSE = (
     "the frames include otherwise usable content."
 )
 SECTION_BANTER_CLAUSE = (
-    "When the section-local transcript is the performer conversing with another person "
-    "who is clearly present -- not performing and not addressing the audience -- classify "
-    "the whole section as banter and cut_candidate even if the frames show the performer."
+    "When the section-local transcript shows the performer conversing with another person "
+    "who is clearly present -- not performing and not addressing the audience -- for most of "
+    "the section, classify the whole section as banter and cut_candidate even if the frames show "
+    "the performer. Brief conversational moments inside a longer performance section do not make "
+    "the section banter; classify those sections by their dominant content."
 )
 DEFAULT_SECTION_EDITORIAL_POLICY = SECTION_SETUP_CLAUSE + " " + SECTION_BANTER_CLAUSE
 
