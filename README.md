@@ -41,11 +41,11 @@ Three edit modes, chosen explicitly instead of one overloaded selector:
   no paid transcription. Low-confidence segments are excluded from caption grounding so non-verbal
   audio can't produce fluent hallucinations.
 - **Eye** (`pipeline/eye.py`) — samples frames on a configured interval and sends labeled batches to
-  a local vision model via LM Studio. It describes what it sees first, then works through the
-  editor's decision tree in order: no person visible, intimate contact (keep), device handling /
-  blocked lens / out-of-focus / disoriented frame, reveal vs practical clothing adjustment,
-  genuine take-breakers, conversing with another person on screen. A cut verdict is final; a keep
-  is provisional and later checks still run. Frame sampling seeks directly to timestamps instead of
+  a local vision model via LM Studio. It describes what it sees first, then works through
+  the editor's checks (no people, technical failure, clothing, take-breakers, banter,
+  intimate content); any matching cut check wins and the verdict must match its own
+  description and score. Each frame also carries nearby transcript audio, so the model can
+  hear setup talk and banter it can't see. Frame sampling seeks directly to timestamps instead of
   decoding the whole video; motion is measured against a nearby frame at +0.2s for context.
 - **Signals** (`pipeline/signals.py`) — OpenCV measures motion and luminance at the exact Eye
   timestamps into a hash-bound `frame_signals.json`. This is evidence for the vision prompt, never
