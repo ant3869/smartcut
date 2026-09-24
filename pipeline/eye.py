@@ -28,7 +28,7 @@ class TruncatedBatchError(PipelineError):
     """The model stopped mid-batch (finish_reason=length): retry with fewer frames."""
 
 
-VISION_PROMPT_VERSION = 7
+VISION_PROMPT_VERSION = 8
 TEMPORAL_PROMPT_VERSION = 2
 SECTION_SUMMARY_PROMPT_VERSION = 3
 STRONG_SCORE = 7.0  # matches DEFAULT_FRAME_PROMPT's own "7-8 for strong" scale
@@ -57,7 +57,10 @@ def build_frame_prompt(*, audio_enabled: bool = True) -> str:
             "responding to another ('No way.' answering 'Try to be good.'), casual small talk, "
             "boredom ('I'm bored'), or laughing together means two people are conversing in the "
             "room -- the other person may be heard but not seen. This applies EVEN WHEN "
-            "intimate contact is visible: a casual chat with someone present beats the performance. "
+            "intimate contact is visible: a casual chat with someone present beats the performance, "
+            "and checks 6 and 7 do NOT override this check. Do not reframe the conversation as "
+            "interaction, participation, or consent -- if the two-voice test matches, it is "
+            "unrelated_banter, full stop. "
             "NOT banter: moaning, dirty talk about the act itself, or talking straight TO the "
             "camera/audience with no responding voice.\n"
         )
@@ -66,7 +69,9 @@ def build_frame_prompt(*, audio_enabled: bool = True) -> str:
             "5. The performer conversing with another person present -- visible in the frame "
             "talking with them rather than addressing the camera -> CUT, "
             "cull_reason=\"unrelated_banter\". This applies EVEN WHEN "
-            "intimate contact is visible: talking with the other person present beats the performance. "
+            "intimate contact is visible: talking with the other person present beats the performance, "
+            "and checks 6 and 7 do NOT override this check. Do not reframe talking with another "
+            "person present as interaction, participation, or consent. "
             "Talking or vocalizing TO the camera/audience during performance is content, not banter.\n"
         )
     return (
@@ -96,8 +101,9 @@ def build_frame_prompt(*, audio_enabled: bool = True) -> str:
         "the lens ARE the content: never cut a frame for being sexually explicit, and never call "
         "intimate content a blooper.\n"
         "CONSISTENCY RULE: your verdict must match your own words and score. If your description says "
-        "preparation, transition, setup, repositioning, adjusting, handling the camera or device, or "
-        "conversing with another person present, keep MUST be false. Score 1-3 means keep=false; score 7-10 "
+        "preparation, transition, setup, repositioning, adjusting, handling the camera or device, "
+        "conversing with another person present, banter, a back-and-forth conversation, or two voices "
+        "conversing, keep MUST be false. Score 1-3 means keep=false; score 7-10 "
         "means keep=true.\n"
         "cull_reason must be one of: camera_adjustment, clothing_adjustment, seeking_position, blooper, "
         "out_of_character, blank_or_obstructed, technical_failure, unrelated_banter, or \"\" when kept.\n"
@@ -957,12 +963,16 @@ def _as_bool(value: Any, *, default: bool) -> bool:
 
 
 def infer_cull_reason(description: str, *, score: float, keep: bool, model_reason: str) -> str:
-    """Resolve model contradictions conservatively from its own low-score description."""
+    """Flag contradictions between the model's own description and a keep verdict.
+
+    Advisory only: hits are logged to `model_disagreements` for human review, never
+    applied as overrides. There is deliberately no score gate -- a confident keep whose
+    own words describe a cut check (the 008@123-130 case: "unrelated banter" at score 8
+    with keep=true) is exactly what the review queue exists for.
+    """
     reason = model_reason.strip().lower()
     if not keep:
         return reason or "quality"
-    if score > 6.0:
-        return ""
     text = description.lower()
     if any(term in text for term in ("hand on the camera", "holding the camera", "grabbing the camera",
                                        "adjusting the camera", "adjusting the tripod", "frame tilting",
@@ -972,10 +982,14 @@ def infer_cull_reason(description: str, *, score: float, keep: bool, model_reaso
     adjustment = ("adjusting", "fixing", "pulling up", "repositioning")
     if any(term in text for term in clothing) and any(term in text for term in adjustment):
         return "clothing_adjustment"
-    talking = ("talking to", "conversing with", "chatting with")
+    conversation = ("talking to", "conversing with", "chatting with",
+                    "back-and-forth", "back and forth", "two voices", "two-voice")
     other = ("another person", "another individual", "other person", "other individual")
     audience = ("camera", "audience", "lens", "viewer")
-    if any(term in text for term in talking) and any(term in text for term in other) \
+    negated = re.search(r"\b(no|not|never|isn't|aren't)\b.{0,30}unrelated banter", text)
+    explicit_banter = "unrelated banter" in text and not negated
+    if (explicit_banter
+            or (any(term in text for term in conversation) and any(term in text for term in other))) \
             and not any(term in text for term in audience):
         return "unrelated_banter"
     return ""
