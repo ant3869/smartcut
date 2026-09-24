@@ -9,14 +9,20 @@ building the frontend. The riskiest assumption is that sparse frame observations
 capture temporal intent; the roadmap replaces that assumption with multi-frame evidence and
 human feedback rather than stacking more brittle keywords.
 
-## Current baseline - v0.1.0
+## Current baseline - v0.3.0
 
 - Full edit: keep the timeline and subtract positively identified waste.
 - Preview: variable 3-10 second action runs from one source.
 - Reel: best moments across multiple sources with diversity and duration budgets.
-- Local Whisper, local vision model, FFmpeg rendering, watermark, transitions, optional bumper,
+- Local Whisper, local vision model with confidence-gated culling, FFmpeg rendering, watermark, transitions, optional bumper,
   persona caption, cached analysis, manifests, and source-hash protection.
 - Review-first defaults. No automatic publishing or source mutation.
+- Cutroom review surface: source/final player, clickable timeline, Eye evidence with confidence,
+  **Needs your eyes** queue for uncertain verdicts and model/heuristic disagreements, hash-bound
+  Keep/Cut/Protect decisions, re-plan from review calls, render launch, and OpenTimelineIO export
+  for finishing in Resolve/Premiere.
+- Temporal Eye with direct timestamp seeking; vision prompt v3 with describe-first workflow and
+  calibrated confidence; model `keep` verdicts trusted, disagreements surfaced to humans.
 
 ## Decisions most likely to be tweaked
 
@@ -177,10 +183,17 @@ is applied outside its flagged interval.
 
 - Inbox/job queue with source thumbnails, mode, stage, ETA, errors, and retry.
 - Review player with proposed keep/remove overlays and reason/confidence at the playhead.
+- **Done in v0.3.0:** **Needs your eyes** queue lists uncertain verdicts and model/heuristic
+  disagreements with confidence badges; click to seek, Keep/Cut to resolve into
+  `editor_review.json`; resolved rows hide until re-plan.
+- **Done in v0.3.0:** **Re-plan with my decisions** rebuilds the plan from review calls via the
+  existing replan endpoint.
 - Drag cut handles; keep/reject/split/merge; lock moments so re-planning cannot remove them.
 - Full/preview/reel tabs with target duration and pacing/profile controls.
 - Side-by-side source/final and version comparison.
 - Persona caption editor, bumper/music picker, watermark/output preset controls.
+- **Done in v0.3.0:** OpenTimelineIO export of approved plan clips for finishing in Resolve/Premiere
+  (covers the Milestone 4 DaVinci/FCPXML export item).
 - Approval gate, render history, manifest download, and open-in-folder.
 - Keyboard-first review for fast client batches.
 
@@ -194,6 +207,8 @@ modes, and understand any failure without opening PowerShell.
 - Google Drive for Desktop watched-folder intake first; direct Drive API only if local sync is
   insufficient.
 - DaVinci/FCPXML export for finishing work without rebuilding the automated cut by hand.
+  **Done in v0.3.0** via OpenTimelineIO export of approved plan clips (`.otio`, references original
+  source media, frame-accurate source ranges).
 - Archive/retention tools with explicit confirmation and recoverable moves.
 - Optional notification/webhook when review or render completes; no automatic public posting.
 
@@ -228,7 +243,10 @@ overrides today and golden labels tomorrow: temporal/model changes must reproduc
 without deleting protected content before they replace human feedback.
 
 Cutroom now covers the first review loop against the stable job API: source/final playback,
-timeline range staging, hash-bound Keep/Cut/Protect decisions, and an explicit render gate. The
-remaining frontend work is the higher-volume operator stuff above (drag handles, keyboard review,
-queue state, and version comparison), not a replacement for this usable review path. Temporal
-reasoning and music-aware pacing remain behind measurable evaluation gates.
+timeline range staging, clickable Eye flags with confidence, the **Needs your eyes** queue for
+uncertain verdicts and model/heuristic disagreements, hash-bound Keep/Cut/Protect decisions,
+re-plan from review calls, an explicit render gate, and OTIO export for Resolve/Premiere. The
+remaining frontend work is the higher-volume operator stuff above (inbox queue, drag handles,
+keyboard review, full/preview/reel tabs, and version comparison), not a replacement for this
+usable review path. Temporal reasoning and music-aware pacing remain behind measurable evaluation
+gates.
