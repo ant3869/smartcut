@@ -5,7 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from .util import PipelineError, read_json, write_json
+from .util import PipelineError, read_json_or_none, write_json
 
 
 def _detect(source: Path, threshold: float) -> list[dict[str, float | int]]:
@@ -39,9 +39,13 @@ def detect_content_scenes(
     refresh: bool = False,
 ) -> list[dict[str, Any]]:
     """Detect and cache visual boundaries; this does not itself authorize cuts."""
-    if cache_path.exists() and not refresh:
-        cached = read_json(cache_path)
-        if cached.get("source_sha256") == source_sha256 and cached.get("threshold") == threshold:
+    if not refresh:
+        cached = read_json_or_none(cache_path)
+        if (
+            cached is not None
+            and cached.get("source_sha256") == source_sha256
+            and cached.get("threshold") == threshold
+        ):
             scenes = cached.get("scenes", [])
             if isinstance(scenes, list):
                 return scenes
