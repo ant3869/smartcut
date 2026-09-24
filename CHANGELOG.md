@@ -5,13 +5,32 @@ All notable changes to this project are documented here. The project follows
 
 ## [Unreleased]
 
+### Added
+
+- `audio_evidence_enabled` config flag (default `true`): a single on/off switch for
+  speech audio as edit evidence. When off, judged frames carry no transcript lines and
+  the frame prompt is rebuilt without any AUDIO mention (purely visual judging), section
+  summaries lose the section-local transcript, and `waste_terms` matches are skipped —
+  for videos where the soundtrack is music, TV, or other non-speech audio. Toggling the
+  flag busts the vision cache automatically (`.noaudio` in the filename). It does not
+  affect the transcript itself, captions, or the editorial loop's setup-pattern matching.
+- The audio-enabled frame prompt now tells the model to ignore music, TV audio, or
+  clearly misheard words in the AUDIO lines, for videos where speech and noise mix.
+
 ### Fixed
+
+- The frame description and consistency rule now say "conversing with another person
+  present", matching check 5's wording and the model-disagreement heuristic's banter
+  terms — previously the description phrase could not trip the heuristic.
+- `audio_evidence_enabled` is registered in the known config keys so it never warns as
+  unknown.
+- Removed the deleted `vision_review_confidence_floor` key from `config.example.json`.
 
 - Vision prompt v7: the banter check now gives the model a mechanical two-voice test
   for the AUDIO (one line responding to another, casual small talk, boredom, laughing
   together) instead of a vague "conversing" judgment, with explicit exclusions for
   moaning, dirty talk about the act, and talking straight to the camera. The frame
-  description must call out performer-conversing-with-someone-present so the
+  description must call out the performer conversing with another person present so the
   consistency rule fires. Fixes 008@123–130s, where v6 quoted the banter audio
   ("Try to be good." / "No way." / "You do.") yet kept the frames.
 - Section banter clause is now scoped: whole-section `banter` only when conversation

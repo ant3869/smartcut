@@ -47,6 +47,21 @@ Three edit modes, chosen explicitly instead of one overloaded selector:
   description and score. Each frame also carries nearby transcript audio, so the model can
   hear setup talk and banter it can't see. Frame sampling seeks directly to timestamps instead of
   decoding the whole video; motion is measured against a nearby frame at +0.2s for context.
+
+## Configuration
+
+`config.example.json` documents every supported key. Keys the pipeline reads are validated at
+startup: unknown keys warn instead of silently doing nothing.
+
+- `audio_evidence_enabled` (default `true`) — whether speech audio informs edit decisions.
+  When on, judged frames carry nearby transcript lines (`AUDIO near Ns`), section summaries
+  see the section-local transcript, and `waste_terms` matches in the transcript become waste
+  intervals. Turn it off for videos where the soundtrack is music, TV, or other non-speech
+  audio: the frame prompt is rebuilt without any AUDIO mention (the model judges purely on
+  visuals), section summaries lose the transcript, and transcript waste terms are skipped.
+  Toggling it busts the vision cache automatically (`.noaudio` in the filename), so no manual
+  `--refresh` is needed. It does not affect the transcript itself, captions, or the editorial
+  loop's setup-pattern matching.
 - **Signals** (`pipeline/signals.py`) — OpenCV measures motion and luminance at the exact Eye
   timestamps into a hash-bound `frame_signals.json`. This is evidence for the vision prompt, never
   an independent cut rule: fast movement can be setup *or* the intended reveal.
