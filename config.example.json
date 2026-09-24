@@ -25,7 +25,7 @@
   "scene_detection_enabled": true,
   "scene_threshold": 27.0,
   "vision_cull_confidence_threshold": 0.6,
-  "vision_review_confidence_floor": 0.3,
+  "audio_evidence_enabled": true,
   "full_edit_min_segment_seconds": 0.5,
   "waste_padding_seconds": 0.75,
   "preview_score_threshold": 7.0,

@@ -1253,16 +1253,41 @@ def test_export_otio_endpoint_writes_timeline(tmp_path, monkeypatch):
     assert response.json()["job"]["files"]["otio_timeline"].endswith("timeline.otio")
 
 
-def test_frame_prompt_v6_is_audio_aware_with_consistency_rule():
+def test_frame_prompt_v7_two_voice_banter_test():
     from pipeline.eye import DEFAULT_FRAME_PROMPT, VISION_PROMPT_VERSION
 
-    assert VISION_PROMPT_VERSION == 6
+    assert VISION_PROMPT_VERSION == 7
     assert "CONSISTENCY RULE" in DEFAULT_FRAME_PROMPT
     assert "provisional" not in DEFAULT_FRAME_PROMPT
     assert "AUDIO" in DEFAULT_FRAME_PROMPT
     assert "unrelated_banter" in DEFAULT_FRAME_PROMPT
     # talking with the other person present beats intimate content
     assert "EVEN WHEN" in DEFAULT_FRAME_PROMPT
+    # v7: mechanical two-voice test instead of a vague "conversing" judgment
+    assert "two-voice test" in DEFAULT_FRAME_PROMPT
+    assert "no responding voice" in DEFAULT_FRAME_PROMPT
+    # description must use the consistency rule's trigger phrase
+    assert "conversing with another person present" in DEFAULT_FRAME_PROMPT
+
+
+def test_section_policy_banter_scoped_to_dominant_content():
+    from pipeline.eye import (
+        DEFAULT_SECTION_EDITORIAL_POLICY,
+        SECTION_BANTER_CLAUSE,
+        SECTION_SETUP_CLAUSE,
+        SECTION_SUMMARY_PROMPT,
+        compose_section_policy,
+    )
+
+    assert DEFAULT_SECTION_EDITORIAL_POLICY == SECTION_SETUP_CLAUSE + " " + SECTION_BANTER_CLAUSE
+    assert "most of the section" in SECTION_BANTER_CLAUSE
+    assert "dominant content" in SECTION_BANTER_CLAUSE
+    # whole-section banter must not nuke a performance section over brief chatter
+    assert "lone ambiguous utterance" in SECTION_SUMMARY_PROMPT.lower()
+    # compose still appends the clause to legacy policies
+    composed = compose_section_policy(SECTION_SETUP_CLAUSE)
+    assert "most of the section" in composed
+    assert compose_section_policy(composed).count("conversing") == 1
 
 
 def test_transcript_audio_injected_per_frame(tmp_path, monkeypatch):
@@ -1363,3 +1388,82 @@ def test_evaluate_proposals_scores_plan_level_waste():
     )
     assert result["metrics"]["matched_cuts"] == 1
     assert result["metrics"]["cut_recall"] == 1.0
+
+
+def test_grazing_proposal_is_unexpected_when_target_missed():
+    from pipeline.evaluation import evaluate_proposals
+
+    proposals = [Clip(129.733, 227.533, ("section:setup",))]
+    result = evaluate_proposals(
+        proposals,
+        expected_cuts=[EditorialInterval(123.0, 130.0, "unrelated_banter")],
+        protected_keeps=[],
+    )
+    assert result["metrics"]["missed_cuts"] == 1
+    assert result["metrics"]["unexpected_proposals"] == 1
+
+
+def test_proposal_overlappping_matched_target_is_not_unexpected():
+    from pipeline.evaluation import evaluate_proposals
+
+    proposals = [Clip(5.0, 9.0, ("vision-cull:camera_adjustment",)), Clip(27.0, 35.0, ("vision-cull:blank_or_obstructed",)), Clip(43.0, 47.0, ("vision-cull:seeking_position",))]
+    result = evaluate_proposals(
+        proposals,
+        expected_cuts=[EditorialInterval(0.0, 52.0, "camera_setup_technical_banter")],
+        protected_keeps=[],
+    )
+    assert result["metrics"]["matched_cuts"] == 1
+    assert result["metrics"]["unexpected_proposals"] == 0
+
+
+def test_section_policy_compose_adds_banter_clause():
+    from pipeline.eye import (
+        DEFAULT_SECTION_EDITORIAL_POLICY,
+        SECTION_BANTER_CLAUSE,
+        SECTION_SETUP_CLAUSE,
+        compose_section_policy,
+    )
+
+    assert DEFAULT_SECTION_EDITORIAL_POLICY == SECTION_SETUP_CLAUSE + " " + SECTION_BANTER_CLAUSE
+    legacy = SECTION_SETUP_CLAUSE  # what older configs copied verbatim
+    composed = compose_section_policy(legacy)
+    assert "conversing" in composed
+    assert composed.startswith(legacy)
+    # already covered -> not duplicated
+    assert compose_section_policy(composed).count("conversing") == 1
+
+
+def test_frame_prompt_builder_audio_variants():
+    from pipeline.eye import DEFAULT_FRAME_PROMPT, build_frame_prompt
+
+    assert build_frame_prompt() == DEFAULT_FRAME_PROMPT
+    assert build_frame_prompt(audio_enabled=True) == DEFAULT_FRAME_PROMPT
+
+    silent = build_frame_prompt(audio_enabled=False)
+    assert "AUDIO" not in silent
+    assert "two-voice test" not in silent
+    # banter check survives on visual evidence alone
+    assert "unrelated_banter" in silent
+    assert "visible in the frame" in silent
+    assert "EVEN WHEN" in silent
+    assert "CONSISTENCY RULE" in silent
+    assert "conversing with another person present" in silent
+
+
+def test_vision_cache_path_busts_on_audio_flag(tmp_path):
+    from pipeline.eye import VISION_PROMPT_VERSION, VisionEye
+
+    eye = VisionEye(
+        base_url="http://127.0.0.1:1234/v1",
+        model="test-model",
+        interval=2.0,
+        cache_dir=tmp_path,
+    )
+    source = tmp_path / "clip.mp4"
+    source.write_bytes(b"fake")
+    with_audio = eye._cache_path(source, audio_enabled=True)
+    without_audio = eye._cache_path(source, audio_enabled=False)
+    assert with_audio != without_audio
+    assert f".v{VISION_PROMPT_VERSION}.vision.json" in with_audio.name
+    assert ".noaudio.vision.json" in without_audio.name
+    assert ".noaudio" not in with_audio.name
