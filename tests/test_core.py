@@ -856,7 +856,7 @@ def test_temporal_eye_reuses_cached_waste_without_model_call(monkeypatch, tmp_pa
     ).encode("utf-8")).hexdigest()[:12]
     cache = tmp_path / (
         f"{source.stem}.{stat.st_size}.{stat.st_mtime_ns}.temporal-model."
-        f"w512.t1.c0.5.v3.{candidate_signature}.temporal.json"
+        f"w512.t1.c0.5.v4.{candidate_signature}.temporal.json"
     )
     cache.write_text(
         '{"waste_intervals":[{"start":1.0,"end":2.0,'

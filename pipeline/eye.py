@@ -24,26 +24,40 @@ from .util import (
 )
 
 
-VISION_PROMPT_VERSION = 3
-TEMPORAL_PROMPT_VERSION = 1
+VISION_PROMPT_VERSION = 5
+TEMPORAL_PROMPT_VERSION = 2
 SECTION_SUMMARY_PROMPT_VERSION = 2
 STRONG_SCORE = 7.0  # matches DEFAULT_FRAME_PROMPT's own "7-8 for strong" scale
 MAX_TEMPORAL_FALLBACK_WINDOWS = 32
 DEFAULT_FRAME_PROMPT = (
-    "You are judging single moments from a creator's performance video (fashion/outfit "
-    "content, direct-to-camera). For each frame, FIRST write one sentence describing "
-    "exactly what is visible. THEN decide.\n"
-    "Set keep=false ONLY for: camera/tripod adjustment, reaching toward the lens, "
-    "seeking a position, resetting or breaking character, obvious bloopers, empty or "
-    "obstructed framing, severe blur, or technical failure.\n"
-    "Clothing rule (read carefully): a garment being moved to REVEAL or emphasize the "
-    "outfit is performance -- keep=true, score it on its merits. A garment being "
-    "straightened, re-covered, de-wrinkled, or reset between poses is practical "
-    "adjustment -- keep=false, cull_reason=\"clothing_adjustment\". When you cannot "
-    "tell which it is, keep=true and say so in the description.\n"
-    "cull_reason must be one of: camera_adjustment, clothing_adjustment, "
-    "seeking_position, blooper, out_of_character, blank_or_obstructed, "
-    "technical_failure, or \"\" when kept.\n"
+    "You are judging single moments from an adult creator's video (intimate/explicit "
+    "solo or duo performance). For each frame, FIRST write one sentence describing "
+    "exactly what is visible. THEN work through these checks in order. A CUT verdict is "
+    "final -- stop there. A KEEP verdict is provisional -- note it and keep going.\n"
+    "1. No person or human body part visible in the frame -> CUT, "
+    "cull_reason=\"blank_or_obstructed\".\n"
+    "2. Intimate contact happening (penetration, oral, direct sexual contact between people, "
+    "or explicit solo play) -> KEEP. Score it on its merits.\n"
+    "3. Technical failure: the camera or tripod itself being handled (a hand on the device, "
+    "the frame visibly tilting or shifting), the lens blocked (a hand over the lens, pointed "
+    "at the floor or ceiling), the frame out of focus, or the frame disoriented (sideways, "
+    "upside-down) -> CUT, cull_reason=\"camera_adjustment\" for device handling or disorientation, "
+    "\"technical_failure\" otherwise.\n"
+    "4. Clothing: a garment moved to REVEAL or emphasize the body is performance -> KEEP. A "
+    "garment straightened, re-covered, de-wrinkled, or reset between poses is practical "
+    "adjustment -> CUT, cull_reason=\"clothing_adjustment\". When you cannot tell which it is, "
+    "KEEP and say so in the description.\n"
+    "5. Genuine take-breaker: an interrupted take, someone entering the frame by accident, "
+    "visible crew or equipment, a fall -> CUT, cull_reason=\"blooper\". Repositioning between "
+    "poses -> CUT, cull_reason=\"seeking_position\".\n"
+    "6. The performer conversing with another person visible in the frame -- talking with them, "
+    "not performing and not addressing the camera -> CUT, cull_reason=\"unrelated_banter\". "
+    "Talking or vocalizing to the camera/audience during performance is content, not banter.\n"
+    "7. Otherwise -> KEEP. Intimate acts, nudity, explicit close-ups, and performing close to "
+    "the lens ARE the content: never cut a frame for being sexually explicit, and never call "
+    "intimate content a blooper.\n"
+    "cull_reason must be one of: camera_adjustment, clothing_adjustment, seeking_position, blooper, "
+    "out_of_character, blank_or_obstructed, technical_failure, unrelated_banter, or \"\" when kept.\n"
     "Score 1-3 unusable/setup, 4-6 ordinary, 7-8 strong, 9-10 exceptional. "
     "A 9-10 means: the single best frame of its kind in this video, not just good.\n"
     "confidence is 0-1: your certainty in THIS verdict, not how dramatic the frame is.\n"
@@ -55,7 +69,7 @@ TEMPORAL_EDIT_PROMPT = (
     "These are chronological context frames around one marked TARGET SPAN. Judge whether the "
     "TARGET SPAN should survive the edit; neighboring frames are context, not part of the verdict. "
     "Keep deliberate posing, performance, reveals, and clothing movement whose purpose is clearly "
-    "the content. Cut setup or low-value transition: partial/off-camera composition, getting into "
+    "the content. Intimate or explicit content is the performance, never a reason to cut. Cut setup or low-value transition: partial/off-camera composition, getting into "
     "or out of a chair, walking or repositioning between poses, practical clothing adjustment, "
     "camera adjustment, obstruction, or breaking character. Distinguish clothing actions by their "
     "result: increasing exposure or emphasis is a deliberate reveal (keep); straightening, restoring "
@@ -83,7 +97,9 @@ DEFAULT_SECTION_EDITORIAL_POLICY = (
     "Prefer removing pre-roll and technical setup before the intended scene begins. "
     "When the section-local transcript visibly discusses recording, camera/framing, checking how it looks, "
     "or moving/positioning for the camera, classify the whole section as setup and cut_candidate even if "
-    "the frames include otherwise usable content."
+    "the frames include otherwise usable content. When the section-local transcript is the performer "
+    "conversing with another person who is clearly present -- not performing and not addressing the "
+    "audience -- classify the whole section as banter and cut_candidate even if the frames show the performer."
 )
 
 
@@ -111,7 +127,6 @@ class VisionEye:
         max_width: int = 1024,
         batch_size: int = 4,
         cull_confidence_threshold: float = 0.6,
-        review_confidence_floor: float = 0.3,
     ):
         self.base_url = base_url.rstrip("/")
         self.model = model
@@ -120,7 +135,6 @@ class VisionEye:
         self.max_width = max_width
         self.batch_size = max(1, batch_size)
         self.cull_confidence_threshold = cull_confidence_threshold
-        self.review_confidence_floor = review_confidence_floor
         self.last_temporal_decisions: list[dict[str, Any]] = []
         self.model_disagreements: list[dict[str, Any]] = []
         self.model_calls: dict[str, int] = {}
@@ -501,8 +515,7 @@ class VisionEye:
                 ),
             )
             for item in observations
-            if not item.keep
-            and self.review_confidence_floor <= item.confidence < self.cull_confidence_threshold
+            if not item.keep and item.confidence < self.cull_confidence_threshold
         ]
         return self._merge_clips(uncertain)
 
@@ -826,12 +839,20 @@ def infer_cull_reason(description: str, *, score: float, keep: bool, model_reaso
     if score > 6.0:
         return ""
     text = description.lower()
-    if any(term in text for term in ("adjusting the camera", "adjusting camera", "repositioning the camera", "reaching toward the lens")):
+    if any(term in text for term in ("hand on the camera", "holding the camera", "grabbing the camera",
+                                       "adjusting the camera", "adjusting the tripod", "frame tilting",
+                                       "frame shifting", "repositioning the tripod")):
         return "camera_adjustment"
     clothing = ("clothing", "clothes", "shorts", "shirt", "outfit")
     adjustment = ("adjusting", "fixing", "pulling up", "repositioning")
     if any(term in text for term in clothing) and any(term in text for term in adjustment):
         return "clothing_adjustment"
+    talking = ("talking to", "conversing with", "chatting with")
+    other = ("another person", "another individual", "other person", "other individual")
+    audience = ("camera", "audience", "lens", "viewer")
+    if any(term in text for term in talking) and any(term in text for term in other) \
+            and not any(term in text for term in audience):
+        return "unrelated_banter"
     return ""
 
 

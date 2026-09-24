@@ -41,10 +41,12 @@ Three edit modes, chosen explicitly instead of one overloaded selector:
   no paid transcription. Low-confidence segments are excluded from caption grounding so non-verbal
   audio can't produce fluent hallucinations.
 - **Eye** (`pipeline/eye.py`) — samples frames on a configured interval and sends labeled batches to
-  a local vision model via LM Studio. It describes what it sees first, then scores and flags waste:
-  camera adjustment, clothing fixes, position hunting, bloopers, broken-character moments,
-  obstruction, technical failures. Frame sampling seeks directly to timestamps instead of decoding
-  the whole video; motion is measured against a nearby frame at +0.2s for context.
+  a local vision model via LM Studio. It describes what it sees first, then works through the
+  editor's decision tree in order: no person visible, intimate contact (keep), device handling /
+  blocked lens / out-of-focus / disoriented frame, reveal vs practical clothing adjustment,
+  genuine take-breakers, conversing with another person on screen. A cut verdict is final; a keep
+  is provisional and later checks still run. Frame sampling seeks directly to timestamps instead of
+  decoding the whole video; motion is measured against a nearby frame at +0.2s for context.
 - **Signals** (`pipeline/signals.py`) — OpenCV measures motion and luminance at the exact Eye
   timestamps into a hash-bound `frame_signals.json`. This is evidence for the vision prompt, never
   an independent cut rule: fast movement can be setup *or* the intended reveal.
@@ -69,7 +71,8 @@ The pipeline trusts the vision model's `keep` verdicts — no hidden substring h
 override them. But it doesn't trust its rejections blindly either:
 
 - Confident rejections become waste.
-- Uncertain rejections become **review intervals**: they're flagged, not cut.
+- Everything else the model rejects — any verdict under the confidence threshold — becomes a
+  **review interval**: flagged, not cut. Nothing uncertain vanishes silently.
 - Every model/heuristic disagreement is recorded.
 
 Both surface in the Cutroom's **Needs your eyes** queue with confidence badges. Click an item to
