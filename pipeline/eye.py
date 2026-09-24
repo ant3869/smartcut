@@ -24,18 +24,25 @@ from .util import (
 )
 
 
-VISION_PROMPT_VERSION = 3
+VISION_PROMPT_VERSION = 4
 TEMPORAL_PROMPT_VERSION = 1
 SECTION_SUMMARY_PROMPT_VERSION = 2
 STRONG_SCORE = 7.0  # matches DEFAULT_FRAME_PROMPT's own "7-8 for strong" scale
 MAX_TEMPORAL_FALLBACK_WINDOWS = 32
 DEFAULT_FRAME_PROMPT = (
-    "You are judging single moments from a creator's performance video (fashion/outfit "
-    "content, direct-to-camera). For each frame, FIRST write one sentence describing "
-    "exactly what is visible. THEN decide.\n"
-    "Set keep=false ONLY for: camera/tripod adjustment, reaching toward the lens, "
-    "seeking a position, resetting or breaking character, obvious bloopers, empty or "
-    "obstructed framing, severe blur, or technical failure.\n"
+    "You are judging single moments from an adult creator's solo performance video "
+    "(intimate/explicit content, direct-to-camera). For each frame, FIRST write one "
+    "sentence describing exactly what is visible. THEN decide.\n"
+    "Intimate acts, nudity, explicit close-ups, and performing close to the lens ARE "
+    "the content. Never set keep=false because a frame is sexually explicit, and never "
+    "call intimate content a blooper.\n"
+    "Set keep=false ONLY for: the camera or tripod itself being handled (a hand on the "
+    "device, the frame visibly tilting or shifting), seeking a position, resetting or "
+    "breaking character, genuine take-breakers (an interrupted take, someone entering "
+    "the frame by accident, visible crew or equipment, a fall), the lens itself blocked "
+    "(a hand over the lens, pointed at the floor or ceiling), severe blur, or technical "
+    "failure. A performer near the lens, or partially out of frame during an act, is "
+    "performance framing -- not obstruction and not a camera adjustment.\n"
     "Clothing rule (read carefully): a garment being moved to REVEAL or emphasize the "
     "outfit is performance -- keep=true, score it on its merits. A garment being "
     "straightened, re-covered, de-wrinkled, or reset between poses is practical "
@@ -55,7 +62,7 @@ TEMPORAL_EDIT_PROMPT = (
     "These are chronological context frames around one marked TARGET SPAN. Judge whether the "
     "TARGET SPAN should survive the edit; neighboring frames are context, not part of the verdict. "
     "Keep deliberate posing, performance, reveals, and clothing movement whose purpose is clearly "
-    "the content. Cut setup or low-value transition: partial/off-camera composition, getting into "
+    "the content. Intimate or explicit content is the performance, never a reason to cut. Cut setup or low-value transition: partial/off-camera composition, getting into "
     "or out of a chair, walking or repositioning between poses, practical clothing adjustment, "
     "camera adjustment, obstruction, or breaking character. Distinguish clothing actions by their "
     "result: increasing exposure or emphasis is a deliberate reveal (keep); straightening, restoring "
@@ -111,7 +118,6 @@ class VisionEye:
         max_width: int = 1024,
         batch_size: int = 4,
         cull_confidence_threshold: float = 0.6,
-        review_confidence_floor: float = 0.3,
     ):
         self.base_url = base_url.rstrip("/")
         self.model = model
@@ -120,7 +126,6 @@ class VisionEye:
         self.max_width = max_width
         self.batch_size = max(1, batch_size)
         self.cull_confidence_threshold = cull_confidence_threshold
-        self.review_confidence_floor = review_confidence_floor
         self.last_temporal_decisions: list[dict[str, Any]] = []
         self.model_disagreements: list[dict[str, Any]] = []
         self.model_calls: dict[str, int] = {}
@@ -501,8 +506,7 @@ class VisionEye:
                 ),
             )
             for item in observations
-            if not item.keep
-            and self.review_confidence_floor <= item.confidence < self.cull_confidence_threshold
+            if not item.keep and item.confidence < self.cull_confidence_threshold
         ]
         return self._merge_clips(uncertain)
 
@@ -826,7 +830,9 @@ def infer_cull_reason(description: str, *, score: float, keep: bool, model_reaso
     if score > 6.0:
         return ""
     text = description.lower()
-    if any(term in text for term in ("adjusting the camera", "adjusting camera", "repositioning the camera", "reaching toward the lens")):
+    if any(term in text for term in ("hand on the camera", "holding the camera", "grabbing the camera",
+                                       "adjusting the camera", "adjusting the tripod", "frame tilting",
+                                       "frame shifting", "repositioning the tripod")):
         return "camera_adjustment"
     clothing = ("clothing", "clothes", "shorts", "shirt", "outfit")
     adjustment = ("adjusting", "fixing", "pulling up", "repositioning")

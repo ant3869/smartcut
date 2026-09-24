@@ -5,6 +5,19 @@ All notable changes to this project are documented here. The project follows
 
 ## [Unreleased]
 
+### Fixed
+
+- Vision prompt v4: intimate/explicit performance content is named as the content itself —
+  the model no longer labels close-up intimate acts "bloopers" or reads performing near
+  the lens as camera adjustment/obstruction. `camera_adjustment` now requires evidence the
+  device is being handled (hand on camera/tripod, frame tilting/shifting);
+  `blank_or_obstructed` requires the lens itself blocked. Cache key bumped (`v4`).
+- Uncertain rejections no longer vanish: every `keep=false` below the cull confidence
+  threshold lands in `review_intervals` (the review queue) instead of only those above
+  the old review floor. Removed the now-unused `vision_review_confidence_floor` setting.
+- Disagreement heuristic phrases retuned to prompt-v4 vocabulary (device-handling language
+  instead of "reaching toward the lens", which v4 defines as performance).
+
 ### Planned
 
 - Persisted stage progress and resumable jobs.

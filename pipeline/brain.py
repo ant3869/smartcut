@@ -38,7 +38,6 @@ class PipelineBrain:
             max_width=int(config.get("vision_max_width", 512)),
             batch_size=int(config.get("vision_batch_size", 4)),
             cull_confidence_threshold=float(config.get("vision_cull_confidence_threshold", 0.6)),
-            review_confidence_floor=float(config.get("vision_review_confidence_floor", 0.3)),
         )
         self.blade = FfmpegBlade(
             crf=int(config.get("blade_crf", 20)),
