@@ -73,11 +73,16 @@ def evaluate_proposals(
         if _meaningful_overlap(proposal, target)
     ]
     expected_matches = [item for item in found]
+    # A proposal is only excused from the unexpected list when it overlaps a
+    # target the system actually matched. The old rule excused any proposal
+    # grazing a target by 0.25s, which hid a 98-second "section:setup" false
+    # positive behind a 0.27s graze of the 123-130 gold span.
+    matched_spans = [(item["start"], item["end"]) for item in found]
     expected_proposals = {
         (proposal.start, proposal.end)
-        for target in expected_cuts
         for proposal in proposals
-        if _meaningful_overlap(proposal, target)
+        for (mstart, mend) in matched_spans
+        if min(proposal.end, mend) - max(proposal.start, mstart) >= 0.25
     }
     unexpected = [
         asdict(proposal)

@@ -26,6 +26,12 @@ All notable changes to this project are documented here. The project follows
 - The editorial harness now also scores plan-level proposals (waste intervals plus
   section cut candidates), so transcript-driven section wins count alongside raw
   frame observations.
+- Fixed the harness hiding grazing false positives: a proposal is only excused from
+  the unexpected list when it overlaps a target the system actually matched (was: any
+  0.25s graze of a gold span excused it).
+- Fixed the configured `multi_pass_editorial_policy` silently replacing the built-in
+  section policy: the banter clause is now composed onto any configured policy that
+  lacks it, so older configs copied from the pre-v5 default get banter detection.
 
 - Vision prompt v5 encodes the editor's decision tree as ordered checks (cut is final,
   keep is provisional): no people → cut; intimate contact → keep; device handling /
