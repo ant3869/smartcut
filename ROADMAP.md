@@ -21,9 +21,10 @@ human feedback rather than stacking more brittle keywords.
   **Needs your eyes** queue for uncertain verdicts and model/heuristic disagreements, hash-bound
   Keep/Cut/Protect decisions, re-plan from review calls, render launch, and OpenTimelineIO export
   for finishing in Resolve/Premiere.
-- Temporal Eye with direct timestamp seeking; vision prompt v4 with describe-first workflow,
-  adult-performance genre context, and calibrated confidence; model `keep` verdicts trusted,
-  disagreements and all uncertain rejections surfaced to humans.
+- Temporal Eye with direct timestamp seeking; vision prompt v5 encodes the editor's decision
+  tree (no people / intimate contact / technical / clothing / take-breakers / banter) with
+  describe-first workflow and calibrated confidence; model verdicts trusted, disagreements and
+  all uncertain rejections surfaced to humans.
 
 ## Decisions most likely to be tweaked
 

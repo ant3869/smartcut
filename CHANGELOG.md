@@ -7,6 +7,18 @@ All notable changes to this project are documented here. The project follows
 
 ### Fixed
 
+- Vision prompt v5 encodes the editor's decision tree as ordered checks (cut is final,
+  keep is provisional): no people → cut; intimate contact → keep; device handling /
+  blocked lens / out of focus / disoriented frame → cut; reveal vs practical clothing
+  adjustment; genuine take-breakers; conversing with another visible person (not
+  performing, not addressing the camera) → cut as new `unrelated_banter` reason.
+  Explicit/solo play counts as intimate contact. Cache key bumped (`v5`).
+- Section editorial policy: a section whose transcript is the performer conversing with
+  another person present (not performing, not addressing the audience) is now classified
+  as banter / cut_candidate. Policy text is part of the section cache signature, so this
+  busts stale section caches automatically.
+- Disagreement heuristic: added `unrelated_banter` phrase detection (talking/conversing
+  with another person, excluding camera/audience) as review evidence.
 - Vision prompt v4: intimate/explicit performance content is named as the content itself —
   the model no longer labels close-up intimate acts "bloopers" or reads performing near
   the lens as camera adjustment/obstruction. `camera_adjustment` now requires evidence the

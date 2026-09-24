@@ -24,33 +24,40 @@ from .util import (
 )
 
 
-VISION_PROMPT_VERSION = 4
+VISION_PROMPT_VERSION = 5
 TEMPORAL_PROMPT_VERSION = 2
 SECTION_SUMMARY_PROMPT_VERSION = 2
 STRONG_SCORE = 7.0  # matches DEFAULT_FRAME_PROMPT's own "7-8 for strong" scale
 MAX_TEMPORAL_FALLBACK_WINDOWS = 32
 DEFAULT_FRAME_PROMPT = (
-    "You are judging single moments from an adult creator's solo performance video "
-    "(intimate/explicit content, direct-to-camera). For each frame, FIRST write one "
-    "sentence describing exactly what is visible. THEN decide.\n"
-    "Intimate acts, nudity, explicit close-ups, and performing close to the lens ARE "
-    "the content. Never set keep=false because a frame is sexually explicit, and never "
-    "call intimate content a blooper.\n"
-    "Set keep=false ONLY for: the camera or tripod itself being handled (a hand on the "
-    "device, the frame visibly tilting or shifting), seeking a position, resetting or "
-    "breaking character, genuine take-breakers (an interrupted take, someone entering "
-    "the frame by accident, visible crew or equipment, a fall), the lens itself blocked "
-    "(a hand over the lens, pointed at the floor or ceiling), severe blur, or technical "
-    "failure. A performer near the lens, or partially out of frame during an act, is "
-    "performance framing -- not obstruction and not a camera adjustment.\n"
-    "Clothing rule (read carefully): a garment being moved to REVEAL or emphasize the "
-    "outfit is performance -- keep=true, score it on its merits. A garment being "
-    "straightened, re-covered, de-wrinkled, or reset between poses is practical "
-    "adjustment -- keep=false, cull_reason=\"clothing_adjustment\". When you cannot "
-    "tell which it is, keep=true and say so in the description.\n"
-    "cull_reason must be one of: camera_adjustment, clothing_adjustment, "
-    "seeking_position, blooper, out_of_character, blank_or_obstructed, "
-    "technical_failure, or \"\" when kept.\n"
+    "You are judging single moments from an adult creator's video (intimate/explicit "
+    "solo or duo performance). For each frame, FIRST write one sentence describing "
+    "exactly what is visible. THEN work through these checks in order. A CUT verdict is "
+    "final -- stop there. A KEEP verdict is provisional -- note it and keep going.\n"
+    "1. No person or human body part visible in the frame -> CUT, "
+    "cull_reason=\"blank_or_obstructed\".\n"
+    "2. Intimate contact happening (penetration, oral, direct sexual contact between people, "
+    "or explicit solo play) -> KEEP. Score it on its merits.\n"
+    "3. Technical failure: the camera or tripod itself being handled (a hand on the device, "
+    "the frame visibly tilting or shifting), the lens blocked (a hand over the lens, pointed "
+    "at the floor or ceiling), the frame out of focus, or the frame disoriented (sideways, "
+    "upside-down) -> CUT, cull_reason=\"camera_adjustment\" for device handling or disorientation, "
+    "\"technical_failure\" otherwise.\n"
+    "4. Clothing: a garment moved to REVEAL or emphasize the body is performance -> KEEP. A "
+    "garment straightened, re-covered, de-wrinkled, or reset between poses is practical "
+    "adjustment -> CUT, cull_reason=\"clothing_adjustment\". When you cannot tell which it is, "
+    "KEEP and say so in the description.\n"
+    "5. Genuine take-breaker: an interrupted take, someone entering the frame by accident, "
+    "visible crew or equipment, a fall -> CUT, cull_reason=\"blooper\". Repositioning between "
+    "poses -> CUT, cull_reason=\"seeking_position\".\n"
+    "6. The performer conversing with another person visible in the frame -- talking with them, "
+    "not performing and not addressing the camera -> CUT, cull_reason=\"unrelated_banter\". "
+    "Talking or vocalizing to the camera/audience during performance is content, not banter.\n"
+    "7. Otherwise -> KEEP. Intimate acts, nudity, explicit close-ups, and performing close to "
+    "the lens ARE the content: never cut a frame for being sexually explicit, and never call "
+    "intimate content a blooper.\n"
+    "cull_reason must be one of: camera_adjustment, clothing_adjustment, seeking_position, blooper, "
+    "out_of_character, blank_or_obstructed, technical_failure, unrelated_banter, or \"\" when kept.\n"
     "Score 1-3 unusable/setup, 4-6 ordinary, 7-8 strong, 9-10 exceptional. "
     "A 9-10 means: the single best frame of its kind in this video, not just good.\n"
     "confidence is 0-1: your certainty in THIS verdict, not how dramatic the frame is.\n"
@@ -90,7 +97,9 @@ DEFAULT_SECTION_EDITORIAL_POLICY = (
     "Prefer removing pre-roll and technical setup before the intended scene begins. "
     "When the section-local transcript visibly discusses recording, camera/framing, checking how it looks, "
     "or moving/positioning for the camera, classify the whole section as setup and cut_candidate even if "
-    "the frames include otherwise usable content."
+    "the frames include otherwise usable content. When the section-local transcript is the performer "
+    "conversing with another person who is clearly present -- not performing and not addressing the "
+    "audience -- classify the whole section as banter and cut_candidate even if the frames show the performer."
 )
 
 
@@ -838,6 +847,12 @@ def infer_cull_reason(description: str, *, score: float, keep: bool, model_reaso
     adjustment = ("adjusting", "fixing", "pulling up", "repositioning")
     if any(term in text for term in clothing) and any(term in text for term in adjustment):
         return "clothing_adjustment"
+    talking = ("talking to", "conversing with", "chatting with")
+    other = ("another person", "another individual", "other person", "other individual")
+    audience = ("camera", "audience", "lens", "viewer")
+    if any(term in text for term in talking) and any(term in text for term in other) \
+            and not any(term in text for term in audience):
+        return "unrelated_banter"
     return ""
 
 
