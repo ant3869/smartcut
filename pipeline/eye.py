@@ -35,52 +35,81 @@ STRONG_SCORE = 7.0  # matches DEFAULT_FRAME_PROMPT's own "7-8 for strong" scale
 MAX_TEMPORAL_FALLBACK_WINDOWS = 32
 # Seconds of transcript audio context attached to each judged frame.
 FRAME_AUDIO_CONTEXT_SECONDS = 4.0
-DEFAULT_FRAME_PROMPT = (
-    "You are judging single moments from an adult creator's video (intimate/explicit "
-    "solo or duo performance). Each frame may include AUDIO lines: transcript words spoken "
-    "within a few seconds of that frame (noisy; ignore if clearly misheard). For each frame, "
-    "FIRST write one sentence describing exactly what is visible, and say when the AUDIO shows "
-    "the performer conversing with someone present (two voices in a back-and-forth exchange). THEN work through ALL of "
-    "these checks. If ANY cut check matches, keep=false with that check's reason (first match "
-    "wins). If no cut check matches, keep=true.\n"
-    "1. No person or human body part visible in the frame -> CUT, "
-    "cull_reason=\"blank_or_obstructed\".\n"
-    "2. Technical failure: the camera or tripod itself being handled (a hand on the device, "
-    "the frame visibly tilting or shifting), the lens blocked (a hand over the lens, pointed "
-    "at the floor or ceiling), the frame out of focus, or the frame disoriented (sideways, "
-    "upside-down) -> CUT, cull_reason=\"camera_adjustment\" for device handling or disorientation, "
-    "\"technical_failure\" otherwise.\n"
-    "3. Clothing: a garment moved to REVEAL or emphasize the body is performance -> keep. A "
-    "garment straightened, re-covered, de-wrinkled, or reset between poses is practical "
-    "adjustment -> CUT, cull_reason=\"clothing_adjustment\". When you cannot tell which it is, "
-    "keep and say so in the description.\n"
-    "4. Genuine take-breaker: an interrupted take, someone entering the frame by accident, "
-    "visible crew or equipment, a fall -> CUT, cull_reason=\"blooper\". Preparation, transition, "
-    "or repositioning between scenes, poses, or acts -> CUT, cull_reason=\"seeking_position\".\n"
-    "5. The performer conversing with another person present -> CUT, cull_reason=\"unrelated_banter\". "
-    "Use the two-voice test on the AUDIO: one line responding to another ('No way.' answering 'Try to be good.'), "
-    "casual small talk, boredom ('I'm bored'), or laughing together means two people are conversing in the room -- "
-    "the other person may be heard but not seen. This applies EVEN WHEN "
-    "intimate contact is visible: a casual chat with someone present beats the performance. "
-    "NOT banter: moaning, dirty talk about the act itself, or talking straight TO the camera/audience "
-    "with no responding voice.\n"
-    "6. Intimate contact happening (penetration, oral, direct sexual contact between people, "
-    "or explicit solo play) -> keep. Score it on its merits.\n"
-    "7. Otherwise -> keep. Intimate acts, nudity, explicit close-ups, and performing close to "
-    "the lens ARE the content: never cut a frame for being sexually explicit, and never call "
-    "intimate content a blooper.\n"
-    "CONSISTENCY RULE: your verdict must match your own words and score. If your description says "
-    "preparation, transition, setup, repositioning, adjusting, handling the camera or device, or "
-    "conversing with someone present, keep MUST be false. Score 1-3 means keep=false; score 7-10 "
-    "means keep=true.\n"
-    "cull_reason must be one of: camera_adjustment, clothing_adjustment, seeking_position, blooper, "
-    "out_of_character, blank_or_obstructed, technical_failure, unrelated_banter, or \"\" when kept.\n"
-    "Score 1-3 unusable/setup, 4-6 ordinary, 7-8 strong, 9-10 exceptional. "
-    "A 9-10 means: the single best frame of its kind in this video, not just good.\n"
-    "confidence is 0-1: your certainty in THIS verdict, not how dramatic the frame is.\n"
-    "Set dark=true only if the frame is visibly underexposed enough to need correction. "
-    "Return JSON only."
-)
+def build_frame_prompt(*, audio_enabled: bool = True) -> str:
+    """Assemble the frame-judging prompt, with or without the AUDIO evidence channel.
+
+    When audio is disabled (music, TV, or other non-speech audio), the prompt drops
+    every AUDIO mention so the model judges purely on visuals instead of reasoning
+    about transcript lines it never receives.
+    """
+    audio_intro = (
+        "Each frame may include AUDIO lines: transcript words spoken within a few seconds "
+        "of that frame (noisy; ignore music, TV audio, or clearly misheard words). "
+    ) if audio_enabled else ""
+    audio_description = (
+        ", and say when the AUDIO shows the performer conversing with another person "
+        "present (two voices in a back-and-forth exchange)"
+    ) if audio_enabled else ""
+    if audio_enabled:
+        banter_check = (
+            "5. The performer conversing with another person present -> CUT, "
+            "cull_reason=\"unrelated_banter\". Use the two-voice test on the AUDIO: one line "
+            "responding to another ('No way.' answering 'Try to be good.'), casual small talk, "
+            "boredom ('I'm bored'), or laughing together means two people are conversing in the "
+            "room -- the other person may be heard but not seen. This applies EVEN WHEN "
+            "intimate contact is visible: a casual chat with someone present beats the performance. "
+            "NOT banter: moaning, dirty talk about the act itself, or talking straight TO the "
+            "camera/audience with no responding voice.\n"
+        )
+    else:
+        banter_check = (
+            "5. The performer conversing with another person present -- visible in the frame "
+            "talking with them rather than addressing the camera -> CUT, "
+            "cull_reason=\"unrelated_banter\". This applies EVEN WHEN "
+            "intimate contact is visible: talking with the other person present beats the performance. "
+            "Talking or vocalizing TO the camera/audience during performance is content, not banter.\n"
+        )
+    return (
+        "You are judging single moments from an adult creator's video (intimate/explicit "
+        "solo or duo performance). " + audio_intro + "For each frame, "
+        "FIRST write one sentence describing exactly what is visible" + audio_description + ". THEN work through ALL of "
+        "these checks. If ANY cut check matches, keep=false with that check's reason (first match "
+        "wins). If no cut check matches, keep=true.\n"
+        "1. No person or human body part visible in the frame -> CUT, "
+        "cull_reason=\"blank_or_obstructed\".\n"
+        "2. Technical failure: the camera or tripod itself being handled (a hand on the device, "
+        "the frame visibly tilting or shifting), the lens blocked (a hand over the lens, pointed "
+        "at the floor or ceiling), the frame out of focus, or the frame disoriented (sideways, "
+        "upside-down) -> CUT, cull_reason=\"camera_adjustment\" for device handling or disorientation, "
+        "\"technical_failure\" otherwise.\n"
+        "3. Clothing: a garment moved to REVEAL or emphasize the body is performance -> keep. A "
+        "garment straightened, re-covered, de-wrinkled, or reset between poses is practical "
+        "adjustment -> CUT, cull_reason=\"clothing_adjustment\". When you cannot tell which it is, "
+        "keep and say so in the description.\n"
+        "4. Genuine take-breaker: an interrupted take, someone entering the frame by accident, "
+        "visible crew or equipment, a fall -> CUT, cull_reason=\"blooper\". Preparation, transition, "
+        "or repositioning between scenes, poses, or acts -> CUT, cull_reason=\"seeking_position\".\n"
+        + banter_check +
+        "6. Intimate contact happening (penetration, oral, direct sexual contact between people, "
+        "or explicit solo play) -> keep. Score it on its merits.\n"
+        "7. Otherwise -> keep. Intimate acts, nudity, explicit close-ups, and performing close to "
+        "the lens ARE the content: never cut a frame for being sexually explicit, and never call "
+        "intimate content a blooper.\n"
+        "CONSISTENCY RULE: your verdict must match your own words and score. If your description says "
+        "preparation, transition, setup, repositioning, adjusting, handling the camera or device, or "
+        "conversing with another person present, keep MUST be false. Score 1-3 means keep=false; score 7-10 "
+        "means keep=true.\n"
+        "cull_reason must be one of: camera_adjustment, clothing_adjustment, seeking_position, blooper, "
+        "out_of_character, blank_or_obstructed, technical_failure, unrelated_banter, or \"\" when kept.\n"
+        "Score 1-3 unusable/setup, 4-6 ordinary, 7-8 strong, 9-10 exceptional. "
+        "A 9-10 means: the single best frame of its kind in this video, not just good.\n"
+        "confidence is 0-1: your certainty in THIS verdict, not how dramatic the frame is.\n"
+        "Set dark=true only if the frame is visibly underexposed enough to need correction. "
+        "Return JSON only."
+    )
+
+
+DEFAULT_FRAME_PROMPT = build_frame_prompt()
 
 TEMPORAL_EDIT_PROMPT = (
     "These are chronological context frames around one marked TARGET SPAN. Judge whether the "
@@ -178,11 +207,15 @@ class VisionEye:
         self.model_disagreements: list[dict[str, Any]] = []
         self.model_calls: dict[str, int] = {}
 
-    def _cache_path(self, source: Path) -> Path:
+    def _cache_path(self, source: Path, *, audio_enabled: bool = True) -> Path:
         stat = source.stat()
+        # The audio flag changes the prompt, so it must bust the cache like a
+        # prompt version bump does. The default (audio on) keeps the historic
+        # filename untouched.
+        audio_tag = "" if audio_enabled else ".noaudio"
         return self.cache_dir / (
             f"{source.stem}.{stat.st_size}.{stat.st_mtime_ns}.{self.model}."
-            f"w{self.max_width}.v{VISION_PROMPT_VERSION}.vision.json"
+            f"w{self.max_width}.v{VISION_PROMPT_VERSION}{audio_tag}.vision.json"
         )
 
     @staticmethod
@@ -216,8 +249,9 @@ class VisionEye:
         prompt: str | None = None,
         frame_hints: dict[float, str] | None = None,
         transcript_segments: list | None = None,
+        audio_enabled: bool = True,
     ) -> list[Observation]:
-        cache = self._cache_path(source)
+        cache = self._cache_path(source, audio_enabled=audio_enabled)
         if not refresh:
             cached = read_json_or_none(cache)
             if cached is not None:
@@ -233,6 +267,10 @@ class VisionEye:
         if not cap.isOpened():
             raise PipelineError(f"OpenCV could not open video: {source}")
 
+        # An explicit prompt override wins; otherwise the prompt follows the audio flag.
+        prompt = prompt or build_frame_prompt(audio_enabled=audio_enabled)
+        if not audio_enabled:
+            transcript_segments = None
         observations = self._read_partial_observations(cache)
         completed_timestamps = {item.timestamp for item in observations}
         self.model_disagreements = []
