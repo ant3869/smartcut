@@ -5,8 +5,22 @@ All notable changes to this project are documented here. The project follows
 
 ## [Unreleased]
 
+### Planned
+
+- Persisted stage progress and resumable jobs.
+- Stable inbox ingestion that waits for files to finish copying.
+- Music-library and beat-aware preview/reel pacing.
+
+## [0.2.0] - 2026-09-23
+
 ### Added
 
+- Multi-pass editorial review: with `multi_pass_enabled`, analysis first writes a hash-bound
+  `story_map.json` (`pipeline/story.py`) that maps scene sections and bounded candidate windows
+  from scene changes plus concrete Eye/Ear evidence. A temporal critic (`pipeline/editorial_loop.py`)
+  then inspects those windows with before/after context and records decisions in the plan's
+  `targeted_review`; `multi_pass_apply_cuts` stays false until the labeled editorial evaluation
+  demonstrates a win.
 - Cutroom, a local review-first web surface over the real job API: source/final player, clickable
   timeline, nearby Eye evidence, hash-bound Keep/Cut/Protect decisions, review history, and render
   launch. It stays intentionally narrow instead of impersonating a full NLE.
@@ -29,12 +43,6 @@ All notable changes to this project are documented here. The project follows
   local-model prompt changes are not accepted merely because they sound plausible.
 - Motion evidence can improve a model's explanation of rapid setup/reposition moments, but it
   cannot independently create a cut. This protects intentional high-motion reveals.
-
-### Planned
-
-- Persisted stage progress and resumable jobs.
-- Stable inbox ingestion that waits for files to finish copying.
-- Music-library and beat-aware preview/reel pacing.
 
 ## [0.1.0] - 2026-09-22
 
