@@ -246,6 +246,7 @@ class VisionEye:
             if heuristic:
                 self.model_disagreements.append({
                     "timestamp": timestamp,
+                    "sample_interval": self.interval,
                     "model_said": {"keep": True, "cull_reason": ""},
                     "heuristic_suggests": heuristic,
                     "description": description[:300],

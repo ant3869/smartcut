@@ -108,12 +108,15 @@ function sourceRow(job){
 function reviewView(job){
   const r=review(job),e=nearby(job),path=media(job),mode=preferredMedia(job),sourceMissing=!job.source_available;
   const editing=state.editing,editingLabel=editing?(editing.kind==='cut'?'Editing cut':'Editing keep/protect'):'New decision',editingReason=editing?((editing.kind==='cut'?r.cut_intervals:r.keep_intervals)[editing.index]?.reason||'editorial review'):'editorial review',cutLabel=editing?.kind==='cut'?'Update cut [C]':'Cut [C]',remove=editing?'<button class="button ghost remove-decision" data-action="remove-decision">Remove '+(editing.kind==='cut'?'cut':'keep/protect')+'</button>':'';
-  return '<section class="player"><div class="video-wrap">'+(path?('<video id="review-video" src="'+apiFile(path)+'" preload="metadata" aria-label="Video review player"></video>'):'<div class="empty">That output does not exist yet.</div>')+'</div><div class="player-controls"><div class="media-switch">'+['source','final','preview'].map(m=>'<button data-media="'+m+'" class="'+(m===mode?'active':'')+'" '+((m==='source'?!job.source_available:m!=='source'&&!job[m+'_output'])?'disabled':'')+'>'+m+'</button>').join('')+'</div><span id="time-readout">'+seconds(state.playhead)+' / '+seconds(job.duration)+'</span></div>'+(sourceMissing?'<div class="source-missing">original source is gone — showing the final render. source-time edits are unavailable.</div>':'')+'</section><aside class="inspector"><div class="inspector-head"><h1>'+editingLabel+'</h1><p>'+esc(basename(job.source))+'</p></div><div class="inspector-section"><div class="selection-time"><span>'+seconds(state.selection.start)+'</span><span>'+seconds(state.selection.end)+'</span></div><div class="fields"><label class="field"><span class="field-label">Start [I]</span><input id="cut-start" type="number" min="0" max="'+job.duration+'" step="0.1" value="'+state.selection.start+'"></label><label class="field"><span class="field-label">End [O]</span><input id="cut-end" type="number" min="0" max="'+job.duration+'" step="0.1" value="'+state.selection.end+'"></label></div><div class="mark-buttons-row"><button class="button ghost small-btn" id="set-in-btn" type="button">Set In [I]</button><button class="button ghost small-btn" id="set-out-btn" type="button">Set Out [O]</button></div><label class="field reason"><span class="field-label">Reason</span><input id="cut-reason" value="'+esc(editingReason)+'" maxlength="120"></label></div><div class="inspector-section"><div class="decision-actions"><button class="button" data-decision="keep">Keep [K]</button><button class="button cut" data-decision="cut">'+cutLabel+'</button><button class="button protect" data-decision="protect">Protect [P]</button></div>'+remove+'</div><div class="inspector-section"><span class="field-label">Nearest Eye evidence</span><div class="evidence">'+(e.map(x=>'<div class="evidence-item"><span class="evidence-dot '+(x.keep?'':'cut')+'"></span><span><strong>'+seconds(x.timestamp)+'</strong> · '+esc(x.keep?'kept':x.cull_reason||'cut')+'<br>'+esc(x.description||'No description')+'</span></div>').join('')||'<span class="evidence-item">No nearby evidence</span>')+'</div></div></aside><section class="timeline-panel">'+timeline(job,r)+'</section><section class="log"><div class="decision-log"><h2>Decision history</h2><div class="history">'+history(r)+'</div></div><div class="render-box"><h2>Ready when you are</h2><p>Your edits save as hash-bound source ranges. Re-plan uses them; render never touches the original.</p><button class="button primary" data-action="render">Render approved cut</button></div></section>';
+  return '<section class="player"><div class="video-wrap">'+(path?('<video id="review-video" src="'+apiFile(path)+'" preload="metadata" aria-label="Video review player"></video>'):'<div class="empty">That output does not exist yet.</div>')+'</div><div class="player-controls"><div class="media-switch">'+['source','final','preview'].map(m=>'<button data-media="'+m+'" class="'+(m===mode?'active':'')+'" '+((m==='source'?!job.source_available:m!=='source'&&!job[m+'_output'])?'disabled':'')+'>'+m+'</button>').join('')+'</div><span id="time-readout">'+seconds(state.playhead)+' / '+seconds(job.duration)+'</span></div>'+(sourceMissing?'<div class="source-missing">original source is gone — showing the final render. source-time edits are unavailable.</div>':'')+'</section><aside class="inspector"><div class="inspector-head"><h1>'+editingLabel+'</h1><p>'+esc(basename(job.source))+'</p></div><div class="inspector-section"><div class="selection-time"><span>'+seconds(state.selection.start)+'</span><span>'+seconds(state.selection.end)+'</span></div><div class="fields"><label class="field"><span class="field-label">Start [I]</span><input id="cut-start" type="number" min="0" max="'+job.duration+'" step="0.1" value="'+state.selection.start+'"></label><label class="field"><span class="field-label">End [O]</span><input id="cut-end" type="number" min="0" max="'+job.duration+'" step="0.1" value="'+state.selection.end+'"></label></div><div class="mark-buttons-row"><button class="button ghost small-btn" id="set-in-btn" type="button">Set In [I]</button><button class="button ghost small-btn" id="set-out-btn" type="button">Set Out [O]</button></div><label class="field reason"><span class="field-label">Reason</span><input id="cut-reason" value="'+esc(editingReason)+'" maxlength="120"></label></div><div class="inspector-section"><div class="decision-actions"><button class="button" data-decision="keep">Keep [K]</button><button class="button cut" data-decision="cut">'+cutLabel+'</button><button class="button protect" data-decision="protect">Protect [P]</button></div>'+remove+'</div><div class="inspector-section"><span class="field-label">Nearest Eye evidence</span><div class="evidence">'+(e.map(x=>'<div class="evidence-item"><span class="evidence-dot '+(x.keep?'':'cut')+'"></span><span><strong>'+seconds(x.timestamp)+'</strong> '+confidenceBadge(x.confidence==null?null:Number(x.confidence))+' · '+esc(x.keep?'kept':x.cull_reason||'cut')+'<br>'+esc(x.description||'No description')+'</span></div>').join('')||'<span class="evidence-item">No nearby evidence</span>')+'</div></div></aside><section class="timeline-panel">'+timeline(job,r)+'</section>'+reviewQueue(job)+'<section class="log"><div class="decision-log"><h2>Decision history</h2><div class="history">'+history(r)+'</div></div><div class="render-box"><h2>Ready when you are</h2><p>Your edits save as hash-bound source ranges. Re-plan uses them; render never touches the original.</p><button class="button primary" data-action="render">Render approved cut</button><button class="button ghost" data-action="export-otio" style="margin-top:8px">Export timeline (.otio)</button></div></section>';
 }
 
 function timeline(job,r){
   const d=Number(job.duration||1),pct=v=>Math.max(0,Math.min(100,(Number(v||0)/d)*100)),span=(x,c,kind='',index=-1)=>'<span class="span '+c+(kind?' review-span':'')+'" '+(kind?'data-review-kind="'+kind+'" data-review-index="'+index+'" role="button" tabindex="0" aria-label="Edit '+kind+' decision '+seconds(x.start)+' to '+seconds(x.end)+'"':'')+' style="left:'+pct(x.start)+'%;width:'+Math.max(.25,pct(x.end)-pct(x.start))+'%;height:16px" title="'+esc(x.reason||(x.reasons||[]).join(', '))+'">'+(kind==='cut'?'<i class="trim-handle trim-start" data-trim-edge="start" aria-label="Drag cut start"></i><i class="trim-handle trim-end" data-trim-edge="end" aria-label="Drag cut end"></i>':'')+'</span>',ticks=Array.from({length:11},(_,i)=>'<i class="tick" style="left:'+(i*10)+'%"><span>'+seconds(d*i/10)+'</span></i>').join(''),reject=job.observations.filter(x=>!x.keep),cuts=r.cut_intervals||[],keeps=r.keep_intervals||[],rail=(items,c,extra='',kind='')=>'<div class="timeline-rail" data-timeline>'+items.map((x,index)=>span(x,c,kind,index)).join('')+extra+'<span class="selection-span" style="left:'+pct(state.selection.start)+'%;width:'+Math.max(.25,pct(state.selection.end)-pct(state.selection.start))+'%;"></span><span class="playhead" style="left:'+pct(state.playhead)+'%"></span></div>';
-  return '<div class="timeline-head"><h2>Timeline</h2><span>Click a red marked range to edit it. Click or drag empty timeline to scrub.</span></div><div class="timeline"><div class="ruler">'+ticks+'</div><div class="timeline-row"><div class="timeline-label">Plan</div>'+rail(job.clips,'keep')+'</div><div class="timeline-row"><div class="timeline-label">Your cuts</div>'+rail(cuts,'cut',keeps.map((x,index)=>span(x,'protect','keep',index)).join(''),'cut')+'</div><div class="timeline-row"><div class="timeline-label">Eye flags</div>'+rail([],'none',reject.map(x=>'<span class="marker rejected" style="left:'+pct(x.timestamp)+'%" title="'+esc(x.cull_reason||'rejected')+'"></span>').join(''))+'</div></div>';
+  return '<div class="timeline-head"><h2>Timeline</h2><span>Click a red marked range to edit it. Click or drag empty timeline to scrub.</span></div><div class="timeline"><div class="ruler">'+ticks+'</div><div class="timeline-row"><div class="timeline-label">Plan</div>'+rail(job.clips,'keep')+'</div><div class="timeline-row"><div class="timeline-label">Your cuts</div>'+rail(cuts,'cut',keeps.map((x,index)=>span(x,'protect','keep',index)).join(''),'cut')+'</div><div class="timeline-row"><div class="timeline-label">Eye flags</div>'+rail([],'none',reject.map(x=>{
+    const conf=x.confidence==null?1:Number(x.confidence);
+    return '<span class="marker rejected'+(conf<0.6?' uncertain':'')+'" data-seek="'+x.timestamp+'" role="button" tabindex="0" aria-label="Seek to Eye flag at '+seconds(x.timestamp)+'" style="left:'+pct(x.timestamp)+'%" title="'+esc((x.cull_reason||'rejected')+' · confidence '+Math.round(conf*100)+'% · click to seek')+'"></span>';
+  }).join(''))+'</div></div>';
 }
 
 function history(r){
@@ -124,6 +127,65 @@ function history(r){
 function nearby(job){
   const mid=(state.selection.start+state.selection.end)/2;
   return[...(job.observations||[])].sort((a,b)=>Math.abs(a.timestamp-mid)-Math.abs(b.timestamp-mid)).slice(0,2);
+}
+
+function parseConfidence(reasons){
+  for(const r of reasons||[]){const m=/confidence:([0-9.]+)/.exec(String(r));if(m)return Number(m[1])}
+  return null;
+}
+
+function confidenceBadge(conf){
+  if(conf==null||Number.isNaN(conf))return '';
+  const pct=Math.round(conf*100);
+  return '<span class="confidence-badge '+(conf<0.6?'uncertain':'')+'" title="Model confidence">'+pct+'%</span>';
+}
+
+function queueItems(job){
+  const items=[];
+  (job.review_intervals||[]).forEach(x=>{
+    const reasons=x.reasons||[];
+    const label=(reasons.find(r=>String(r).startsWith('vision-review:'))||'uncertain verdict').replace('vision-review:','');
+    items.push({kind:'review',start:Number(x.start),end:Number(x.end),label:'Uncertain cut: '+label,confidence:parseConfidence(reasons)});
+  });
+  (job.model_disagreements||[]).forEach(d=>{
+    const half=(Number(d.sample_interval)||2)/2;
+    items.push({kind:'disagreement',start:Math.max(0,Number(d.timestamp)-half),end:Number(d.timestamp)+half,
+      label:'Model kept, heuristic flagged '+d.heuristic_suggests,confidence:d.confidence==null?null:Number(d.confidence),note:d.description});
+  });
+  return items.sort((a,b)=>a.start-b.start);
+}
+
+function reviewQueue(job){
+  const items=queueItems(job);
+  if(!items.length)return '';
+  const rows=items.map((x,i)=>'<div class="queue-row"><button class="queue-main" data-queue-seek="'+i+'"><span class="queue-time">'+seconds(x.start)+'–'+seconds(x.end)+'</span><span class="queue-label">'+esc(x.label)+'</span>'+confidenceBadge(x.confidence)+'</button><span class="queue-actions"><button class="button small-btn" data-queue-decision="keep" data-queue-index="'+i+'">Keep</button><button class="button small-btn cut" data-queue-decision="cut" data-queue-index="'+i+'">Cut</button></span></div>').join('');
+  return '<section class="review-queue"><div class="timeline-head"><h2>Needs your eyes</h2><span>'+items.length+' uncertain verdict'+(items.length===1?'':'s')+' — Keep or Cut to resolve</span></div><div class="queue-list">'+rows+'</div></section>';
+}
+
+async function resolveQueueItem(job,index,decision){
+  const item=queueItems(job)[index];
+  if(!item)return;
+  state.selection={start:round(item.start),end:round(item.end)};
+  state.playhead=state.selection.start;
+  clearEditing();
+  updateSelectionInputs();
+  renderSelectionOverlay();
+  seekTo(state.playhead);
+  await saveDecision(job,decision,'review queue: '+item.label);
+}
+
+async function exportOtio(job){
+  try{
+    const res=await api('/api/jobs/'+encodeURIComponent(job.id)+'/export-otio',{method:'POST'});
+    toast('Timeline exported — opens in Resolve or Premiere');
+    const a=document.createElement('a');
+    a.href=apiFile(res.path);
+    a.download='timeline.otio';
+    document.body.append(a);
+    a.click();
+    a.remove();
+    await load({quiet:true});
+  }catch(error){toast(error.message,'danger')}
 }
 
 let isDraggingSeek=false;
@@ -164,7 +226,7 @@ function bind(job){
 
   $$('[data-timeline]').forEach(rail=>{
     rail.addEventListener('mousedown',e=>{
-      if(e.target.closest('[data-review-kind]'))return;
+      if(e.target.closest('[data-review-kind],[data-seek]'))return;
       clearEditing();
       isDraggingTimeline=true;
       scrubFromEvent(e,rail);
@@ -179,6 +241,27 @@ function bind(job){
     });
   });
 
+  $$('[data-seek]').forEach(marker=>{
+    const go=event=>{event.stopPropagation();seekTo(Number(marker.dataset.seek))};
+    marker.addEventListener('click',go);
+    marker.addEventListener('keydown',event=>{
+      if(event.key!=='Enter'&&event.key!==' ')return;
+      event.preventDefault();
+      go(event);
+    });
+  });
+  $$('[data-queue-seek]').forEach(b=>b.addEventListener('click',()=>{
+    const item=queueItems(job)[Number(b.dataset.queueSeek)];
+    if(!item)return;
+    state.selection={start:round(item.start),end:round(item.end)};
+    state.playhead=state.selection.start;
+    clearEditing();
+    updateSelectionInputs();
+    renderSelectionOverlay();
+    seekTo(state.playhead);
+  }));
+  $$('[data-queue-decision]').forEach(b=>b.addEventListener('click',()=>resolveQueueItem(job,Number(b.dataset.queueIndex),b.dataset.queueDecision)));
+  $$('[data-action="export-otio"]').forEach(b=>b.addEventListener('click',()=>exportOtio(job)));
   $$('[data-review-kind]').forEach(span=>span.addEventListener('click',event=>{
     if(isTrimmingReview)return;
     event.stopPropagation();

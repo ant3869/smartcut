@@ -1,6 +1,9 @@
 from pathlib import Path
 
+import json
+
 import numpy as np
+import pytest
 
 from pipeline.contracts import Clip, Observation, Segment, Transcript
 from pipeline.ear import WhisperEar, merge_intervals
@@ -1113,3 +1116,138 @@ def test_batch_prompt_asks_for_confidence_and_temporal_context(monkeypatch, tmp_
     assert "time order" in instruction
     assert "Analyze every labeled frame independently" not in instruction
     assert result[0]["confidence"] == 0.8
+
+
+def test_otio_export_round_trips_clip_ranges(tmp_path, monkeypatch):
+    otio = pytest.importorskip("opentimelineio")
+    from pipeline import otio_export
+
+    monkeypatch.setattr(otio_export, "media_duration", lambda source: 20.0)
+    source = tmp_path / "source.mp4"
+    source.write_bytes(b"fake")
+    clips = [Clip(1.0, 4.0, ("a",)), Clip(10.0, 12.5, ("b",))]
+
+    out = otio_export.export_otio_timeline(source, clips, tmp_path / "timeline.otio", fps=30.0)
+
+    timeline = otio.adapters.read_from_file(str(out))
+    first, second = timeline.tracks[0][0], timeline.tracks[0][1]
+    assert first.source_range.start_time.value == 30
+    assert first.source_range.duration.value == 90
+    assert second.source_range.start_time.value == 300
+    assert second.source_range.duration.value == 75
+    assert "source.mp4" in first.media_reference.target_url
+
+
+def test_otio_export_refuses_empty_clip_list(tmp_path, monkeypatch):
+    pytest.importorskip("opentimelineio")
+    from pipeline import otio_export
+    from pipeline.util import PipelineError
+
+    monkeypatch.setattr(otio_export, "media_duration", lambda source: 20.0)
+    with pytest.raises(PipelineError):
+        otio_export.export_otio_timeline(tmp_path / "s.mp4", [], tmp_path / "t.otio", fps=30.0)
+
+
+def _write_web_config(tmp_path):
+    config = {
+        "work_dir": str(tmp_path / "work"),
+        "analysis_dir": str(tmp_path / "analysis"),
+        "output_dir": str(tmp_path / "out"),
+        "vision_model": "test-model",
+    }
+    path = tmp_path / "config.json"
+    path.write_text(json.dumps(config))
+    return path
+
+
+def _write_web_job(tmp_path, plan):
+    job = tmp_path / "work" / "jobs" / "job1"
+    job.mkdir(parents=True)
+    source = tmp_path / "src.mp4"
+    source.write_bytes(b"fake")
+    plan = {"source": str(source), **plan}
+    (job / "edit_plan.json").write_text(json.dumps(plan))
+    return job
+
+
+def _web_module_with_config(tmp_path, monkeypatch):
+    """Reload pipeline.web against a temp config (module builds an app at import)."""
+    config_path = _write_web_config(tmp_path)
+    monkeypatch.setenv("ANNA_PIPELINE_CONFIG", str(config_path))
+    import importlib
+    import pipeline.web as web_module
+    importlib.reload(web_module)
+    return web_module
+
+
+def test_job_summary_includes_review_queue_fields(tmp_path, monkeypatch):
+    pytest.importorskip("fastapi")
+    from fastapi.testclient import TestClient
+    web = _web_module_with_config(tmp_path, monkeypatch)
+    create_app = web.create_app
+    config_path = _write_web_config(tmp_path)
+    _write_web_job(tmp_path, {
+        "duration": 20.0,
+        "clips": [{"start": 0.0, "end": 5.0, "reasons": []}],
+        "observations": [],
+        "review_intervals": [
+            {"start": 6.0, "end": 8.0, "reasons": ["vision-review:camera_adjustment", "confidence:0.40"]},
+        ],
+        "model_disagreements": [
+            {"timestamp": 10.0, "sample_interval": 2.0, "heuristic_suggests": "clothing_adjustment", "confidence": 0.9},
+        ],
+        "model_calls": {"frame_batches": 5},
+    })
+
+    client = TestClient(create_app(config_path))
+    jobs = client.get("/api/jobs").json()
+
+    assert len(jobs) == 1
+    summary = jobs[0]
+    assert summary["review_intervals"][0]["reasons"] == ["vision-review:camera_adjustment", "confidence:0.40"]
+    assert summary["model_disagreements"][0]["heuristic_suggests"] == "clothing_adjustment"
+    assert summary["model_calls"] == {"frame_batches": 5}
+
+
+def test_export_otio_endpoint_rejects_job_without_clips(tmp_path, monkeypatch):
+    pytest.importorskip("fastapi")
+    from fastapi.testclient import TestClient
+    web = _web_module_with_config(tmp_path, monkeypatch)
+    create_app = web.create_app
+    config_path = _write_web_config(tmp_path)
+    _write_web_job(tmp_path, {"duration": 20.0, "clips": [], "observations": []})
+
+    client = TestClient(create_app(config_path))
+    response = client.post("/api/jobs/job1/export-otio")
+
+    assert response.status_code == 400
+
+
+def test_export_otio_endpoint_writes_timeline(tmp_path, monkeypatch):
+    pytest.importorskip("fastapi")
+    from fastapi.testclient import TestClient
+    from pipeline import otio_export
+    web = _web_module_with_config(tmp_path, monkeypatch)
+    create_app = web.create_app
+
+    written = {}
+
+    def fake_export(source, clips, output_path, **kwargs):
+        written["clips"] = [(clip.start, clip.end) for clip in clips]
+        Path(output_path).write_text("otio-data")
+        return Path(output_path)
+
+    monkeypatch.setattr(otio_export, "export_otio_timeline", fake_export)
+    config_path = _write_web_config(tmp_path)
+    _write_web_job(tmp_path, {
+        "duration": 20.0,
+        "clips": [{"start": 1.0, "end": 4.0, "reasons": []}],
+        "observations": [],
+    })
+
+    client = TestClient(create_app(config_path))
+    response = client.post("/api/jobs/job1/export-otio")
+
+    assert response.status_code == 200
+    assert written["clips"] == [(1.0, 4.0)]
+    assert response.json()["job"]["files"]["otio_timeline"].endswith("timeline.otio")
