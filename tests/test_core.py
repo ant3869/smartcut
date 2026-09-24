@@ -1253,10 +1253,10 @@ def test_export_otio_endpoint_writes_timeline(tmp_path, monkeypatch):
     assert response.json()["job"]["files"]["otio_timeline"].endswith("timeline.otio")
 
 
-def test_frame_prompt_v7_two_voice_banter_test():
+def test_frame_prompt_v8_banter_overrides_performance():
     from pipeline.eye import DEFAULT_FRAME_PROMPT, VISION_PROMPT_VERSION
 
-    assert VISION_PROMPT_VERSION == 7
+    assert VISION_PROMPT_VERSION == 8
     assert "CONSISTENCY RULE" in DEFAULT_FRAME_PROMPT
     assert "provisional" not in DEFAULT_FRAME_PROMPT
     assert "AUDIO" in DEFAULT_FRAME_PROMPT
@@ -1268,6 +1268,13 @@ def test_frame_prompt_v7_two_voice_banter_test():
     assert "no responding voice" in DEFAULT_FRAME_PROMPT
     # description must use the consistency rule's trigger phrase
     assert "conversing with another person present" in DEFAULT_FRAME_PROMPT
+    # v8: the 008@123-130 failure -- the model detected banter but reframed it as
+    # interaction/consent and let the performance checks win. Kill the reframe and
+    # make the consistency rule name the model's actual banter phrasings.
+    assert "do NOT override this check" in DEFAULT_FRAME_PROMPT
+    assert "interaction, participation, or consent" in DEFAULT_FRAME_PROMPT
+    assert "back-and-forth conversation" in DEFAULT_FRAME_PROMPT
+    assert "two voices" in DEFAULT_FRAME_PROMPT
 
 
 def test_section_policy_banter_scoped_to_dominant_content():
@@ -1467,3 +1474,35 @@ def test_vision_cache_path_busts_on_audio_flag(tmp_path):
     assert f".v{VISION_PROMPT_VERSION}.vision.json" in with_audio.name
     assert ".noaudio.vision.json" in without_audio.name
     assert ".noaudio" not in with_audio.name
+
+
+def test_banter_heuristic_catches_model_phrasings_without_score_gate():
+    # 008@123-130: the model described banter at scores 7-8 yet kept the frames.
+    # The advisory heuristic must flag these for the review queue.
+    assert infer_cull_reason(
+        "Two-voice back-and-forth conversation with another person in the room.",
+        score=8.0, keep=True, model_reason="",
+    ) == "unrelated_banter"
+    assert infer_cull_reason(
+        "This is unrelated banter during the performance.",
+        score=7.0, keep=True, model_reason="",
+    ) == "unrelated_banter"
+    assert infer_cull_reason(
+        "The performer is conversing with another person present.",
+        score=8.0, keep=True, model_reason="",
+    ) == "unrelated_banter"
+    # negated banter is not a contradiction
+    assert infer_cull_reason(
+        "No unrelated banter here, just performance for the camera.",
+        score=8.0, keep=True, model_reason="",
+    ) == ""
+    # talking to the audience is content, not banter
+    assert infer_cull_reason(
+        "Talking to the camera while performing.",
+        score=8.0, keep=True, model_reason="",
+    ) == ""
+    # no score gate: a confident keep describing a camera grab still flags
+    assert infer_cull_reason(
+        "Hand adjusting the camera mid-shot.",
+        score=9.0, keep=True, model_reason="",
+    ) == "camera_adjustment"
