@@ -40,6 +40,20 @@ def evaluate_observations(
 ) -> dict[str, Any]:
     """Score automatic Eye proposals against editorial ground truth, never the overrides."""
     proposals = proposed_waste_from_observations(observations, duration=duration, interval=interval)
+    return evaluate_proposals(
+        proposals,
+        expected_cuts=expected_cuts,
+        protected_keeps=protected_keeps,
+    )
+
+
+def evaluate_proposals(
+    proposals: list[Clip],
+    *,
+    expected_cuts: list[EditorialInterval],
+    protected_keeps: list[EditorialInterval],
+) -> dict[str, Any]:
+    """Score a set of waste proposals (frame-level or plan-level) against ground truth."""
     found: list[dict[str, Any]] = []
     missed: list[dict[str, Any]] = []
     for target in expected_cuts:

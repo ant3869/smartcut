@@ -28,11 +28,18 @@ human feedback rather than stacking more brittle keywords.
 
 ### In flight (unreleased)
 
-- Vision prompt v5 (above) — replaces the v3/v4 wording; cache-busting via prompt version.
+- Vision prompt v6 — replaces v5: per-frame transcript audio context (±4s), verdict
+  consistency rule (verdict must match description and score band), audio-aware banter
+  check that beats intimate content, widened preparation/transition check. Cache-busting
+  via prompt version.
+- Truncated vision batches (server context limit) now halve and retry instead of
+  failing the run.
 - Every sub-threshold rejection lands in the review queue; the old review-floor setting is gone.
 - Section policy: transcript of the performer conversing with another person present is
   classified as banter / cut_candidate.
 - New `unrelated_banter` cull reason, visible in plan intervals and the review queue.
+- Editorial harness scores plan-level proposals (waste intervals + section candidates)
+  in addition to raw frame observations.
 
 ## Decisions most likely to be tweaked
 

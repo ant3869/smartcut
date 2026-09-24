@@ -7,6 +7,26 @@ All notable changes to this project are documented here. The project follows
 
 ### Fixed
 
+- Vision prompt v6: each judged frame now carries transcript lines spoken within ±4s
+  (`AUDIO near Ns`), so the model can hear setup talk and banter it cannot see. The
+  banter check explicitly beats intimate content: the performer conversing with another
+  person present is `unrelated_banter` even when intimate contact is visible.
+- Vision prompt v6 consistency rule: the verdict must match the model's own words and
+  score — score 1–3 forces `keep=false`, 7–10 forces `keep=true`, and a description
+  saying preparation/transition/setup/adjusting forces a cut. Fixes cases like 008@110s
+  where the model described "preparation or transition between scenes" (score 3) yet
+  kept the frame.
+- Removed the confusing "provisional keep, keep going" instruction: all checks are
+  evaluated, any matching cut check wins (first match decides the reason).
+- Widened the take-breaker check to preparation/transition/repositioning between
+  scenes, poses, or acts (`seeking_position`).
+- Robustness: a batch truncated by the server context limit (`finish_reason=length`,
+  e.g. batch_size 4 on an 8k-context LM Studio) now halves the batch and retries
+  instead of failing the run.
+- The editorial harness now also scores plan-level proposals (waste intervals plus
+  section cut candidates), so transcript-driven section wins count alongside raw
+  frame observations.
+
 - Vision prompt v5 encodes the editor's decision tree as ordered checks (cut is final,
   keep is provisional): no people → cut; intimate contact → keep; device handling /
   blocked lens / out of focus / disoriented frame → cut; reveal vs practical clothing
