@@ -164,6 +164,7 @@ def create_app(config_path: str | Path = DEFAULT_CONFIG) -> FastAPI:
             "path": str(path),
             "status": status,
             "source": source_path,
+            "source_available": bool(source_path and Path(source_path).is_file()),
             "source_fingerprint": source,
             "duration": duration,
             "clips": clips,

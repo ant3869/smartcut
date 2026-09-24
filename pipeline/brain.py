@@ -12,6 +12,8 @@ from .eye import VisionEye
 from .highlights import Highlight, plan_highlights, select_reel_highlights
 from .scenes import detect_content_scenes
 from .signals import build_frame_hints, detect_frame_signals
+from .story import build_story_map, learned_editorial_focus, write_story_map
+from .editorial_loop import build_editorial_loop
 from .util import PipelineError, media_duration, read_json, source_fingerprint, write_json
 from .blade import FfmpegBlade
 from .voice import PersonaVoice
@@ -71,8 +73,9 @@ class PipelineBrain:
             refresh=refresh,
             frame_hints=build_frame_hints(signals),
         )
+        scenes = []
         if self.config.get("scene_detection_enabled", True):
-            detect_content_scenes(
+            scenes = detect_content_scenes(
                 source,
                 source_sha256=source_sha256,
                 cache_path=job / "scene_boundaries.json",
@@ -81,6 +84,36 @@ class PipelineBrain:
             )
         transcript_waste = self.ear.waste_intervals(transcript, self.config.get("waste_terms", []))
         visual_waste = self.eye.cull_intervals(observations, duration)
+        editorial_waste, editorial_keep = _load_editorial_policy(
+            job, duration=duration, source_sha256=source_sha256,
+        )
+        editorial_loop = build_editorial_loop(duration=duration, observations=observations, transcript=transcript)
+        write_json(job / "editorial_loop.json", editorial_loop)
+        sections_for_summary = scenes or [{"index": 0, "start_seconds": 0.0, "end_seconds": duration}]
+        section_summaries = (
+            self.eye.summarize_sections(
+                source, sections=sections_for_summary, duration=duration,
+                cache_path=job / "section_summaries.json", refresh=refresh,
+                frames_per_section=int(self.config.get("multi_pass_section_summary_frames", 6)),
+                transcript=transcript,
+                editorial_policy=str(self.config.get(
+                    "multi_pass_editorial_policy",
+                    "Prefer removing pre-roll and technical setup before the intended scene begins. "
+                    "When the section-local transcript visibly discusses recording, camera/framing, checking how it looks, "
+                    "or moving/positioning for the camera, classify the whole section as setup and cut_candidate even if "
+                    "the frames include otherwise usable content.",
+                )),
+            ) if self.config.get("multi_pass_section_summary_enabled", True) else []
+        )
+        story_map = build_story_map(
+            duration=duration, observations=observations, scenes=scenes, transcript=transcript,
+            known_waste=transcript_waste + visual_waste,
+            boundary_context_seconds=float(self.config.get("multi_pass_boundary_context_seconds", 1.0)),
+            max_candidates=int(self.config.get("multi_pass_max_candidates", 32)),
+            section_summaries=section_summaries,
+            loop_cut_candidates=editorial_loop["cut_candidates"],
+        )
+        write_story_map(job / "story_map.json", story_map)
         temporal_waste = (
             self.eye.temporal_cull_intervals(
                 source,
@@ -89,14 +122,14 @@ class PipelineBrain:
                 target_seconds=float(self.config.get("temporal_target_seconds", 1.0)),
                 context_seconds=float(self.config.get("temporal_context_seconds", 0.5)),
                 confidence_threshold=float(self.config.get("temporal_confidence_threshold", 0.8)),
+                candidates=story_map["target_candidates"],
+                editorial_focus=learned_editorial_focus(self.work_dir),
             )
-            if self.config.get("temporal_review_enabled", False)
+            if self.config.get("multi_pass_enabled", False)
             else []
         )
-        editorial_waste, editorial_keep = _load_editorial_policy(
-            job, duration=duration, source_sha256=source_sha256,
-        )
-        model_waste = _exclude_protected_intervals(visual_waste + temporal_waste, editorial_keep)
+        temporal_for_plan = temporal_waste if self.config.get("multi_pass_apply_cuts", False) else []
+        model_waste = _exclude_protected_intervals(visual_waste + temporal_for_plan, editorial_keep)
         waste = merge_intervals(transcript_waste + model_waste + editorial_waste)
         min_seconds = float(self.config.get("full_edit_min_segment_seconds", 0.5))
         # Conservative like the reference cut: keep the whole timeline and only remove
@@ -123,6 +156,8 @@ class PipelineBrain:
             created_at=datetime.now(timezone.utc).isoformat(), source_sha256=source_sha256,
             dropped_slivers=dropped_slivers, caption=caption,
             frame_signals=[asdict(item) for item in signals],
+            story_map=story_map,
+            targeted_review=self.eye.last_temporal_decisions,
         )
         self._write_plan(job, plan)
         return plan.to_dict()

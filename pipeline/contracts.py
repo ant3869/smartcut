@@ -62,6 +62,8 @@ class EditPlan:
     dropped_slivers: list[Clip] = field(default_factory=list)
     caption: str = ""
     frame_signals: list[dict[str, Any]] = field(default_factory=list)
+    story_map: dict[str, Any] = field(default_factory=dict)
+    targeted_review: list[dict[str, Any]] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
         data = asdict(self)
