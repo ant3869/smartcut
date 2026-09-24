@@ -19,6 +19,16 @@ All notable changes to this project are documented here. The project follows
 
 ### Fixed
 
+- Vision prompt v8: the banter check now states that checks 6/7 do NOT override it and
+  forbids reframing conversation as interaction, participation, or consent — the v7 QA
+  showed the model detecting the two-voice banter (008@123–130) yet keeping the frames
+  by calling it interaction/consent. The consistency rule now names the model's actual
+  banter phrasings (banter, back-and-forth conversation, two voices conversing).
+- The model-disagreement heuristic's banter vocabulary now covers the model's real
+  phrasings ("back-and-forth", "two-voice", "unrelated banter", with a negation guard
+  and the camera/audience exclusion intact), and its score gate is removed: it is
+  advisory-only, and a confident keep whose own words describe a cut check is exactly
+  what the review queue exists for.
 - The frame description and consistency rule now say "conversing with another person
   present", matching check 5's wording and the model-disagreement heuristic's banter
   terms — previously the description phrase could not trip the heuristic.

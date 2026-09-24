@@ -32,11 +32,12 @@ human feedback rather than stacking more brittle keywords.
   audio as edit evidence — gates frame AUDIO lines (with a no-AUDIO prompt variant),
   section transcript evidence, and transcript waste terms. For music/TV soundtracks.
   Cache-busting via `.noaudio` in the vision cache filename.
-- Vision prompt v7 — replaces v6: two-voice banter test on the AUDIO (turn-taking =
-  conversation, with explicit exclusions), description must flag performer conversing
-  with another person present so the consistency rule fires. Section layer: banter
-  scoped to conversation-dominant sections, setup needs positive evidence.
-  Cache-busting via prompt version.
+- Vision prompt v8 — replaces v7: banter check states checks 6/7 do NOT override it and
+  forbids reframing conversation as interaction/participation/consent (v7 QA: the model
+  detected the 008@123–130 banter but kept the frames anyway); consistency rule names
+  the model's actual banter phrasings. Disagreement heuristic vocabulary widened to the
+  model's real phrasings, score gate removed (advisory-only). Cache-busting via prompt
+  version.
 - Vision prompt v6 — replaces v5: per-frame transcript audio context (±4s), verdict
   consistency rule (verdict must match description and score band), audio-aware banter
   check that beats intimate content, widened preparation/transition check. Cache-busting
