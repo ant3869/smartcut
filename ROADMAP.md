@@ -26,6 +26,14 @@ human feedback rather than stacking more brittle keywords.
   describe-first workflow and calibrated confidence; model verdicts trusted, disagreements and
   all uncertain rejections surfaced to humans.
 
+### In flight (unreleased)
+
+- Vision prompt v5 (above) — replaces the v3/v4 wording; cache-busting via prompt version.
+- Every sub-threshold rejection lands in the review queue; the old review-floor setting is gone.
+- Section policy: transcript of the performer conversing with another person present is
+  classified as banter / cut_candidate.
+- New `unrelated_banter` cull reason, visible in plan intervals and the review queue.
+
 ## Decisions most likely to be tweaked
 
 ### 1. Review-first stays the default
