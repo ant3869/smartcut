@@ -107,14 +107,30 @@ SECTION_SUMMARY_PROMPT = (
     '"summary":string,"confidence":number}.'
 )
 
-DEFAULT_SECTION_EDITORIAL_POLICY = (
+SECTION_SETUP_CLAUSE = (
     "Prefer removing pre-roll and technical setup before the intended scene begins. "
     "When the section-local transcript visibly discusses recording, camera/framing, checking how it looks, "
     "or moving/positioning for the camera, classify the whole section as setup and cut_candidate even if "
-    "the frames include otherwise usable content. When the section-local transcript is the performer "
-    "conversing with another person who is clearly present -- not performing and not addressing the "
-    "audience -- classify the whole section as banter and cut_candidate even if the frames show the performer."
+    "the frames include otherwise usable content."
 )
+SECTION_BANTER_CLAUSE = (
+    "When the section-local transcript is the performer conversing with another person "
+    "who is clearly present -- not performing and not addressing the audience -- classify "
+    "the whole section as banter and cut_candidate even if the frames show the performer."
+)
+DEFAULT_SECTION_EDITORIAL_POLICY = SECTION_SETUP_CLAUSE + " " + SECTION_BANTER_CLAUSE
+
+
+def compose_section_policy(configured: str) -> str:
+    """Compose the user's section policy with the built-in banter clause.
+
+    A configured multi_pass_editorial_policy replaces the default string outright,
+    so a policy copied from an older default would silently lose the banter rule.
+    Append the clause unless the configured text already covers conversing.
+    """
+    if "conversing" in configured:
+        return configured
+    return configured.rstrip() + " " + SECTION_BANTER_CLAUSE
 
 
 def read_frame_with_tail_fallback(cap: Any, timestamp: float) -> tuple[float, Any]:

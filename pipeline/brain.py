@@ -8,7 +8,7 @@ from pathlib import Path
 
 from .contracts import Clip, EditPlan, Observation
 from .ear import WhisperEar, merge_intervals
-from .eye import VisionEye
+from .eye import VisionEye, SECTION_SETUP_CLAUSE, compose_section_policy
 from .highlights import Highlight, plan_highlights, select_reel_highlights
 from .scenes import detect_content_scenes
 from .signals import build_frame_hints, detect_frame_signals
@@ -107,13 +107,9 @@ class PipelineBrain:
                 cache_path=job / "section_summaries.json", refresh=refresh,
                 frames_per_section=int(self.config.get("multi_pass_section_summary_frames", 6)),
                 transcript=transcript,
-                editorial_policy=str(self.config.get(
-                    "multi_pass_editorial_policy",
-                    "Prefer removing pre-roll and technical setup before the intended scene begins. "
-                    "When the section-local transcript visibly discusses recording, camera/framing, checking how it looks, "
-                    "or moving/positioning for the camera, classify the whole section as setup and cut_candidate even if "
-                    "the frames include otherwise usable content.",
-                )),
+                editorial_policy=compose_section_policy(str(self.config.get(
+                    "multi_pass_editorial_policy", SECTION_SETUP_CLAUSE,
+                ))),
             ) if self.config.get("multi_pass_section_summary_enabled", True) else []
         )
         story_map = build_story_map(

@@ -1363,3 +1363,46 @@ def test_evaluate_proposals_scores_plan_level_waste():
     )
     assert result["metrics"]["matched_cuts"] == 1
     assert result["metrics"]["cut_recall"] == 1.0
+
+
+def test_grazing_proposal_is_unexpected_when_target_missed():
+    from pipeline.evaluation import evaluate_proposals
+
+    proposals = [Clip(129.733, 227.533, ("section:setup",))]
+    result = evaluate_proposals(
+        proposals,
+        expected_cuts=[EditorialInterval(123.0, 130.0, "unrelated_banter")],
+        protected_keeps=[],
+    )
+    assert result["metrics"]["missed_cuts"] == 1
+    assert result["metrics"]["unexpected_proposals"] == 1
+
+
+def test_proposal_overlappping_matched_target_is_not_unexpected():
+    from pipeline.evaluation import evaluate_proposals
+
+    proposals = [Clip(5.0, 9.0, ("vision-cull:camera_adjustment",)), Clip(27.0, 35.0, ("vision-cull:blank_or_obstructed",)), Clip(43.0, 47.0, ("vision-cull:seeking_position",))]
+    result = evaluate_proposals(
+        proposals,
+        expected_cuts=[EditorialInterval(0.0, 52.0, "camera_setup_technical_banter")],
+        protected_keeps=[],
+    )
+    assert result["metrics"]["matched_cuts"] == 1
+    assert result["metrics"]["unexpected_proposals"] == 0
+
+
+def test_section_policy_compose_adds_banter_clause():
+    from pipeline.eye import (
+        DEFAULT_SECTION_EDITORIAL_POLICY,
+        SECTION_BANTER_CLAUSE,
+        SECTION_SETUP_CLAUSE,
+        compose_section_policy,
+    )
+
+    assert DEFAULT_SECTION_EDITORIAL_POLICY == SECTION_SETUP_CLAUSE + " " + SECTION_BANTER_CLAUSE
+    legacy = SECTION_SETUP_CLAUSE  # what older configs copied verbatim
+    composed = compose_section_policy(legacy)
+    assert "conversing" in composed
+    assert composed.startswith(legacy)
+    # already covered -> not duplicated
+    assert compose_section_policy(composed).count("conversing") == 1
