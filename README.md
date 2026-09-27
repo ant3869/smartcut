@@ -101,10 +101,15 @@ exporting.
 
 ## Cutroom
 
-The local web review surface over the real job API. It's deliberately narrow: a source/final
-player, clickable timeline, one staged source-time interval with nearby Eye evidence, hash-bound
-Keep/Cut/Protect decisions, decision history, and the explicit render action. It is not trying to be
-a nonlinear editor — that's what the OTIO export is for.
+The local editor over the real job API (`python -m pipeline.web`, port 8787). It is a compact
+multitrack editor on a persisted `sequence.json`: Source/Program monitors, a V2/V1/A1/A2 timeline
+with waveforms and filmstrips, and AI and transcript lanes that follow the material through your
+edit. The **Review** tab turns every model cut proposal into an accept/reject queue (`N`, `A`, `X`,
+`P` to audition), and those answers become the same hash-bound Keep/Cut/Protect decisions as manual
+ones. **Auto-edit** removes flagged waste, your cut decisions and silences, closes gaps and adds
+scene/highlight markers as one undoable step with a dry-run preview; Keep/Protect ranges are never
+cut. Rendering stays explicit. The UI follows the OpenEval visual system with Dark, Light and Auto
+(system) themes — see `DESIGN.md`. OTIO/EDL export hands the cut to Resolve or Premiere.
 
 ## OpenTimelineIO export
 

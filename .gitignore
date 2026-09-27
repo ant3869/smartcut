@@ -9,8 +9,14 @@ inbox/
 vault/
 work/
 validation/
+evaluation/
 config.json
+config.json.bak*
 .agent/
+build/
+sandbox/
+.codebase-memory/
+.playwright-mcp/
 implementation-notes.md
 *.log
 *.mp4

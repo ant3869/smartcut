@@ -119,3 +119,65 @@ def test_settings_sequence_review_api(tmp_path, monkeypatch):
     review["source_sha256"] = "0" * 64
     assert client.post("/api/jobs/sample/review", json=review).status_code == 409
     assert client.post("/api/actions/analyze", json={"source": str(source), "stages": ["ear"], "dry_run": True}).status_code == 200
+
+
+def tone_with_gap(tmp_path):
+    import wave
+    path = tmp_path / "inbox" / "tone.wav"
+    path.parent.mkdir(exist_ok=True)
+    rate = 8000
+    tone = (np.sin(2 * np.pi * 440 * np.arange(rate) / rate) * 16000).astype("<i2")
+    with wave.open(str(path), "wb") as handle:
+        handle.setnchannels(1)
+        handle.setsampwidth(2)
+        handle.setframerate(rate)
+        handle.writeframes(np.concatenate([tone, np.zeros(rate, dtype="<i2"), tone]).tobytes())
+    return path
+
+
+def test_audio_peaks_find_silence_and_thumbnail_scales(tmp_path):
+    peaks = FfmpegBlade.audio_peaks(tone_with_gap(tmp_path), rate=10)
+    assert len(peaks) == 30
+    assert min(peaks[:10]) > .4 and max(peaks[11:19]) < .01 and min(peaks[20:]) > .4
+    frame = FfmpegBlade.thumbnail(media(tmp_path), tmp_path / "thumb.jpg", time=1, height=32)
+    assert cv2.imread(str(frame)).shape[0] == 32
+
+
+def test_display_size_honours_rotation_metadata():
+    from pipeline.web import display_size
+    assert display_size({"width": 1920, "height": 1080, "side_data_list": [{"rotation": -90}]}) == (1080, 1920)
+    assert display_size({"width": 1920, "height": 1080, "tags": {"rotate": "90"}}) == (1080, 1920)
+    assert display_size({"width": 1920, "height": 1080, "tags": {"rotate": "180"}}) == (1920, 1080)
+    assert display_size({"width": 1920, "height": 1080, "tags": {"rotate": "sideways"}}) == (1920, 1080)
+
+
+def test_media_evidence_api_caches_waveforms_thumbnails_and_hashes(tmp_path, monkeypatch):
+    from fastapi.testclient import TestClient
+    import pipeline.web as web
+    cfg = config(tmp_path)
+    config_path = tmp_path / "config.json"
+    config_path.write_text(json.dumps(cfg))
+    source, audio = media(tmp_path), tone_with_gap(tmp_path)
+    job = Path(cfg["work_dir"]) / "jobs" / "sample"
+    job.mkdir(parents=True)
+    (job / "edit_plan.json").write_text(json.dumps(plan(source)))
+    (job / "scene_boundaries.json").write_text(json.dumps({"scenes": [
+        {"index": 0, "start_seconds": 0.0, "end_seconds": 1.0}, {"index": 1, "start_seconds": 1.0, "end_seconds": 3.0}]}))
+    hashes = []
+    monkeypatch.setattr(web, "source_fingerprint", lambda path: hashes.append(path) or source_fingerprint(path))
+    probes, real_probe = [], web.ffprobe_json
+    monkeypatch.setattr(web, "ffprobe_json", lambda path: probes.append(path) or real_probe(path))
+    client = TestClient(web.create_app(config_path))
+    assert client.get("/api/jobs/sample").json()["scene_boundaries"] == [1.0]
+    for _ in range(2):
+        assert client.get("/api/media", params={"path": str(source)}).status_code == 200
+    assert len(hashes) == 1 and len(probes) == 1
+    first = client.get("/api/waveform", params={"path": str(audio), "rate": 10}).json()
+    assert len(first["peaks"]) == 30 and max(first["peaks"][11:19]) < .01
+    monkeypatch.setattr(web.FfmpegBlade, "audio_peaks", lambda *a, **k: pytest.fail("cache miss"))
+    assert client.get("/api/waveform", params={"path": str(audio), "rate": 10}).json() == first
+    assert client.get("/api/waveform", params={"path": str(source)}).json()["peaks"] == []
+    thumb = client.get("/api/thumbnail", params={"path": str(source), "t": 99, "h": 32})
+    assert thumb.status_code == 200 and thumb.headers["content-type"] == "image/jpeg"
+    assert client.get("/api/thumbnail", params={"path": str(audio)}).status_code == 400
+    assert client.get("/api/waveform", params={"path": "C:/Windows/win.ini"}).status_code == 403

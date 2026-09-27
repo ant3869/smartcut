@@ -1,0 +1,107 @@
+// Pure timeline commands shared by the browser and Node's built-in test runner.
+export const clone = value => JSON.parse(JSON.stringify(value));
+export const duration = clip => (clip.source_end - clip.source_start) / clip.speed;
+export const end = clip => clip.start + duration(clip);
+export const sequenceDuration = sequence => Math.max(0, ...sequence.clips.map(end));
+export const uid = () => crypto.randomUUID().slice(0, 12);
+export const locked = (sequence, track) => sequence.tracks.find(t => t.id === track)?.locked;
+export function linkedClips(sequence, id, linked = true) {
+  const clip = sequence.clips.find(c => c.id === id);
+  if (!clip) throw new Error('Select a clip first');
+  return sequence.clips.filter(c => c.id === id || (linked && clip.link_id && c.link_id === clip.link_id));
+}
+function editable(sequence, clips) {
+  if (clips.some(c => locked(sequence, c.track))) throw new Error('Unlock the affected track first');
+}
+export function validate(sequence) {
+  for (const track of sequence.tracks) {
+    const clips = sequence.clips.filter(c => c.enabled && c.track === track.id).sort((a,b) => a.start-b.start);
+    for (let i=0;i<clips.length;i++) {
+      if (duration(clips[i]) < .02 || clips[i].source_start < 0 || clips[i].start < 0) throw new Error('Clip is too short or outside the timeline');
+      if (i && end(clips[i-1]) > clips[i].start + .001) throw new Error('Clips overlap. Use another track or Overwrite.');
+    }
+  }
+  return sequence;
+}
+export function split(sequence, id, time, linked = true) {
+  const targets = linkedClips(sequence, id, linked).filter(c => c.start + .02 < time && end(c) - .02 > time);
+  if (!targets.length) throw new Error('Place the playhead inside a clip to split');
+  editable(sequence, targets);
+  const rightLink = uid();
+  for (const clip of targets) {
+    const boundary = clip.source_start + (time-clip.start)*clip.speed;
+    sequence.clips.push({...clip, id:uid(), start:time, source_start:boundary, link_id:linked ? rightLink : null});
+    clip.source_end = boundary;
+    if (!linked) clip.link_id = null;
+  }
+  return validate(sequence);
+}
+export function remove(sequence, id, ripple = false, linked = true) {
+  const targets = linkedClips(sequence, id, linked);
+  editable(sequence, targets);
+  const clip = sequence.clips.find(c => c.id === id), start = clip.start, finish = end(clip), delta = duration(clip);
+  const ids = new Set(targets.map(c => c.id));
+  if (ripple) {
+    const survivors = sequence.clips.filter(c => !ids.has(c.id));
+    // A crossing clip must be split explicitly; never silently truncate another track.
+    if (survivors.some(c => c.start < finish-.001 && end(c) > start+.001)) throw new Error('Another clip crosses this ripple range. Split it or use Delete.');
+    editable(sequence, survivors.filter(c => c.start >= finish-.001));
+    survivors.filter(c => c.start >= finish-.001).forEach(c => { c.start = Math.max(0,c.start-delta); });
+    sequence.markers = sequence.markers.map(m => ({...m,time:m.time >= finish ? m.time-delta : m.time > start ? start : m.time}));
+  }
+  sequence.clips = sequence.clips.filter(c => !ids.has(c.id));
+  return validate(sequence);
+}
+export function duplicate(sequence, id, linked = true) {
+  const targets = linkedClips(sequence,id,linked);
+  editable(sequence,targets);
+  const link = uid(), finish = Math.max(...sequence.clips.map(end));
+  const base = Math.min(...targets.map(c => c.start));
+  targets.forEach(c => sequence.clips.push({...c,id:uid(),link_id:linked ? link : null,start:finish+c.start-base}));
+  return validate(sequence);
+}
+export function trim(sequence, id, edge, time, linked = true) {
+  const targets = linkedClips(sequence,id,linked);
+  editable(sequence,targets);
+  for (const clip of targets) {
+    if (edge === 'start') {
+      const delta = time-clip.start;
+      clip.source_start += delta*clip.speed;
+      clip.start = time;
+    } else clip.source_end = clip.source_start + (time-clip.start)*clip.speed;
+  }
+  return validate(sequence);
+}
+export function move(sequence, id, time, track, linked = true) {
+  const targets = linkedClips(sequence,id,linked), clip = targets.find(c=>c.id===id);
+  const delta=time-clip.start;
+  editable(sequence,targets);
+  if (locked(sequence,track)) throw new Error('Unlock the destination track first');
+  if (track[0] !== clip.track[0]) throw new Error('Move video between V tracks and audio between A tracks');
+  for (const c of targets) { c.start += delta; if(c.id===id)c.track=track; }
+  return validate(sequence);
+}
+export function insert(sequence, clips, time, overwrite = false) {
+  const span = Math.max(...clips.map(duration));
+  const tracks = new Set(clips.map(c=>c.track));
+  if ([...tracks].some(t=>locked(sequence,t))) throw new Error('Unlock the destination track first');
+  for (const track of sequence.tracks.filter(t=>tracks.has(t.id))) {
+    for (const c of [...sequence.clips.filter(c=>c.track===track.id)]) {
+      if (c.start < time && end(c) > time) split(sequence,c.id,time,false);
+    }
+    if (overwrite) {
+      for (const c of [...sequence.clips.filter(c=>c.track===track.id)]) {
+        if (c.start < time+span && end(c) > time+span) split(sequence,c.id,time+span,false);
+      }
+      sequence.clips=sequence.clips.filter(c=>c.track!==track.id || c.start < time-.001 || c.start >= time+span-.001);
+    } else sequence.clips.filter(c=>c.track===track.id && c.start>=time-.001).forEach(c=>{c.start+=span;});
+  }
+  clips.forEach(c=>sequence.clips.push({...c,start:time}));
+  return validate(sequence);
+}
+export function snap(sequence, time, pixelsPerSecond, excludeIds=[], enabled=true, extra=[]) {
+  if (!enabled) return Math.max(0,time);
+  const candidates=[0,...extra,...sequence.markers.map(m=>m.time),...sequence.clips.filter(c=>!excludeIds.includes(c.id)).flatMap(c=>[c.start,end(c)])];
+  const near=candidates.reduce((a,b)=>Math.abs(b-time)<Math.abs(a-time)?b:a, candidates[0]);
+  return Math.max(0,Math.abs(near-time)*pixelsPerSecond<=8 ? near : time);
+}

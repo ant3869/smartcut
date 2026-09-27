@@ -667,16 +667,14 @@ class VisionEye:
         try:
             response = requests.get(f"{self.base_url}/models", timeout=30, headers=self._headers())
             response.raise_for_status()
-            models = [x.get("id") for x in response.json().get("data", [])]
-        except requests.RequestException:
+            models = [x.get("id") for x in response.json().get("data", []) if isinstance(x, dict)]
+        except (requests.RequestException, ValueError, TypeError, AttributeError):
             # /models missing or hanging (some gateways don't implement it) —
             # fall through to the chat ping below.
             models = []
-        if models and self.model not in models:
-            raise PipelineError(f"vision model is not loaded: {self.model}; loaded={models}")
         # Empty model list (some gateways don't implement /models) — verify with
         # a minimal chat ping instead of failing outright.
-        if not models:
+        if self.model not in models:
             try:
                 ping = post_json_with_retry(
                     f"{self.base_url}/chat/completions",
