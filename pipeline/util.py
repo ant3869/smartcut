@@ -96,12 +96,13 @@ def post_json_with_retry(
     tries: int = 3,
     timeout: float = 180.0,
     backoff: float = 2.0,
+    headers: dict[str, str] | None = None,
 ) -> requests.Response:
     """POST JSON with exponential-backoff retries for transient failures."""
     last: Exception | None = None
     for attempt in range(max(1, tries)):
         try:
-            response = requests.post(url, json=payload, timeout=timeout)
+            response = requests.post(url, json=payload, timeout=timeout, headers=headers or {})
             response.raise_for_status()
             return response
         except requests.RequestException as exc:
