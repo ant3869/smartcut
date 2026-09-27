@@ -8,7 +8,7 @@ from typing import Iterable
 
 from .contracts import Clip, Segment, Transcript
 from .blade import FfmpegBlade
-from .util import PipelineError, media_duration, read_json, write_json
+from .util import PipelineError, media_duration, read_json, write_json, ffprobe_json
 
 
 class WhisperEar:
@@ -29,6 +29,11 @@ class WhisperEar:
         if cache.exists() and not refresh:
             data = read_json(cache)
             return self._from_dict(data, cached=True)
+
+        if not any(s.get("codec_type") == "audio" for s in ffprobe_json(source).get("streams", [])):
+            result = Transcript(ok=True, model=self.model, duration=media_duration(source))
+            write_json(cache, self._to_dict(result))
+            return result
 
         try:
             from faster_whisper import WhisperModel

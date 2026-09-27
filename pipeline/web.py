@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import math
 import os
@@ -18,6 +19,8 @@ from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
+from . import __version__
+from .blade import FfmpegBlade
 from .brain import PipelineBrain
 from .contracts import Clip
 from .util import PipelineError, read_json, source_fingerprint, write_json, ffprobe_json
@@ -47,7 +50,7 @@ class ActionRequest(BaseModel):
 
 
 class ConfigUpdate(BaseModel):
-    values: dict[str, Any]
+    values: dict[str, Any] = Field(default_factory=dict)
     revision: str | None = None
     dry_run: bool = False
 
@@ -96,14 +99,53 @@ def utc_now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+def display_size(video: dict[str, Any]) -> tuple[int, int]:
+    """Frame size as players show it: phone footage often stores 90-degree rotation as metadata."""
+    width, height = int(video.get("width") or 1280), int(video.get("height") or 720)
+    rotation = (video.get("tags") or {}).get("rotate") or next(
+        (item.get("rotation") for item in video.get("side_data_list") or [] if "rotation" in item), 0)
+    try:
+        quarter_turn = round(float(rotation)) % 180 == 90
+    except (TypeError, ValueError):
+        quarter_turn = False
+    return (height, width) if quarter_turn else (width, height)
+
+
+def media_cache_key(path: Path, *parts: Any) -> str:
+    stat = path.stat()
+    raw = "|".join(str(item) for item in (path.resolve(), stat.st_size, stat.st_mtime_ns, *parts))
+    return hashlib.sha1(raw.encode("utf-8")).hexdigest()[:24]
+
+
 def create_app(config_path: str | Path = DEFAULT_CONFIG) -> FastAPI:
     config_path = Path(config_path).resolve()
     config = load_config(config_path)
-    app = FastAPI(title="Anna Content Pipeline", version="0.1.0")
+    app = FastAPI(title="Anna Content Pipeline", version=__version__)
     app.state.config_path = config_path
     app.state.config = config
     config_lock = threading.RLock()
     sequence_lock = threading.RLock()
+    # Hashing a multi-hundred-MB source on every autosave stalled the editor; identity is path+size+mtime.
+    fingerprints: dict[tuple[str, int, int], dict[str, Any]] = {}
+    probes: dict[tuple[str, int, int], dict[str, Any]] = {}
+    ffmpeg_slots = threading.BoundedSemaphore(3)
+
+    def file_version(path: Path) -> tuple[str, int, int]:
+        stat = path.stat()
+        return (str(path.resolve()), stat.st_size, stat.st_mtime_ns)
+
+    def fingerprint(path: Path) -> dict[str, Any]:
+        key = file_version(path)
+        if key not in fingerprints:
+            fingerprints[key] = source_fingerprint(path)
+        return fingerprints[key]
+
+    def probe(path: Path) -> dict[str, Any]:
+        """ffprobe once per file version; thumbnails and autosaves call media_info constantly."""
+        key = file_version(path)
+        if key not in probes:
+            probes[key] = ffprobe_json(path)
+        return probes[key]
 
     @app.exception_handler(PipelineError)
     async def pipeline_error(request, exc):
@@ -154,6 +196,7 @@ def create_app(config_path: str | Path = DEFAULT_CONFIG) -> FastAPI:
         sequence = safe_read_json(path / "sequence.json")
         source = safe_read_json(path / "source_fingerprint.json")
         review = safe_read_json(path / "editor_review.json")
+        scenes = (safe_read_json(path / "scene_boundaries.json") or {}).get("scenes") or []
         caption = safe_read_text(path / "caption.txt")
 
         source_path = None
@@ -212,6 +255,8 @@ def create_app(config_path: str | Path = DEFAULT_CONFIG) -> FastAPI:
             "model_calls": model_calls,
             "transcript_segments": transcript_segments,
             "frame_signals": (plan or {}).get("frame_signals", []),
+            "scene_boundaries": [float(s["start_seconds"]) for s in scenes
+                                 if isinstance(s, dict) and float(s.get("start_seconds") or 0) > 0],
             "dropped_slivers": (plan or {}).get("dropped_slivers", []),
             "caption": caption,
             "review": review,
@@ -353,27 +398,61 @@ def create_app(config_path: str | Path = DEFAULT_CONFIG) -> FastAPI:
         source = allowed_file(Path(path))
         if not source.is_file() or source.suffix.lower() not in MEDIA_EXTENSIONS:
             raise HTTPException(400, "Select an existing video, image, or audio file")
-        probe = ffprobe_json(source)
-        video = next((s for s in probe.get("streams", []) if s.get("codec_type") == "video"), {})
-        return {"path": str(source), "name": source.name, "duration": float(probe.get("format", {}).get("duration") or 5),
-                "width": video.get("width", 1280), "height": video.get("height", 720),
-                "has_audio": any(s.get("codec_type") == "audio" for s in probe.get("streams", [])),
-                "sha256": source_fingerprint(source)["sha256"]}
+        streams = probe(source)
+        video = next((s for s in streams.get("streams", []) if s.get("codec_type") == "video"), {})
+        width, height = display_size(video)
+        return {"path": str(source), "name": source.name, "duration": float(streams.get("format", {}).get("duration") or 5),
+                "width": width, "height": height,
+                "has_audio": any(s.get("codec_type") == "audio" for s in streams.get("streams", [])),
+                "sha256": fingerprint(source)["sha256"]}
 
-    def get_sequence(job_id: str) -> Sequence:
+    @app.get("/api/waveform")
+    def waveform(path: str, rate: int = Query(50, ge=10, le=100)) -> dict[str, Any]:
+        """Cached per-bucket audio peaks for timeline waveforms and silence detection."""
+        info = media_info(path)
+        source = Path(info["path"])
+        if not info["has_audio"]:
+            return {"rate": rate, "duration": info["duration"], "peaks": []}
+        cache = analysis_dir() / "cutroom" / f"{media_cache_key(source, 'peaks', rate)}.json"
+        cached = safe_read_json(cache)
+        if cached and cached.get("rate") == rate:
+            return cached
+        with ffmpeg_slots:
+            peaks = FfmpegBlade.audio_peaks(source, rate=rate)
+        result = {"rate": rate, "duration": info["duration"], "peaks": peaks}
+        write_json(cache, result)
+        return result
+
+    @app.get("/api/thumbnail")
+    def thumbnail(path: str, t: float = Query(0, ge=0, le=86400), h: int = Query(72, ge=24, le=360)) -> FileResponse:
+        """Cached JPEG frame; times are quantized to a tenth of a second so filmstrips reuse frames."""
+        info = media_info(path)
+        source = Path(info["path"])
+        if source.suffix.lower() in AUDIO_EXTENSIONS:
+            raise HTTPException(400, "Audio files have no frames")
+        at = 0.0 if source.suffix.lower() in IMAGE_EXTENSIONS else round(min(t, max(0.0, info["duration"] - .1)), 1)
+        cache = analysis_dir() / "cutroom" / "thumbs" / f"{media_cache_key(source, at, h)}.jpg"
+        if not cache.is_file():
+            with ffmpeg_slots:
+                FfmpegBlade.thumbnail(source, cache, time=at, height=h)
+        return FileResponse(cache, media_type="image/jpeg", headers={"Cache-Control": "max-age=86400"})
+
+    def get_sequence(job_id: str, *, use_plan: bool = False) -> Sequence:
         job = job_path(job_id)
-        if (job / "sequence.json").exists():
+        if (job / "sequence.json").exists() and not use_plan:
             return Sequence.model_validate(read_json(job / "sequence.json"))
         plan = safe_read_json(job / "edit_plan.json")
         if not plan or not plan.get("clips"):
             raise HTTPException(400, "No plan clips; analyze first")
         info = media_info(plan["source"])
-        return from_plan(plan, width=int(info["width"]) // 2 * 2, height=int(info["height"]) // 2 * 2,
-                         fps=int(cfg().get("blade_output_fps", 30)), has_audio=info["has_audio"])
+        sequence = from_plan(plan, width=int(info["width"]) // 2 * 2, height=int(info["height"]) // 2 * 2,
+                             fps=int(cfg().get("blade_output_fps", 30)), has_audio=info["has_audio"])
+        sequence.revision = (safe_read_json(job / "sequence.json") or {}).get("revision", 0)
+        return sequence
 
     @app.get("/api/jobs/{job_id}/sequence")
-    def sequence_view(job_id: str):
-        return get_sequence(job_id).model_dump()
+    def sequence_view(job_id: str, use_plan: bool = False):
+        return get_sequence(job_id, use_plan=use_plan).model_dump()
 
     @app.put("/api/jobs/{job_id}/sequence")
     def sequence_save(job_id: str, payload: Sequence, dry_run: bool = False):
@@ -384,7 +463,7 @@ def create_app(config_path: str | Path = DEFAULT_CONFIG) -> FastAPI:
             if payload.revision != expected_revision:
                 raise HTTPException(409, "Sequence changed in another window. Reload before saving.")
             source = source_for_job(job_id)
-            if payload.source_sha256 != source_fingerprint(source)["sha256"]:
+            if payload.source_sha256 != fingerprint(source)["sha256"]:
                 raise HTTPException(409, "Sequence source hash does not match current source")
             checked = {}
             for clip in payload.clips:
@@ -590,7 +669,7 @@ def create_app(config_path: str | Path = DEFAULT_CONFIG) -> FastAPI:
         if data["timebase"] != "source":
             raise HTTPException(status_code=400, detail="timebase must be source")
         plan = safe_read_json(job / "edit_plan.json") or {}
-        if data["source_sha256"] != plan.get("source_sha256") or data["source_sha256"] != source_fingerprint(source_for_job(job_id))["sha256"]:
+        if data["source_sha256"] != plan.get("source_sha256") or data["source_sha256"] != fingerprint(source_for_job(job_id))["sha256"]:
             raise HTTPException(409, "Review source hash does not match current source")
         for interval in data["cut_intervals"] + data["keep_intervals"]:
             start, end = interval.get("start"), interval.get("end")

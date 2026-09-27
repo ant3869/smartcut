@@ -3,6 +3,8 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Iterable
 
+import numpy as np
+
 from .contracts import Clip
 from .util import PipelineError, ffprobe_json, media_duration, require_distinct, run_checked
 
@@ -20,6 +22,29 @@ class FfmpegBlade:
         require_distinct(output, source)
         run_checked(["ffmpeg", "-v", "error", "-y", "-i", str(source),
                      "-ac", "1", "-ar", "16000", "-c:a", "pcm_s16le", str(output)])
+
+    @staticmethod
+    def audio_peaks(source: Path, *, rate: int = 50, sample_rate: int = 8000) -> list[float]:
+        """Absolute peak (0..1) of the mono mix per 1/rate seconds; read-only waveform/silence evidence."""
+        result = run_checked(["ffmpeg", "-v", "error", "-i", str(source), "-map", "0:a:0", "-ac", "1",
+                              "-ar", str(sample_rate), "-f", "s16le", "-"], timeout=600, text=False)
+        samples = np.frombuffer(result.stdout, dtype="<i2")
+        bucket = sample_rate // rate
+        if not samples.size:
+            return []
+        padded = np.pad(np.abs(samples.astype(np.int32)), (0, -samples.size % bucket))
+        return np.round(padded.reshape(-1, bucket).max(axis=1) / 32768, 3).tolist()
+
+    @staticmethod
+    def thumbnail(source: Path, output: Path, *, time: float, height: int = 90) -> Path:
+        """Single scaled JPEG frame for timeline filmstrips; never touches the source."""
+        require_distinct(output, source)
+        output.parent.mkdir(parents=True, exist_ok=True)
+        run_checked(["ffmpeg", "-v", "error", "-y", "-ss", f"{max(0.0, time):.3f}", "-i", str(source),
+                     "-frames:v", "1", "-vf", f"scale=-2:{height}", "-q:v", "6", str(output)], timeout=60)
+        if not output.is_file():
+            raise PipelineError(f"no frame decoded at {time:.3f}s")
+        return output
 
     def render_sequence(self, sequence, output: Path, *, watermark: Path | None = None) -> Path:
         """Composite explicit V1/V2 and A1/A2 edits; gaps remain gaps, cuts stay exact."""

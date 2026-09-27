@@ -14,15 +14,18 @@ class PipelineError(RuntimeError):
     pass
 
 
-def run_checked(cmd: Sequence[str], *, timeout: float = 1800.0) -> subprocess.CompletedProcess[str]:
+def run_checked(cmd: Sequence[str], *, timeout: float = 1800.0, text: bool = True) -> subprocess.CompletedProcess:
     try:
-        result = subprocess.run(list(cmd), text=True, capture_output=True, timeout=timeout)
+        result = subprocess.run(list(cmd), text=text, capture_output=True, timeout=timeout)
     except FileNotFoundError as exc:
         raise PipelineError(f"required executable is missing: {cmd[0]}") from exc
     except subprocess.TimeoutExpired as exc:
         raise PipelineError(f"command timed out after {timeout}s: {cmd[0]}") from exc
     if result.returncode != 0:
-        detail = (result.stderr or result.stdout or "").strip()[-2500:]
+        detail = result.stderr or result.stdout or ""
+        if isinstance(detail, bytes):
+            detail = detail.decode("utf-8", "replace")
+        detail = detail.strip()[-2500:]
         raise PipelineError(f"command failed ({result.returncode}): {' '.join(cmd)}\n{detail}")
     return result
 
