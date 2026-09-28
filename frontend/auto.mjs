@@ -183,3 +183,20 @@ export function fillScale(mediaWidth, mediaHeight, frameWidth, frameHeight) {
   return Math.round(Math.max(x, y) / Math.min(x, y) * 1000) / 1000;
 }
 export const summary = sequence => ({duration:fix(sequenceDuration(sequence)), clips:sequence.clips.filter(c => c.track[0] === 'V').length, markers:sequence.markers.length});
+// A sampled frame speaks for the time around it, halfway to each neighbouring sample. Eye proposes
+// cuts the same way (sample ± half the interval), so heat and cut flags line up.
+export function sampleSpans(observations, duration) {
+  return observations.map((observation, i) => {
+    const t = observation.timestamp, prev = observations[i-1]?.timestamp, next = observations[i+1]?.timestamp;
+    const before = prev != null ? (t-prev)/2 : next != null ? (next-t)/2 : 1;
+    const after = next != null ? (next-t)/2 : prev != null ? (t-prev)/2 : 1;
+    const end = t + after;
+    return {start:Math.max(0, t-before), end:Number.isFinite(duration) ? Math.min(duration, end) : end, observation};
+  });
+}
+// The frame verdict for a moment: the nearest sample (ties go to the later one, as spans are half-open).
+export function sampleAt(observations, time) {
+  let best = null;
+  for (const o of observations) if (!best || Math.abs(o.timestamp-time) <= Math.abs(best.timestamp-time)) best = o;
+  return best;
+}

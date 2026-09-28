@@ -51,3 +51,10 @@ test('duplicating a group preserves independent link pairs',()=>{
   assert.equal(copies.length,3);assert.equal(copies[0].link_id,copies[1].link_id);
   assert.notEqual(copies[0].link_id,'pair');assert.equal(copies[2].link_id,null);
 });
+
+test('an edit started before a save finished keeps the newest saved revision', () => {
+  const current = {...sequence(), revision:6, source_sha256:'abc'}, draft = {...T.clone(current), revision:5, source_sha256:'old'};
+  const next = T.keepSaveState(draft, current);
+  assert.equal(next, draft);
+  assert.deepEqual([next.revision, next.source_sha256], [6, 'abc']);
+});
