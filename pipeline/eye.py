@@ -17,6 +17,7 @@ from .ear import merge_intervals
 from .highlights import plan_highlights
 from .util import (
     PipelineError,
+    completion_texts,
     media_duration,
     post_json_with_retry,
     read_json_or_none,
@@ -26,6 +27,10 @@ from .util import (
 
 class TruncatedBatchError(PipelineError):
     """The model stopped mid-batch (finish_reason=length): retry with fewer frames."""
+
+
+class UnusableSectionSummary(PipelineError):
+    """A completed model request did not provide a usable story-map decision."""
 
 
 VISION_PROMPT_VERSION = 8
@@ -546,10 +551,17 @@ class VisionEye:
                     segment.text.strip() for segment in (transcript.segments if transcript and transcript.ok else [])
                     if segment.end > start and segment.start < end and segment.text.strip()
                 )
-                decision = self._ask_section_summary(
-                    frames, start, end, transcript_evidence=transcript_evidence,
-                    editorial_policy=editorial_policy,
-                )
+                try:
+                    decision = self._ask_section_summary(
+                        frames, start, end, transcript_evidence=transcript_evidence,
+                        editorial_policy=editorial_policy,
+                    )
+                except UnusableSectionSummary:
+                    # An empty/truncated answer cannot justify an automatic cut.
+                    # Keep the section visible for human review and continue mapping.
+                    decision = {"section_type": "unknown", "editorial_action": "review",
+                                "summary": "Eye could not summarize this section; review it manually.",
+                                "confidence": 0.0}
                 action = str(decision.get("editorial_action", "review")).strip().lower()
                 if action not in {"cut_candidate", "keep_candidate", "review"}:
                     action = "review"
@@ -807,33 +819,45 @@ class VisionEye:
                 {"type": "text", "text": f"Storyboard frame: {timestamp:.3f}s"},
                 {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{base64.b64encode(encoded).decode('ascii')}"}},
             ])
-        try:
-            response = self._post(
-                {
-                    "model": self.model, "temperature": 0.1, "max_tokens": 500,
-                    "stream": False, "messages": [
-                        {"role": "system", "content": "You are a concise video-editor story analyst. Return JSON only."},
-                        {"role": "user", "content": content},
-                    ],
-                },
-                timeout=180.0,
-            )
-        except PipelineError as exc:
-            raise PipelineError(f"Story-map request failed for {start:.3f}-{end:.3f}s: {exc}") from exc
-        self._count_call("section_summaries")
-        try:
-            message = response.json()["choices"][0]["message"]
-            text = message.get("content") or message.get("reasoning_content") or ""
-        except (KeyError, IndexError, TypeError, ValueError) as exc:
-            raise PipelineError(f"Story-map returned an unreadable response for {start:.3f}-{end:.3f}s: {exc}") from exc
-        for candidate in [text, *re.findall(r"```(?:json)?\s*(.*?)```", text, flags=re.DOTALL | re.IGNORECASE)]:
+        last_reason = "no usable JSON"
+        for max_tokens in (2400, 4000):
             try:
-                value = json.loads(candidate)
-            except json.JSONDecodeError:
-                continue
-            if isinstance(value, dict) and "editorial_action" in value:
-                return value
-        raise PipelineError(f"Story-map Eye returned no summary for {start:.3f}-{end:.3f}s: {text[:500]}")
+                response = self._post(
+                    {
+                        "model": self.model, "temperature": 0.1, "max_tokens": max_tokens,
+                        "stream": False, "messages": [
+                            {"role": "system", "content": "You are a concise video-editor story analyst. Return JSON only."},
+                            {"role": "user", "content": content},
+                        ],
+                    },
+                    timeout=180.0,
+                )
+            except PipelineError as exc:
+                raise PipelineError(f"Story-map request failed for {start:.3f}-{end:.3f}s: {exc}") from exc
+            self._count_call("section_summaries")
+            try:
+                choice = response.json()["choices"][0]
+                message = choice["message"]
+            except (KeyError, IndexError, TypeError, ValueError) as exc:
+                raise PipelineError(f"Story-map returned an unreadable response for {start:.3f}-{end:.3f}s: {exc}") from exc
+            if not isinstance(message, dict):
+                raise PipelineError(f"Story-map returned an invalid message for {start:.3f}-{end:.3f}s")
+            for text in completion_texts(message):
+                candidates = [text, *re.findall(r"```(?:json)?\s*(.*?)```", text, flags=re.DOTALL | re.IGNORECASE)]
+                match = re.search(r"\{.*\}", text, flags=re.DOTALL)
+                if match:
+                    candidates.append(match.group(0))
+                for candidate in candidates:
+                    try:
+                        value = json.loads(candidate)
+                    except json.JSONDecodeError:
+                        continue
+                    if isinstance(value, dict) and value.get("editorial_action") in {
+                        "cut_candidate", "keep_candidate", "review"
+                    }:
+                        return value
+            last_reason = f"finish_reason={choice.get('finish_reason', 'unknown')}, max_tokens={max_tokens}"
+        raise UnusableSectionSummary(f"Story-map Eye returned no usable summary for {start:.3f}-{end:.3f}s ({last_reason})")
 
     def _ask_batch(
         self,

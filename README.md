@@ -28,7 +28,8 @@ that opens in DaVinci Resolve or Premiere for finishing.
 - **Flexible export.** Render MP4, or export OTIO/EDL/CSV timelines and captions timed to your edit.
 - **Configurable.** Every setting is editable in the app, including toggleable audio evidence for music-only footage.
 - **Project-based editing.** Create or reopen a project, import media into its asset list, then edit and render without running analysis first.
-- **Precise timeline editing.** Full-duration snapped drag previews and live box selection across tracks, with grouped clip edits.
+- **Precise timeline editing.** Full-duration snapped drag previews, live box selection across tracks,
+  grouped clip edits, and whole-sequence fit with deep zoom-out.
 - **Desktop app.** One double-click opens SmartCut in its own window, and closing it stops everything it started.
 
 ## Quick start (Windows)
@@ -153,7 +154,8 @@ input video
 With multi-pass enabled, analysis first writes a `story_map.json` of scene sections and bounded
 candidate windows from scene changes plus Eye/Ear evidence; a temporal critic then inspects those
 windows with before/after context. Critic cuts stay advisory until the editorial evaluation proves
-they're a win.
+they're a win. If a vision model returns no usable summary for a section after a larger-budget retry,
+that section remains **Review** with zero confidence; it cannot create an automatic section cut.
 
 ## Trust the model, verify the uncertainty
 
@@ -184,7 +186,8 @@ Analysis jobs and source-time review decisions remain separate from each project
   that follow the material through your edit; trim, split, ripple, overwrite, linked and snapped moves,
   track mute/lock, markers, and undo/redo with autosave. Drag empty track space to box-select
   intersecting clips across tracks; Shift/Ctrl-click toggles selection. Selected clips move/delete
-  together. Drag the ruler to scrub; Escape cancels a drag or selection rectangle.
+  together. Drag the ruler to scrub; Escape cancels a drag or selection rectangle. The logarithmic
+  zoom slider fits the whole sequence at its default setting and reaches 1/32× to 64×.
 - **Inspector**: per-clip effects (speed, gain, opacity, scale, position, rotation, fit/fill frame);
   **Review** with the AI summary, the proposal queue, your decisions, nearby evidence and the transcript;
   **Pipeline** with per-stage settings and background tasks.
@@ -325,6 +328,11 @@ install-desktop.ps1  SmartCut.exe + desktop shortcut
   in Pipeline settings → Ear.
 - **Connection failed**: check the gateway URL and model in Pipeline settings; LM Studio must have the
   server started and the vision model loaded.
+- **Story-map Eye returned no summary**: older builds capped the section reply at 500 tokens;
+  reasoning models could spend that budget before emitting JSON. Update to 0.5.2 and retry Analyze.
+  A section that still cannot be summarized stays marked for manual review rather than stopping
+  the analysis or silently becoming a cut. The same fix covers Voice captioning: an empty caption
+  reply is retried with a larger budget and otherwise leaves the caption blank.
 - **Analyze or render fails with "required executable is missing: ffmpeg"**: install FFmpeg and add it
   to `PATH`.
 - **The window opens in a normal browser tab**: neither Edge nor Chrome was found. Set

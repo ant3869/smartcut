@@ -5,6 +5,19 @@ All notable changes to this project are documented here. The project follows
 
 ## [Unreleased]
 
+## [0.5.2] - 2026-09-28
+
+### Fixed
+
+- Story-map Eye now gives reasoning-capable vision models enough output budget for a final JSON
+  summary. Empty or malformed section replies get one larger-budget retry; if both fail, that
+  section stays marked for manual review instead of failing the whole analysis or proposing a cut.
+- Voice captioning no longer crashes analysis when a reasoning model returns a null reply. Caption
+  requests start at a 1,200-token budget, retry once at 2,400, and leave the caption blank if the
+  model still gives no caption JSON.
+- Timeline zoom now fits the complete sequence at its default setting and spans 1/32× to 64×
+  on a logarithmic slider, so long edits can be viewed at once or pulled back much farther.
+
 ## [0.5.1] - 2026-09-27
 
 ### Fixed
