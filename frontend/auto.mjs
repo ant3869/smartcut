@@ -202,3 +202,20 @@ export function sampleAt(observations, time) {
   for (const o of observations) if (!best || Math.abs(o.timestamp-time) <= Math.abs(best.timestamp-time)) best = o;
   return best;
 }
+
+// A job has an edit plan once analysis moved past discovery/fingerprinting.
+export function hasPlan(job) {
+  return !!job && ['planned', 'reviewed', 'rendered'].includes(job.status);
+}
+// Classifies a project's assets (as produced by the frontend's assets(), each carrying its matched job)
+// for the "Analyze all" queue. Non-video assets are dropped; offline sources are always excluded; already-
+// analyzed sources are excluded unless includeAnalyzed opts them back in, queued with refresh since they
+// already have evidence to redo.
+export function analyzableAssets(assets, {includeAnalyzed = false} = {}) {
+  return assets.filter(a => a.kind === 'video').map(a => {
+    const analyzed = hasPlan(a.job);
+    const offline = a.source_available !== true || a.job?.source_available === false;
+    const queue = !offline && (!analyzed || includeAnalyzed);
+    return {path: a.path, name: a.name, analyzed, offline, queue, refresh: queue && analyzed};
+  });
+}

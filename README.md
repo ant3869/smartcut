@@ -68,8 +68,9 @@ Projects save their assets and timeline independently under `work/projects/<id>/
 asset only changes the Source monitor. Removing an unused asset from a project keeps its original
 file. An imported asset stays usable after its original analysis job is cleaned up, including media
 outside the configured inbox. A missing file is marked **Offline**; restore it at its saved path
-before analyzing it. Analyze only lists available video assets. Pipeline settings are shared across
-projects; resolution and frame rate belong to each sequence.
+before analyzing it. Analyze only lists available video assets; **Analyze all** queues every
+unanalyzed video in the project at once (optionally including already-analyzed sources, refreshed).
+Pipeline settings are shared across projects; resolution and frame rate belong to each sequence.
 
 `install-desktop.ps1 -StartMenu` also adds a Start menu entry. If PowerShell blocks the scripts, run
 them as `powershell -ExecutionPolicy Bypass -File .\setup.ps1`.

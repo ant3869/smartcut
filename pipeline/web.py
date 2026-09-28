@@ -742,8 +742,14 @@ def create_app(config_path: str | Path = DEFAULT_CONFIG) -> FastAPI:
 
     @app.get("/api/tasks")
     def task_list() -> list[dict[str, Any]]:
+        # Active tasks are never capped: a batch (e.g. Analyze all) can queue more than 20 at
+        # once, and the frontend only learns a queued/running task finished by seeing it turn
+        # up as succeeded/failed here. Only the completed/failed history is capped for display.
         with tasks_lock:
-            return list(reversed(list(tasks.values())))[:20]
+            ordered = list(reversed(list(tasks.values())))
+        active = [task for task in ordered if task["status"] in ("queued", "running")]
+        done = [task for task in ordered if task["status"] not in ("queued", "running")]
+        return active + done[:20]
 
     @app.get("/api/tasks/{task_id}")
     def task_detail(task_id: str) -> dict[str, Any]:
