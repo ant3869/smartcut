@@ -135,7 +135,7 @@ def export_sequence(sequence: Sequence, path: Path, fmt: str) -> list[str]:
         video = [c for c in active if c.track.startswith("V")]
         if len({c.track for c in video}) > 1 or any(c.speed != 1 or c.kind == "image" or c.opacity != 1 or c.scale != 1 or c.rotation or c.x or c.y for c in video):
             raise PipelineError("CMX EDL supports a single video track with cuts only. Use OTIO for layered edits or MP4 for baked effects.")
-        lines = ["TITLE: ANNA CUTROOM", "FCM: NON-DROP FRAME", ""]
+        lines = ["TITLE: SMARTCUT", "FCM: NON-DROP FRAME", ""]
         for index, clip in enumerate(sorted(video, key=lambda c: c.start), 1):
             tc = lambda s: timecode(s, sequence.fps)
             lines += [f"{index:03}  AX       V     C        {tc(clip.source_start)} {tc(clip.source_end)} {tc(clip.start)} {tc(clip.start + clip.duration)}",
