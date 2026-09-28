@@ -329,10 +329,12 @@ function aiProposals(){
   return proposalCache.list;
 }
 const reasonText=r=>(r.reasons||[]).join(' · ').replace(/vision-(cull|review):/g,'').replace(/_/g,' ')||'model proposal';
+// Plans made before frame_interval was recorded were analysed at the configured interval.
+const frameInterval=job=>job?.frame_interval??state.config?.frame_interval_seconds??2;
 // Source-time evidence mapped through the edit, so the AI's opinion follows the material wherever it now sits.
 function aiLanes(seq,scale){
   const job=state.job,src=job.source,obs=job.observations||[],at=r=>`left:${r.start*scale}px;width:${Math.max(1,(r.end-r.start)*scale)}px`;
-  const heat=A.sampleSpans(obs,job.duration).flatMap(({start,end,observation:o})=>A.sourceToSequence(seq,src,start,end).map(r=>`<i class="heat ${o.keep===false?'cut':''}" style="${at(r)};--h:${(Number(o.score)||0)/10}" title="${esc(`${short(o.timestamp)} · AI ${o.score}/10 · ${o.keep===false?'cut':'keep'} — ${String(o.description||'').slice(0,180)}`)}"></i>`)).join('');
+  const heat=A.sampleSpans(obs,job.duration,frameInterval(job)).flatMap(({start,end,observation:o})=>A.sourceToSequence(seq,src,start,end).map(r=>`<i class="heat ${o.keep===false?'cut':''}" style="${at(r)};--h:${(Number(o.score)||0)/10}" title="${esc(`${short(o.timestamp)} · AI ${o.score}/10 · ${o.keep===false?'cut':'keep'} — ${String(o.description||'').slice(0,180)}`)}"></i>`)).join('');
   const flags=[...aiProposals().map(r=>({...r,kind:'waste'})),...(job.review_intervals||[]).map(r=>({...r,kind:'review'}))].flatMap(r=>A.sourceToSequence(seq,src,r.start,r.end).map(m=>`<i class="flag ${r.kind} ${r.status||''}" style="${at(m)}" ${r.kind==='waste'?`data-proposal-start="${r.start}"`:''} title="${esc(`${r.kind==='waste'?'AI suggests cutting':'Needs your eyes'} · ${reasonText(r)}`)}"></i>`)).join('');
   const scenes=(job.scene_boundaries||[]).flatMap(b=>A.sourcePoint(seq,src,b)).map(t=>`<i class="scene-tick" style="left:${t*scale}px" title="Scene change"></i>`).join('');
   const words=(job.transcript_segments||[]).flatMap(s=>A.sourceToSequence(seq,src,s.start,s.end).map(r=>`<span class="tx" style="${at(r)}" title="${esc(s.text)}">${(r.end-r.start)*scale>=30?esc(s.text):''}</span>`)).join('');
@@ -357,7 +359,7 @@ function renderSourceEvidence(){
   const node=$('#source-evidence');if(!node)return;const job=state.job,d=job?.duration;
   if(!job||state.source!==job.source||!d||!job.observations?.length){node.hidden=true;node.innerHTML='';return;}
   const pos=(a,b)=>`left:${(Math.max(0,a)/d*100).toFixed(3)}%;width:${(Math.max(.05,Math.min(d,b)-Math.max(0,a))/d*100).toFixed(3)}%`,obs=job.observations,review=currentReview();
-  const heat=A.sampleSpans(obs,d).map(({start,end,observation:o})=>`<i class="heat ${o.keep===false?'cut':''}" style="${pos(start,end)};--h:${(Number(o.score)||0)/10}"></i>`).join('');
+  const heat=A.sampleSpans(obs,d,frameInterval(job)).map(({start,end,observation:o})=>`<i class="heat ${o.keep===false?'cut':''}" style="${pos(start,end)};--h:${(Number(o.score)||0)/10}"></i>`).join('');
   const spans=[...(job.clips||[]).map(r=>['kept',r,'Kept by plan']),...aiProposals().map(r=>['waste '+r.status,r,'AI cut · '+r.status+' · '+reasonText(r)]),...(job.review_intervals||[]).map(r=>['review',r,'Needs your eyes · '+reasonText(r)]),...(review.cut_intervals||[]).map(r=>['human-cut',r,'Your cut · '+(r.reason||'')]),...(review.keep_intervals||[]).map(r=>['human-keep',r,'Your keep · '+(r.reason||'')])];
   node.innerHTML=`<div class="strip heat-strip">${heat}</div><div class="strip flag-strip">${spans.map(([kind,r,label])=>`<i class="${kind}" style="${pos(r.start,r.end)}" title="${esc(`${short(r.start)}–${short(r.end)} · ${label}`)}"></i>`).join('')}</div><div class="strip word-strip">${(job.transcript_segments||[]).map(s=>`<i style="${pos(s.start,s.end)}" title="${esc(s.text)}"></i>`).join('')}</div>${(job.scene_boundaries||[]).map(b=>`<i class="scene-tick" style="left:${(b/d*100).toFixed(3)}%"></i>`).join('')}<i class="strip-range" id="evidence-range"></i><i class="strip-head" id="evidence-head"></i>`;
   node.hidden=false;syncTransport();

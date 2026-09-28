@@ -292,6 +292,7 @@ def create_app(config_path: str | Path = DEFAULT_CONFIG) -> FastAPI:
             "clips": clips,
             "waste_intervals": waste,
             "observations": observations,
+            "frame_interval": plan.get("frame_interval") if plan else None,
             "review_intervals": review_intervals,
             "model_disagreements": model_disagreements,
             "model_calls": model_calls,

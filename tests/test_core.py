@@ -5,7 +5,7 @@ import json
 import numpy as np
 import pytest
 
-from pipeline.contracts import Clip, Observation, Segment, Transcript
+from pipeline.contracts import Clip, EditPlan, Observation, Segment, Transcript
 from pipeline.ear import WhisperEar, merge_intervals
 from pipeline.brain import PipelineBrain, _load_editorial_waste, _resolve_persona, subtract_intervals
 from pipeline.blade import FfmpegBlade
@@ -271,6 +271,12 @@ def test_brain_applies_configured_vision_max_width(tmp_path):
     })
 
     assert brain.eye.max_width == 512
+
+
+def test_plan_records_the_frame_interval_its_verdicts_cover():
+    # The timeline heat sizes a lone sample's span from this, the same window Eye cut with.
+    plan = EditPlan(source="a.mp4", duration=3.0, clips=[], frame_interval=10.0)
+    assert plan.to_dict()["frame_interval"] == 10.0
 
 
 def test_dense_high_scores_keep_temporal_coverage_without_fixed_minimum_windows(tmp_path):
@@ -1298,6 +1304,7 @@ def test_job_summary_includes_review_queue_fields(tmp_path, monkeypatch):
             {"timestamp": 10.0, "sample_interval": 2.0, "heuristic_suggests": "clothing_adjustment", "confidence": 0.9},
         ],
         "model_calls": {"frame_batches": 5},
+        "frame_interval": 10.0,
     })
 
     client = TestClient(create_app(config_path))
@@ -1308,6 +1315,7 @@ def test_job_summary_includes_review_queue_fields(tmp_path, monkeypatch):
     assert summary["review_intervals"][0]["reasons"] == ["vision-review:camera_adjustment", "confidence:0.40"]
     assert summary["model_disagreements"][0]["heuristic_suggests"] == "clothing_adjustment"
     assert summary["model_calls"] == {"frame_batches": 5}
+    assert summary["frame_interval"] == 10.0
 
 
 def test_export_otio_endpoint_rejects_job_without_clips(tmp_path, monkeypatch):

@@ -67,6 +67,7 @@ class EditPlan:
     targeted_review: list[dict[str, Any]] = field(default_factory=list)
     model_disagreements: list[dict[str, Any]] = field(default_factory=list)
     review_intervals: list[Clip] = field(default_factory=list)
+    frame_interval: float | None = None  # seconds between Eye samples; each verdict covers ± half
 
     def to_dict(self) -> dict[str, Any]:
         data = asdict(self)

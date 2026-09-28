@@ -124,6 +124,9 @@ test('each frame verdict covers the time around its sample, matching how cuts ar
   assert.deepEqual(A.sampleSpans([{timestamp:68}, {timestamp:70}, {timestamp:72}], 227.5)[1], {start:69, end:71, observation:{timestamp:70}});
   assert.deepEqual(A.sampleSpans([{timestamp:4}], 10).map(r => [r.start, r.end]), [[3,5]]);
   assert.deepEqual(A.sampleSpans([], 10), []);
+  // A lone sample in a short source analysed every 10s is Eye's 1-11s cut, not a 2s sliver.
+  assert.deepEqual(A.sampleSpans([{timestamp:6}], 30, 10).map(r => [r.start, r.end]), [[1,11]]);
+  assert.deepEqual(A.sampleSpans([{timestamp:1}], 3, 10).map(r => [r.start, r.end]), [[0,3]]);
 });
 
 test('the verdict at a moment is the nearest sampled frame, not the last one before it', () => {

@@ -213,6 +213,7 @@ class PipelineBrain:
             targeted_review=self.eye.last_temporal_decisions,
             model_disagreements=self.eye.model_disagreements,
             review_intervals=self.eye.review_intervals(observations, duration),
+            frame_interval=self.eye.interval,
         )
         self._write_plan(job, plan, fingerprint)
         result = plan.to_dict()
