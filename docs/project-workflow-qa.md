@@ -67,3 +67,20 @@ Library requirements follow the [upstream GPU documentation](https://github.com/
   checks used the existing project venv and installed Node as allowed by AGENTS.md.
 - Existing warning: Starlette's TestClient deprecates its current `httpx` adapter.
   No dependency changes were made for that unrelated warning.
+
+## 0.5.1 follow-up: persisted assets and offline Analyze
+
+- Regression tests create a project from an edit whose source is outside the configured
+  workspace, delete the originating job, then reopen the app. The saved asset stays
+  available for media metadata, file playback, thumbnails, sequence saves, render
+  dry runs and analysis dry runs. An unimported neighboring file remains forbidden.
+  Removing the last project reference revokes access to that external file.
+- Browser QA used two isolated projects under ignored `work/` state. With one
+  available video and one missing video, the project panel marked the missing
+  video **Offline** and Analyze offered only the available source. In a project
+  containing only the missing video, Analyze stayed closed and showed a message
+  to restore the source or import another video. The browser reported zero
+  console errors.
+- Focused Python tests: **99 passed**. Node tests: **28 passed**. Node syntax,
+  Python compileall and diff checks passed. Docker build was attempted but its
+  Linux daemon was unavailable; Ruff is absent from the existing project venv.
