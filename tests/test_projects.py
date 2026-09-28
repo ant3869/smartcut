@@ -174,6 +174,24 @@ def test_tasks_expose_live_stage_and_timing(workspace, monkeypatch):
     assert finished["status"] == "succeeded" and finished["completed_at"] > during["updated_at"]
 
 
+def test_task_list_keeps_every_active_task_beyond_the_recent_cap(workspace, monkeypatch):
+    # A batch action (Analyze all) can queue more tasks than the display cap in one go; the
+    # frontend only learns a queued/running task finished by seeing it turn up here as
+    # succeeded/failed, so none may be dropped from the list while still active.
+    from pipeline import web
+
+    client, path, cfg, source = workspace
+    monkeypatch.setattr(web, "submit_task", lambda fn: None)
+
+    # tasks{} is a module-level dict shared by every TestClient in the process, so other tests'
+    # tasks may already be in it; assert none of these 25 get dropped rather than an exact count.
+    created = [client.post("/api/actions/analyze", json={"source": str(source)}).json() for _ in range(25)]
+    assert all(task["status"] == "queued" for task in created)
+
+    listed_ids = {task["id"] for task in client.get("/api/tasks").json()}
+    assert {task["id"] for task in created} <= listed_ids
+
+
 def test_projects_render_and_export_to_separate_outputs(workspace, monkeypatch):
     from pipeline import web
 

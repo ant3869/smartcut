@@ -77,7 +77,7 @@ function shell(){
       <a class="brand" href="/" aria-label="SmartCut home"><img class="brand-mark" src="/favicon.png" alt="" width="32" height="32"><span class="brand-copy"><span class="brand-name">SmartCut</span><span class="brand-suite">Cutroom</span></span></a>
       <nav class="menus" aria-label="Application menu">
         ${menu('File',[['new-project','New project…'],['open-project','Open project…'],['import','Import media…'],['transcribe','Re-transcribe source (.srt)'],['folder','Open output folder']])}
-        ${menu('Project',[['new-project','New project…'],['open-project','Open project…'],['settings','Pipeline settings…'],['refresh','Refresh media']])}
+        ${menu('Project',[['new-project','New project…'],['open-project','Open project…'],['settings','Pipeline settings…'],['refresh','Refresh media'],['analyze-all','Analyze all…']])}
         ${menu('Sequence',[['save','Save sequence'],['undo','Undo'],['redo','Redo'],['rebuild','Load approved plan'],['reel','Best-of reel…']])}
         ${menu('Markers',[['in','Mark In · I'],['out','Mark Out · O'],['marker','Add sequence marker · M'],['auto-scenes','Markers at scene changes'],['auto-highlights','Markers at AI highlights'],['clear-markers','Clear all markers']])}
         ${menu('Auto',[['auto-edit','Auto-edit sequence…'],['auto-waste','Remove AI-flagged waste'],['auto-silence','Remove silences…'],['auto-gaps','Close all gaps'],['auto-fill','Fill frame'],['next-proposal','Next AI proposal · N']])}
@@ -90,7 +90,7 @@ function shell(){
       ${button('settings',icon('settings'),'icon-button','aria-label="Pipeline settings" title="Pipeline settings"')}
     </header>
     <div id="error-banner" class="error-banner" role="alert" hidden>${icon('triangle-alert')}<span id="error-message"></span>${button('retry',withIcon('refresh-cw','Retry'),'danger','id="retry-error"')}${button('dismiss-error',icon('x'),'icon-button','aria-label="Dismiss error"')}</div>
-    <div class="workspace-bar"><div class="page-title"><span class="page-icon" aria-hidden="true">${icon('clapperboard')}</span><div><span class="workspace-name">Editing</span><div class="page-heading"><h1 id="project-name">Untitled project</h1><span id="save-state"></span></div></div></div><div class="pipeline-actions">${button('import',withIcon('upload','Import'))}${button('analyze',withIcon('sparkles','Analyze'),'accent')}${button('auto-edit',withIcon('zap','Auto-edit'),'accent','title="Apply AI cuts, silence removal and markers as one undoable edit"')}${button('replan',withIcon('refresh-cw','Re-plan with my decisions'))}${button('preview',withIcon('film','Preview reel…'))}${button('render',withIcon('circle-check','Render approved cut'),'primary')}</div></div>
+    <div class="workspace-bar"><div class="page-title"><span class="page-icon" aria-hidden="true">${icon('clapperboard')}</span><div><span class="workspace-name">Editing</span><div class="page-heading"><h1 id="project-name">Untitled project</h1><span id="save-state"></span></div></div></div><div class="pipeline-actions">${button('import',withIcon('upload','Import'))}${button('analyze',withIcon('sparkles','Analyze'),'accent')}${button('analyze-all',withIcon('layers','Analyze all'))}${button('auto-edit',withIcon('zap','Auto-edit'),'accent','title="Apply AI cuts, silence removal and markers as one undoable edit"')}${button('replan',withIcon('refresh-cw','Re-plan with my decisions'))}${button('preview',withIcon('film','Preview reel…'))}${button('render',withIcon('circle-check','Render approved cut'),'primary')}</div></div>
     <main class="workspace" id="review">
       <aside class="panel project-panel" aria-label="Project panel"><div class="project-switcher">${button('new-project',withIcon('plus','New project'),'primary')}${button('open-project',withIcon('folder-open','Open…'))}</div>
         <div class="panel-title"><h2>${icon('folder')}Project assets</h2><span id="asset-count"></span></div>
@@ -580,11 +580,35 @@ function settingsValues(){
     else values[key]=input.value===''&&spec.default===null?null:input.value;
   }return values;
 }
+function stageOptionsHtml(){return [['ear','Ear','Transcribe speech locally'],['eye','Eye','Judge frames and scene boundaries'],['voice','Voice','Write a persona caption']].map(([id,name,description])=>`<label><input type="checkbox" name="stages" value="${id}" checked><span><strong>${name}</strong><small>${description}</small></span></label>`).join('');}
 function analyzeDialog(){
   if(!state.project)return newProjectDialog();
   const videos=assets().filter(f=>f.kind==='video'&&f.source_available===true&&f.job?.source_available!==false);
   if(!videos.length)return toast('No available video to analyze. Restore an offline source or import another video.','warn');
-  openDialog(`${dialogHead('PIPELINE','Analyze source')}<form id="analyze-form"><div class="dialog-body"><label class="stacked">Source<select name="source" required>${videos.map(f=>`<option value="${esc(f.path)}" ${state.source===f.path?'selected':''}>${esc(f.name)}</option>`).join('')}</select></label><h3>Stages to run</h3><div class="stage-options">${[['ear','Ear','Transcribe speech locally'],['eye','Eye','Judge frames and scene boundaries'],['voice','Voice','Write a persona caption']].map(([id,name,description])=>`<label><input type="checkbox" name="stages" value="${id}" checked><span><strong>${name}</strong><small>${description}</small></span></label>`).join('')}</div><p class="field-note">Unchecked Ear/Eye stages reuse saved evidence when available. Voice is skipped. No render runs during analysis.</p><label class="toggle-row">Refresh selected stages from scratch<input type="checkbox" name="refresh"></label></div><footer class="dialog-footer">${button('settings','Pipeline settings')}${button('close-dialog','Cancel')}<button type="submit" class="primary">Start analysis</button></footer></form>`,'analyze');
+  openDialog(`${dialogHead('PIPELINE','Analyze source')}<form id="analyze-form"><div class="dialog-body"><label class="stacked">Source<select name="source" required>${videos.map(f=>`<option value="${esc(f.path)}" ${state.source===f.path?'selected':''}>${esc(f.name)}</option>`).join('')}</select></label><h3>Stages to run</h3><div class="stage-options">${stageOptionsHtml()}</div><p class="field-note">Unchecked Ear/Eye stages reuse saved evidence when available. Voice is skipped. No render runs during analysis.</p><label class="toggle-row">Refresh selected stages from scratch<input type="checkbox" name="refresh"></label></div><footer class="dialog-footer">${button('settings','Pipeline settings')}${button('close-dialog','Cancel')}<button type="submit" class="primary">Start analysis</button></footer></form>`,'analyze');
+}
+function analyzeAllDialog(){
+  if(!state.project)return newProjectDialog();
+  const entries=A.analyzableAssets(assets());
+  if(!entries.length)return toast('No video assets in this project to analyze.','warn');
+  if(entries.every(e=>e.offline))return toast('Nothing to analyze · every video source is offline.','warn');
+  openDialog(`${dialogHead('PIPELINE','Analyze all')}<form id="analyze-all-form"><div class="dialog-body"><h3>Stages to run</h3><div class="stage-options">${stageOptionsHtml()}</div><label class="toggle-row">Include already-analyzed sources<input type="checkbox" name="includeAnalyzed"></label><p class="field-note">Included analyzed sources are refreshed from scratch. Offline sources are skipped.</p><div id="analyze-all-list" class="project-choices"></div></div><footer class="dialog-footer">${button('close-dialog','Cancel')}<button type="submit" class="primary" id="analyze-all-submit"></button></footer></form>`,'analyze-all');
+  renderAnalyzeAllList();
+}
+function analyzeAllEntries(){return A.analyzableAssets(assets(),{includeAnalyzed:$('#analyze-all-form [name="includeAnalyzed"]')?.checked||false});}
+function renderAnalyzeAllList(){
+  const list=$('#analyze-all-list'),submit=$('#analyze-all-submit');if(!list||!submit)return;
+  const entries=analyzeAllEntries(),queued=entries.filter(e=>e.queue);
+  list.innerHTML=entries.map(e=>`<div class="project-choice"><span>${esc(e.name)}</span>${e.offline?badge('Offline · skipped','warn'):e.queue?badge(e.refresh?'Refresh':'Queue','ok'):badge('Already analyzed')}</div>`).join('');
+  submit.textContent=`Queue ${queued.length} video${queued.length===1?'':'s'}`;submit.disabled=!queued.length;
+}
+async function analyzeAll(queued,stages){
+  const id=state.project?.id;let queuedCount=0;
+  for(const entry of queued){
+    try{await startTask('/api/actions/analyze',{source:entry.path,stages,refresh:entry.refresh},async()=>{await load();if(state.project?.id===id&&state.source===entry.path)await selectAsset(entry.path);});queuedCount++;}
+    catch(error){toast(`${entry.name}: ${error.message}`,'error');}
+  }
+  toast(`Queued ${queuedCount} of ${queued.length} analysis task${queued.length===1?'':'s'}`,queuedCount?'ok':'error');
 }
 function previewDialog(reel=false){
   openDialog(`${dialogHead('ASSEMBLY',reel?'Build a best-of reel':'Preview reel')}<form id="preview-form" data-reel="${reel}"><div class="dialog-body"><p>${reel?'Select analyzed sources. Brain ranks moments across them.':'Build a short trailer from the strongest moments in this source.'}</p><label class="stacked">Target duration (seconds)<input name="target" type="number" min="1" max="3600" value="${reel?state.config.reel_target_seconds:state.config.preview_target_seconds||state.config.preview_max_target_seconds||30}" required></label>${reel?`<div class="reel-sources">${assets().map(a=>a.job).filter(j=>j?.source_available&&j.clips?.length).map(j=>`<label><input type="checkbox" name="jobs" value="${esc(j.id)}" ${state.checked.has(j.id)?'checked':''}><span>${esc(basename(j.source))}</span><small>${short(j.duration)}</small></label>`).join('')}</div>`:''}</div><footer class="dialog-footer">${button('close-dialog','Cancel')}<button class="primary" type="submit">${reel?'Build reel':'Build preview'}</button></footer></form>`,'preview');
@@ -624,7 +648,7 @@ const actions={
   import:()=>state.project?$('#file-input').click():newProjectDialog(),'new-project':newProjectDialog,'open-project':openProjectDialog,
   'choose-project':async t=>{await openProject(t.dataset.id);closeDialog();},'open-legacy':t=>createProject(basename(state.jobs.find(j=>j.id===t.dataset.id).source).replace(/\.[^.]+$/,''),t.dataset.id),'add-existing':existingMediaDialog,'remove-asset':removeAsset,
   settings:()=>openSettings(),connection:()=>testConnection(),refresh:async()=>{await load();toast('Project refreshed');},
-  analyze:analyzeDialog,preview:()=>previewDialog(),reel:()=>previewDialog(true),render:renderCut,replan,transcribe,rebuild:rebuildSequence,
+  analyze:analyzeDialog,'analyze-all':analyzeAllDialog,preview:()=>previewDialog(),reel:()=>previewDialog(true),render:renderCut,replan,transcribe,rebuild:rebuildSequence,
   folder:async()=>{await post('/api/open-folder?path='+encodeURIComponent(state.project?.final_output?.path||state.config.output_dir));toast('Output folder opened');},
   'close-dialog':closeDialog,'dismiss-error':clearError,retry:()=>state.retry?.(),'retry-media':()=>{renderSource();renderProgram();},
   'settings-test':()=>testConnection(settingsValues()),'clear-key':()=>{const key=$('[name="vision_api_key"]');key.value='';key.dataset.clear='true';key.placeholder='Saved key will be cleared on Save';},
@@ -754,12 +778,13 @@ function bind(){
     if(e.target.dataset.effect){const key=e.target.dataset.effect,value=key==='enabled'?e.target.checked:Number(e.target.value);operation('Change effect',()=>edit('Effect updated',s=>{const targets=T.linkedClips(s,state.selected,key==='speed'&&state.linked);if(targets.some(c=>T.locked(s,c.track)))throw new Error('Unlock the track first');targets.forEach(c=>{c[key]=value;});}));}
     if(e.target.id==='review-in'){state.in=Number(e.target.value);syncTransport();}if(e.target.id==='review-out'){state.out=Number(e.target.value);syncTransport();}
   });
-  document.addEventListener('input',e=>{if(e.target.closest('#auto-form'))updateAutoPreview();if(e.target.dataset.settingRange){const input=$(`[name="${e.target.dataset.settingRange}"]`);input.value=e.target.value;}if(e.target.name&&state.schema[e.target.name]){const r=$(`[data-setting-range="${e.target.name}"]`);if(r)r.value=e.target.value;}});
+  document.addEventListener('input',e=>{if(e.target.closest('#auto-form'))updateAutoPreview();if(e.target.name==='includeAnalyzed'&&e.target.closest('#analyze-all-form'))renderAnalyzeAllList();if(e.target.dataset.settingRange){const input=$(`[name="${e.target.dataset.settingRange}"]`);input.value=e.target.value;}if(e.target.name&&state.schema[e.target.name]){const r=$(`[data-setting-range="${e.target.name}"]`);if(r)r.value=e.target.value;}});
   document.addEventListener('submit',e=>{e.preventDefault();operation('Submit',async()=>{
     if(e.target.id==='new-project-form')await createProject(String(new FormData(e.target).get('name')).trim());
     if(e.target.id==='existing-media-form'){const paths=new FormData(e.target).getAll('paths');if(!paths.length)throw new Error('Select media to add');await addAssets(paths);closeDialog();await selectAsset(paths[0]);}
     if(e.target.id==='settings-form'){const values=settingsValues();await api('/api/config',{method:'PUT',body:JSON.stringify({values,revision:state.config.revision,dry_run:true})});const result=await api('/api/config',{method:'PUT',body:JSON.stringify({values,revision:state.config.revision})});state.config={...state.config,...result.config};state.gateway='untested';renderGateway();$('#model-label').textContent=state.config.vision_model;closeDialog();renderInspector();toast('Pipeline settings saved','ok');}
     if(e.target.id==='analyze-form'){const form=new FormData(e.target),source=form.get('source'),stages=form.getAll('stages'),id=state.project?.id;if(!source||!stages.length)throw new Error('Choose a source and at least one stage');closeDialog();await startTask('/api/actions/analyze',{source,stages,refresh:form.has('refresh')},async()=>{await load();if(state.project?.id===id&&state.source===source)await selectAsset(source);});}
+    if(e.target.id==='analyze-all-form'){const stages=new FormData(e.target).getAll('stages');if(!stages.length)throw new Error('Choose at least one stage');const queued=analyzeAllEntries().filter(e=>e.queue);if(!queued.length)throw new Error('Nothing to analyze');closeDialog();await analyzeAll(queued,stages);}
     if(e.target.id==='preview-form'){const form=new FormData(e.target),target_seconds=Number(form.get('target')),reel=e.target.dataset.reel==='true',job_ids=form.getAll('jobs');if(reel&&job_ids.length<2)throw new Error('Select at least two sources');if(!reel&&!state.job)throw new Error('Select an analyzed source');closeDialog();await saveSequence();await startTask(reel?'/api/actions/reel':jobURL('preview'),reel?{job_ids,target_seconds}:{target_seconds},async result=>{await load();if(reel){download(result.final_output.path);}else{state.programMode='preview';$('#program-mode').value='preview';state.time=0;renderProgram();}});}
     if(e.target.id==='sequence-form'){const f=new FormData(e.target),reshaped=Number(f.get('width'))/Number(f.get('height'))!==state.sequence.width/state.sequence.height;edit('Sequence format updated',s=>{s.width=Number(f.get('width'));s.height=Number(f.get('height'));s.fps=Number(f.get('fps'));});closeDialog();if(reshaped&&state.sequence.clips.some(c=>c.track[0]==='V'))toast('New aspect ratio · Auto ▸ Fill frame covers it without letterboxing','warn');}
     if(e.target.id==='auto-form')await applyAuto(e.target);
