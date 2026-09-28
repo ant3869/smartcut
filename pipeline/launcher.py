@@ -21,6 +21,7 @@ from pathlib import Path
 
 from .lifecycle import NO_WINDOW, contain_children
 from .settings import ensure_config
+from .runtime import server_python
 
 ROOT = Path(__file__).resolve().parents[1]
 STATE_DIR = ROOT / ".smartcut"
@@ -73,7 +74,7 @@ def is_smartcut(url: str) -> bool:
 
 def start_server(config: Path, port: int) -> subprocess.Popen:
     STATE_DIR.mkdir(exist_ok=True)
-    python = Path(sys.executable)
+    python = server_python()
     if python.with_name("python.exe").is_file():
         python = python.with_name("python.exe")  # hidden by NO_WINDOW, and its output reaches the log
     with SERVER_LOG.open("w", encoding="utf-8") as log:

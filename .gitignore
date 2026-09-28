@@ -16,7 +16,9 @@ config.json.bak*
 build/
 sandbox/
 .codebase-memory/
+.codegraph/
 .playwright-mcp/
+output/playwright/
 implementation-notes.md
 .smartcut/
 SmartCut.exe
