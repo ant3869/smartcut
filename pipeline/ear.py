@@ -8,6 +8,7 @@ from typing import Iterable
 
 from .contracts import Clip, Segment, Transcript
 from .blade import FfmpegBlade
+from .runtime import configure_cuda_libraries
 from .util import PipelineError, media_duration, read_json, write_json, ffprobe_json
 
 
@@ -35,12 +36,15 @@ class WhisperEar:
             write_json(cache, self._to_dict(result))
             return result
 
+        if self.device == "cuda":
+            configure_cuda_libraries()
         try:
             from faster_whisper import WhisperModel
         except ImportError as exc:
             raise PipelineError(
-                "The Ear needs faster-whisper. Install with: "
-                "python -m pip install -e \".[whisper]\""
+                "Speech analysis is unavailable in this Python environment. "
+                "Start SmartCut using its desktop shortcut or the project's .venv Python. "
+                "You can import and edit media without analysis."
             ) from exc
 
         self.cache_dir.mkdir(parents=True, exist_ok=True)

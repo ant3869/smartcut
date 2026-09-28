@@ -5,6 +5,8 @@ All notable changes to this project are documented here. The project follows
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-09-27
+
 ### Added
 
 - **SmartCut desktop app**: `install-desktop.ps1` builds `SmartCut.exe` (from `packaging/SmartCut.cs`,
@@ -20,6 +22,10 @@ All notable changes to this project are documented here. The project follows
 - First run writes `config.json` from `config.example.json`, anchoring its folders inside the project.
 - SmartCut branding: the logo mark is the favicon, the Cutroom header brand, and the exe/shortcut icon;
   the README opens with the logo and shows the features graphic (`docs/images/`).
+- Project workflow: create/open projects, import or reuse media as project-scoped assets, and keep
+  project timelines, renders, and exports independent. Manual edit/render does not require analysis.
+- Timeline interaction: full-duration snapped media previews, live box selection across tracks, and
+  grouped move/delete/duplicate operations while preserving normal clip interactions.
 
 ### Fixed
 
@@ -37,12 +43,15 @@ All notable changes to this project are documented here. The project follows
 - Closing the Cutroom window now also asks for confirmation while a task is running, since closing
   the desktop window stops the server.
 - `Dockerfile.web` copies `run_pipeline.py`, so the CLI and its tests work in the container.
+- Web and desktop startup select an existing project Python with `faster-whisper` when the current
+  interpreter lacks it, fixing the misleading Ear setup error without automatic package installs.
+- CUDA Ear loads compatible, already-present DLLs from the app-local folder or configured DLL path.
 
 ### Changed
 
 - Importing `pipeline.web` no longer requires a config file; `uvicorn pipeline.web:app` still works.
 - OTIO timelines are named "SmartCut"; the web API title, CLI help and page titles use SmartCut.
-- ROADMAP baseline updated to v0.4.0.
+- ROADMAP baseline updated to v0.5.0.
 
 ### Removed
 
