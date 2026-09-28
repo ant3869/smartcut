@@ -5,6 +5,14 @@ All notable changes to this project are documented here. The project follows
 
 ## [Unreleased]
 
+## [0.5.1] - 2026-09-27
+
+### Fixed
+
+- Projects keep exact imported media paths usable for playback, sequence saves, renders and analysis
+  after the originating analysis job is cleaned up; neighboring files remain unauthorized.
+- Analyze only offers available video assets and explains when every project video is offline.
+
 ## [0.5.0] - 2026-09-27
 
 ### Added

@@ -356,6 +356,21 @@ def create_app(config_path: str | Path = DEFAULT_CONFIG) -> FastAPI:
                 return resolved
             except ValueError:
                 continue
+        # A project keeps its own asset references after the analysis job is removed.
+        # Authorize only the exact persisted files, never their containing folders.
+        projects_root = (work_dir() / "projects").resolve()
+        for manifest in projects_root.glob("*/project.json"):
+            folder = manifest.parent.resolve()
+            if folder.parent != projects_root or manifest.resolve().parent != folder:
+                continue
+            project = safe_read_json(manifest)
+            assets = project.get("assets") if isinstance(project, dict) else None
+            if not isinstance(assets, list):
+                continue
+            for asset in assets:
+                path = asset.get("path") if isinstance(asset, dict) else None
+                if isinstance(path, str) and Path(path).is_absolute() and Path(path).resolve() == resolved:
+                    return resolved
         raise HTTPException(status_code=403, detail="file is outside configured pipeline directories")
 
     def start_task(label: str, fn, *, with_progress=False) -> dict[str, Any]:

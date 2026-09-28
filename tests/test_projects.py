@@ -1,5 +1,6 @@
 import json
 import os
+import shutil
 from pathlib import Path
 
 import pytest
@@ -99,6 +100,50 @@ def test_existing_edit_copies_without_changing_original(workspace):
     assert project["sequence"]["revision"] == 0 and len(project["assets"]) == 1
     assert (job / "sequence.json").read_text() == saved
     assert (job / "edit_plan.json").read_text() == original
+
+
+def test_external_project_asset_survives_analysis_job_cleanup(workspace, tmp_path):
+    client, config_path, cfg, source = workspace
+    external = tmp_path / "outside" / source.name
+    external.parent.mkdir()
+    shutil.copy2(source, external)
+    sibling = external.with_name("not-imported.mp4")
+    shutil.copy2(source, sibling)
+    job = Path(cfg["work_dir"]) / "jobs" / "legacy"
+    job.mkdir(parents=True)
+    (job / "edit_plan.json").write_text(json.dumps(plan(external)))
+    project = create(client, "External edit", job_id="legacy")
+    shutil.rmtree(job)
+
+    reopened = TestClient(create_app(config_path))
+    url = f"/api/projects/{project['id']}"
+    assert reopened.get(url).json()["assets"][0]["source_available"] is True
+    assert reopened.get("/api/media", params={"path": str(external)}).status_code == 200
+    assert reopened.get("/api/file", params={"path": str(external)}).status_code == 200
+    assert reopened.get("/api/thumbnail", params={"path": str(external), "t": .5, "h": 32}).status_code == 200
+    assert reopened.put(url + "/sequence", json=project["sequence"]).status_code == 200
+    assert reopened.post(url + "/render", json={"dry_run": True}).status_code == 200
+    assert reopened.post("/api/actions/analyze", json={"source": str(external), "stages": ["ear"],
+                         "dry_run": True}).status_code == 200
+    assert reopened.get("/api/media", params={"path": str(sibling)}).status_code == 403
+
+
+def test_removing_last_external_project_asset_revokes_file_access(workspace, tmp_path):
+    client, _, cfg, source = workspace
+    external = tmp_path / "outside" / source.name
+    external.parent.mkdir()
+    shutil.copy2(source, external)
+    job = Path(cfg["work_dir"]) / "jobs" / "legacy"
+    job.mkdir(parents=True)
+    (job / "edit_plan.json").write_text(json.dumps(plan(external)))
+    project = create(client)
+    url = f"/api/projects/{project['id']}"
+    assert client.post(url + "/assets", json={"paths": [str(external)]}).status_code == 200
+    shutil.rmtree(job)
+
+    assert client.get("/api/media", params={"path": str(external)}).status_code == 200
+    assert client.delete(url + "/assets", params={"path": str(external)}).status_code == 200
+    assert client.get("/api/media", params={"path": str(external)}).status_code == 403
 
 
 def test_projects_render_and_export_to_separate_outputs(workspace, monkeypatch):
