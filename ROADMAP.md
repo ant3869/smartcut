@@ -9,7 +9,12 @@ building the frontend. The riskiest assumption is that sparse frame observations
 capture temporal intent; the roadmap replaces that assumption with multi-frame evidence and
 human feedback rather than stacking more brittle keywords.
 
-## Current baseline - v0.3.0
+## Current baseline - v0.4.0
+
+- Cutroom is a multitrack editor on a persisted `sequence.json` (V2/V1/A1/A2, trim/split/ripple,
+  effects, undo), with an AI proposal queue, one-step Auto-edit, and EDL/CSV/OTIO/SRT/MP4 export.
+- SmartCut desktop launcher (unreleased): `SmartCut.exe` and a desktop shortcut open the Cutroom in
+  its own window and stop every process when it closes.
 
 - Full edit: keep the timeline and subtract positively identified waste.
 - Preview: variable 3-10 second action runs from one source.
@@ -26,7 +31,7 @@ human feedback rather than stacking more brittle keywords.
   describe-first workflow and calibrated confidence; model verdicts trusted, disagreements and
   all uncertain rejections surfaced to humans.
 
-### In flight (unreleased)
+### Shipped in v0.4.0
 
 - `audio_evidence_enabled` config flag (default on): single on/off switch for speech
   audio as edit evidence — gates frame AUDIO lines (with a no-AUDIO prompt variant),
@@ -75,8 +80,8 @@ and make resume/retry behavior unreliable.
 
 ### 3. Local web frontend, not a custom desktop NLE
 
-**Choice:** FastAPI backend plus a lightweight React/Vite frontend served on Nexus. It should review
-decisions and adjust cut handles, not try to replace DaVinci Resolve.
+**Choice:** FastAPI backend plus a no-build vanilla-JS Cutroom, opened in a Chromium app window by the
+desktop launcher. It should review decisions and adjust cut handles, not try to replace DaVinci Resolve.
 
 **Alternative:** Gradio for speed, or Electron/Tauri for a packaged desktop app.
 
@@ -242,6 +247,8 @@ modes, and understand any failure without opening PowerShell.
 ## Milestone 5 - v1.0.0: dependable release
 
 - One-command Windows setup/upgrade with dependency and LM Studio readiness checks.
+  **Started:** `setup.ps1` + `install-desktop.ps1` build `SmartCut.exe` and a desktop shortcut whose
+  launcher owns the server and window lifetime.
 - Config/schema migrations and backward-compatible manifests.
 - Bounded GPU/CPU scheduling so Whisper, vision, and FFmpeg do not starve each other.
 - Backup/restore for database, profiles, and edit decisions.

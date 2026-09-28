@@ -9,6 +9,8 @@ from typing import Any, Sequence
 
 import requests
 
+from .lifecycle import NO_WINDOW
+
 
 class PipelineError(RuntimeError):
     pass
@@ -16,7 +18,7 @@ class PipelineError(RuntimeError):
 
 def run_checked(cmd: Sequence[str], *, timeout: float = 1800.0, text: bool = True) -> subprocess.CompletedProcess:
     try:
-        result = subprocess.run(list(cmd), text=text, capture_output=True, timeout=timeout)
+        result = subprocess.run(list(cmd), text=text, capture_output=True, timeout=timeout, creationflags=NO_WINDOW)
     except FileNotFoundError as exc:
         raise PipelineError(f"required executable is missing: {cmd[0]}") from exc
     except subprocess.TimeoutExpired as exc:

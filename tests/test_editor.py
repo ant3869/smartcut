@@ -181,3 +181,10 @@ def test_media_evidence_api_caches_waveforms_thumbnails_and_hashes(tmp_path, mon
     assert thumb.status_code == 200 and thumb.headers["content-type"] == "image/jpeg"
     assert client.get("/api/thumbnail", params={"path": str(audio)}).status_code == 400
     assert client.get("/api/waveform", params={"path": "C:/Windows/win.ini"}).status_code == 403
+
+
+def test_thumbnail_failure_leaves_no_partial_file(tmp_path):
+    out = tmp_path / "thumbs" / "frame.jpg"
+    with pytest.raises(PipelineError):
+        FfmpegBlade.thumbnail(tmp_path / "missing.mp4", out, time=0)
+    assert not out.exists() and not list(out.parent.iterdir())

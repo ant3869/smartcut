@@ -7,33 +7,14 @@ import time
 from pathlib import Path
 
 from pipeline.brain import PipelineBrain
+from pipeline.settings import SETTINGS
 from pipeline.util import PipelineError
 
 
-# Keys the pipeline actually reads. Unknown keys warn at startup so a typo or a
-# removed option can never silently do nothing again.
-KNOWN_CONFIG_KEYS = frozenset({
-    "work_dir", "analysis_dir", "output_dir", "vision_model", "lm_studio_url",
-    "caption_model", "frame_interval_seconds", "vision_max_width", "vision_batch_size",
-    "vision_cull_confidence_threshold",
-    "whisper_model", "whisper_device", "whisper_compute_type",
-    "frame_signal_enabled", "scene_detection_enabled", "scene_threshold",
-    "waste_terms", "waste_padding_seconds", "audio_evidence_enabled",
-    "multi_pass_enabled", "multi_pass_apply_cuts", "multi_pass_section_summary_enabled",
-    "multi_pass_section_summary_frames", "multi_pass_editorial_policy",
-    "multi_pass_boundary_context_seconds", "multi_pass_max_candidates",
-    "temporal_target_seconds", "temporal_context_seconds", "temporal_confidence_threshold",
-    "full_edit_min_segment_seconds",
-    "reel_candidates_per_source", "reel_candidate_seconds_per_source", "reel_target_seconds",
-    "reel_max_clips_per_source",
-    "preview_target_seconds", "preview_min_clip_seconds", "preview_max_clip_seconds",
-    "preview_max_clips", "preview_score_threshold", "preview_target_ratio",
-    "preview_min_target_seconds", "preview_max_target_seconds",
-    "transition_seconds", "watermark_path", "bumper_path",
-    "blade_crf", "blade_preset", "blade_output_fps",
-    "caption_min_word_confidence", "input_dir", "auto_render",
-    "performer", "personas",
-})
+# Keys the pipeline actually reads, from the one settings catalog the web UI also
+# validates against. Unknown keys warn at startup so a typo or a removed option can
+# never silently do nothing again.
+KNOWN_CONFIG_KEYS = frozenset(SETTINGS)
 
 
 def load_config(path: Path) -> dict:
@@ -51,7 +32,7 @@ def load_config(path: Path) -> dict:
 def main(argv: list[str] | None = None) -> int:
     if hasattr(sys.stdout, "reconfigure"):
         sys.stdout.reconfigure(encoding="utf-8")
-    parser = argparse.ArgumentParser(description="anna modular content pipeline")
+    parser = argparse.ArgumentParser(description="SmartCut pipeline command line")
     parser.add_argument("command", choices=["analyze", "plan", "render", "preview", "reel", "watch"])
     parser.add_argument("sources", nargs="*", type=Path)
     parser.add_argument("--config", type=Path, default=Path("config.json"))
