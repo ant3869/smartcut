@@ -13,6 +13,7 @@ const tc = n => {const f=Math.round(Math.max(0,n||0)*(state.sequence?.fps||30)),
 const short = n => `${Math.floor((n||0)/60)}:${String(Math.floor((n||0)%60)).padStart(2,'0')}`;
 const kindOf = p => /\.(mp3|wav|m4a|aac|flac|ogg)$/i.test(p) ? 'audio' : /\.(png|jpe?g|webp|bmp)$/i.test(p) ? 'image' : 'video';
 const state = {jobs:[],inbox:[],config:{},schema:{},job:null,source:null,sourceInfo:null,sequence:null,selected:null,
+  project:null,projects:[],selection:new Set(),selectionRequest:0,
   bin:'all',view:'list',search:'',sort:'name',checked:new Set(),tab:'effects',focus:'source',sourceTime:0,time:0,
   in:0,out:2,zoom:1,snap:true,linked:true,tool:'select',dirty:false,editVersion:0,undo:[],redo:[],saving:null,
   gateway:'untested',tasks:[],taskCallbacks:new Map(),handled:new Set(),programMode:'sequence',playing:false,shuttle:0,
@@ -28,6 +29,8 @@ const lightQuery=window.matchMedia('(prefers-color-scheme: light)');
 state.themeMode=(()=>{try{return Theme.normalize(localStorage.getItem(Theme.THEME_KEY));}catch{return 'auto';}})();
 const badge=(label,kind='')=>`<span class="badge ${kind}"><i></i>${esc(label)}</span>`;
 const jobURL = suffix => '/api/jobs/'+encodeURIComponent(state.job.id)+'/'+suffix;
+const projectURL = suffix => '/api/projects/'+encodeURIComponent(state.project.id)+(suffix?'/'+suffix:'');
+const pathKey = path => String(path).replace(/\\/g,'/');
 
 async function api(path, options={}) {
   const response=await fetch(path,{...options,headers:{...(options.body instanceof FormData?{}:{'Content-Type':'application/json'}),...options.headers}});
@@ -72,8 +75,8 @@ function shell(){
     <header class="app-header">
       <a class="brand" href="/" aria-label="SmartCut home"><img class="brand-mark" src="/favicon.png" alt="" width="32" height="32"><span class="brand-copy"><span class="brand-name">SmartCut</span><span class="brand-suite">Cutroom</span></span></a>
       <nav class="menus" aria-label="Application menu">
-        ${menu('File',[['import','Import media…'],['transcribe','Re-transcribe source (.srt)'],['folder','Open output folder']])}
-        ${menu('Project',[['settings','Project settings…'],['refresh','Refresh media']])}
+        ${menu('File',[['new-project','New project…'],['open-project','Open project…'],['import','Import media…'],['transcribe','Re-transcribe source (.srt)'],['folder','Open output folder']])}
+        ${menu('Project',[['new-project','New project…'],['open-project','Open project…'],['settings','Pipeline settings…'],['refresh','Refresh media']])}
         ${menu('Sequence',[['save','Save sequence'],['undo','Undo'],['redo','Redo'],['rebuild','Load approved plan'],['reel','Best-of reel…']])}
         ${menu('Markers',[['in','Mark In · I'],['out','Mark Out · O'],['marker','Add sequence marker · M'],['auto-scenes','Markers at scene changes'],['auto-highlights','Markers at AI highlights'],['clear-markers','Clear all markers']])}
         ${menu('Auto',[['auto-edit','Auto-edit sequence…'],['auto-waste','Remove AI-flagged waste'],['auto-silence','Remove silences…'],['auto-gaps','Close all gaps'],['auto-fill','Fill frame'],['next-proposal','Next AI proposal · N']])}
@@ -83,13 +86,15 @@ function shell(){
       </nav>
       <div class="header-status"><span id="model-label"></span><span id="gateway-status">${badge('Not tested')}</span>${button('connection',withIcon('plug','Test connection'),'quiet')}</div>
       ${button('theme-cycle',icon(Theme.iconFor(state.themeMode)),'icon-button','id="theme-toggle"')}
-      ${button('settings',icon('settings'),'icon-button','aria-label="Project settings" title="Project settings"')}
+      ${button('settings',icon('settings'),'icon-button','aria-label="Pipeline settings" title="Pipeline settings"')}
     </header>
     <div id="error-banner" class="error-banner" role="alert" hidden>${icon('triangle-alert')}<span id="error-message"></span>${button('retry',withIcon('refresh-cw','Retry'),'danger','id="retry-error"')}${button('dismiss-error',icon('x'),'icon-button','aria-label="Dismiss error"')}</div>
     <div class="workspace-bar"><div class="page-title"><span class="page-icon" aria-hidden="true">${icon('clapperboard')}</span><div><span class="workspace-name">Editing</span><div class="page-heading"><h1 id="project-name">Untitled project</h1><span id="save-state"></span></div></div></div><div class="pipeline-actions">${button('import',withIcon('upload','Import'))}${button('analyze',withIcon('sparkles','Analyze'),'accent')}${button('auto-edit',withIcon('zap','Auto-edit'),'accent','title="Apply AI cuts, silence removal and markers as one undoable edit"')}${button('replan',withIcon('refresh-cw','Re-plan with my decisions'))}${button('preview',withIcon('film','Preview reel…'))}${button('render',withIcon('circle-check','Render approved cut'),'primary')}</div></div>
     <main class="workspace" id="review">
-      <aside class="panel project-panel" aria-label="Project panel"><div class="panel-title"><h2>${icon('folder')}Project</h2><span id="asset-count"></span></div>
-        <div class="bin-tree" role="group" aria-label="Media bins">${[['all','All media','layers'],['sequences','Sequences','clapperboard'],['video','Video','film'],['audio','Audio','music'],['image','Images','image']].map(([key,label,name])=>`<button data-bin="${key}" class="${key==='all'?'active':''}">${icon(name)}<span>${label}</span><small id="count-${key}"></small></button>`).join('')}</div>
+      <aside class="panel project-panel" aria-label="Project panel"><div class="project-switcher">${button('new-project',withIcon('plus','New project'),'primary')}${button('open-project',withIcon('folder-open','Open…'))}</div>
+        <div class="panel-title"><h2>${icon('folder')}Project assets</h2><span id="asset-count"></span></div>
+        <div class="asset-actions">${button('import',withIcon('upload','Import media'),'wide')}${button('add-existing','Add existing media…','quiet')}${button('remove-asset','Remove selected asset','quiet','title="Remove from this project; keep the original file"')}</div>
+        <div class="bin-tree" role="group" aria-label="Asset filters">${[['all','All assets','layers'],['video','Video','film'],['audio','Audio','music'],['image','Images','image']].map(([key,label,name])=>`<button data-bin="${key}" class="${key==='all'?'active':''}">${icon(name)}<span>${label}</span><small id="count-${key}"></small></button>`).join('')}</div>
         <div class="project-tools"><div class="search-field">${icon('search')}<input id="media-search" type="search" aria-label="Search project" placeholder="Search media…"></div><div class="segmented">${button('list-view',icon('list'),'active','aria-label="List view" title="List view"')}${button('icon-view',icon('layout-grid'),'','aria-label="Icon view" title="Icon view"')}</div></div>
         <div class="media-table-head"><button data-sort="name">Name</button><button data-sort="duration">Duration</button></div>
         <div id="media-list" class="media-list" tabindex="0" aria-label="Project media"></div>
@@ -112,7 +117,7 @@ function shell(){
       </section>
       <aside class="panel inspector-panel" aria-label="Inspector"><div class="inspector-tabs" role="tablist">${[['effects','Effects','sliders-horizontal'],['review','Review','list-checks'],['pipeline','Pipeline','workflow']].map(([key,label,name])=>`<button role="tab" aria-selected="${key==='effects'}" data-tab="${key}">${icon(name)}<span>${label}</span></button>`).join('')}</div><div id="inspector-content"></div></aside>
       <section class="panel timeline-panel" aria-label="Timeline"><div class="timeline-heading"><h2>${icon('clapperboard')}Sequence <span id="sequence-name">01</span></h2><div class="timeline-tools">${button('select-tool',icon('mouse-pointer-2'),'icon-button active','title="Selection tool · V" aria-label="Selection tool"')}${button('razor-tool',icon('scissors'),'icon-button','title="Razor tool" aria-label="Razor tool"')}${button('split',withIcon('scissors-line-dashed','Split'),'quiet','title="Split at playhead · C"')}${button('ripple',withIcon('arrow-left-to-line','Ripple'),'quiet','title="Ripple delete · Shift+Delete"')}<span class="transport-divider"></span>${button('snap',withIcon('magnet','Snap'),'quiet active','aria-pressed="true"')}${button('linked',withIcon('link','Linked'),'quiet active','aria-pressed="true"')}${button('toggle-lanes',withIcon('sparkles','AI lanes'),`quiet ${state.prefs.lanes?'active':''}`,`aria-pressed="${state.prefs.lanes}" title="Show AI scores, flags, scenes and transcript on the timeline"`)}${button('undo',icon('undo-2'),'icon-button','aria-label="Undo" title="Undo · Ctrl+Z"')}${button('redo',icon('redo-2'),'icon-button','aria-label="Redo" title="Redo · Ctrl+Y"')}<label class="zoom-control">${icon('zoom-out')}<input type="range" id="timeline-zoom" aria-label="Timeline zoom" min="1" max="60" step=".25" value="1">${icon('zoom-in')}</label>${button('save',withIcon('save','Save'),'quiet','title="Save sequence · Ctrl+S"')}</div></div>
-        <div class="timeline-body"><div class="track-headers"><div class="ruler-head" id="timeline-time">00:00:00:00</div><div id="track-headers"></div></div><div class="timeline-scroll" id="timeline-scroll"><div id="timeline-canvas"></div></div></div>
+        <div class="timeline-body"><div class="track-headers"><div class="ruler-head" id="timeline-time">00:00:00:00</div><div id="track-headers"></div></div><div class="timeline-scroll" id="timeline-scroll"><div id="timeline-canvas" tabindex="0" aria-label="Timeline tracks"></div></div></div>
         <footer class="timeline-footer"><span id="timeline-summary">Select a sequence to start editing</span><span>Space Play &nbsp; C Split &nbsp; I / O Mark &nbsp; N Next AI proposal &nbsp; ? Shortcuts</span></footer>
       </section>
     </main><footer class="statusbar"><span id="backend-status">Connecting…</span><button data-action="tasks" id="tasks-status">No active tasks</button><span>LOCAL WORKSPACE <span class="status-dot"></span></span></footer>
@@ -121,46 +126,65 @@ function shell(){
   renderSource();renderProgram();renderTimeline();renderInspector();
 }
 function menu(label,items){return `<details class="menu"><summary>${label}</summary><div class="menu-content" role="menu">${items.map(([a,l,extra='role="menuitem"'])=>a==='-'?'<hr>':button(a,l,'',extra)).join('')}</div></details>`;}
-function assets(){
+function libraryAssets(){
   const map=new Map(state.inbox.map(f=>[f.path.replace(/\\/g,'/').toLowerCase(),{...f,kind:kindOf(f.path)}]));
   state.jobs.forEach(job=>{if(job.source){const key=job.source.replace(/\\/g,'/').toLowerCase();map.set(key,{...map.get(key),path:job.source,name:basename(job.source),kind:kindOf(job.source),duration:job.duration,job});}});
   return [...map.values()];
 }
+function assets(){return (state.project?.assets||[]).map(f=>({...f,kind:kindOf(f.path),job:state.jobs.find(j=>pathKey(j.source)===pathKey(f.path))}));}
 function renderProject(){
-  const all=assets();let rows=all.filter(f=>(state.bin==='all'||state.bin==='sequences'&&f.job||f.kind===state.bin)&&f.name.toLowerCase().includes(state.search.toLowerCase()));
+  const all=assets();let rows=all.filter(f=>(state.bin==='all'||f.kind===state.bin)&&f.name.toLowerCase().includes(state.search.toLowerCase()));
   rows.sort((a,b)=>state.sort==='duration'?(b.duration||0)-(a.duration||0):a.name.localeCompare(b.name,undefined,{numeric:true}));
   $('#asset-count').textContent=all.length+' items';
-  for(const bin of ['all','sequences','video','audio','image'])$('#count-'+bin).textContent=all.filter(f=>bin==='all'||bin==='sequences'&&f.job||f.kind===bin).length;
+  for(const bin of ['all','video','audio','image'])$('#count-'+bin).textContent=all.filter(f=>bin==='all'||f.kind===bin).length;
   $$('.bin-tree button').forEach(b=>b.classList.toggle('active',b.dataset.bin===state.bin));
   const list=$('#media-list');list.className='media-list '+(state.view==='icons'?'icon-view':'');
   list.innerHTML=rows.length?rows.map(f=>`<div class="media-row ${state.source===f.path?'selected':''}" data-source="${esc(f.path)}" draggable="true" role="button" tabindex="0" title="${esc(f.path)}">
-    ${f.job?`<input type="checkbox" class="reel-check" data-job-check="${esc(f.job.id)}" aria-label="Select ${esc(f.name)} for reel" ${state.checked.has(f.job.id)?'checked':''}>`:'<span class="asset-spacer"></span>'}<span class="media-icon ${f.kind}">${icon(kindIcons[f.kind])}</span><span class="asset-info"><strong>${esc(f.name)}</strong><small>${f.job?badge(f.job.status,f.job.status==='rendered'?'ok':''):esc(f.kind.toUpperCase())} ${f.job&&!f.job.source_available?'<span class="offline">Offline</span>':''}</small></span><span class="asset-duration">${f.duration?short(f.duration):f.size?(f.size/1048576).toFixed(1)+' MB':'—'}</span></div>`).join(''):`<div class="empty-state"><span class="empty-glyph">${icon(state.search?'search':'folder-open')}</span><h3>${state.search?'No matching media':'Your next edit starts here'}</h3><p>${state.search?'Try another search.':'Import video, audio, or still images.'}</p>${button('import',withIcon('upload','Import media'),'primary')}</div>`;
-  $('#media-footer').textContent=state.checked.size?state.checked.size+' sources selected for reel':'Drop media here to import';
+    ${f.job?`<input type="checkbox" class="reel-check" data-job-check="${esc(f.job.id)}" aria-label="Select ${esc(f.name)} for reel" ${state.checked.has(f.job.id)?'checked':''}>`:'<span class="asset-spacer"></span>'}<span class="media-icon ${f.kind}">${icon(kindIcons[f.kind])}</span><span class="asset-info"><strong>${esc(f.name)}</strong><small>${f.job?badge(f.job.status,f.job.status==='rendered'?'ok':''):esc(f.kind.toUpperCase())} ${f.source_available===false?'<span class="offline">Offline</span>':''}</small></span><span class="asset-duration">${f.duration?short(f.duration):f.size?(f.size/1048576).toFixed(1)+' MB':'—'}</span></div>`).join(''):`<div class="empty-state"><span class="empty-glyph">${icon(state.search?'search':'folder-open')}</span><h3>${state.search?'No matching media':state.project?'Import your media':'Start a project'}</h3><p>${state.search?'Try another search.':state.project?'Add video, audio or images, then drag an asset onto the timeline.':'Create or open a project above. Its assets and timeline stay together.'}</p>${button(state.project?'import':'new-project',withIcon(state.project?'upload':'plus',state.project?'Import media':'New project'),'primary')}</div>`;
+  $('#media-footer').textContent=state.checked.size?state.checked.size+' sources selected for reel':state.project?'Drag assets to the timeline · analysis optional':'Create or open a project to begin';
   $$('[data-action="list-view"],[data-action="icon-view"]').forEach(b=>b.classList.toggle('active',b.dataset.action===(state.view==='list'?'list-view':'icon-view')));
 }
 async function load({initial=false}={}){
-  const [health,config,schema,jobs,inbox]=await Promise.all(['/api/health','/api/config','/api/config/schema','/api/jobs','/api/inbox'].map(p=>api(p)));
-  state.config=config;state.schema=schema;state.jobs=jobs;state.inbox=inbox;
+  const [health,config,schema,jobs,inbox,projects]=await Promise.all(['/api/health','/api/config','/api/config/schema','/api/jobs','/api/inbox','/api/projects'].map(p=>api(p)));
+  state.config=config;state.schema=schema;state.jobs=jobs;state.inbox=inbox;state.projects=projects;
   $('#backend-status').innerHTML=badge(health.ok?'Backend connected':'Backend offline',health.ok?'ok':'error');
   $('#model-label').textContent=config.vision_model;$('#model-label').title=config.lm_studio_url;
   if(state.job)state.job=jobs.find(j=>j.id===state.job.id)||state.job;
+  if(state.project)state.project=projects.find(p=>p.id===state.project.id)||state.project;
   renderProject();renderInspector();renderSourceEvidence();
-  if(initial){const job=jobs.find(j=>j.source_available&&j.clips?.length)||jobs[0];if(job)await selectAsset(job.source);}
+  if(initial){let id;try{id=localStorage.getItem('smartcut.project');}catch{}if(projects.some(p=>p.id===id))await openProject(id);else{renderSource();renderProgram();renderTimeline();updateTitles();}}
 }
 async function metadata(path){if(!state.meta.has(path))state.meta.set(path,await api('/api/media?path='+encodeURIComponent(path)));return state.meta.get(path);}
 async function selectAsset(path){
-  await saveSequence();pause();state.source=path;state.sourceInfo=null;state.sourceTime=0;state.in=0;state.out=2;state.reviewEditing=null;state.rotation=0;state.proposal=-1;
-  const job=state.jobs.find(j=>j.source===path);
-  if(job){state.job=job;state.sequence=null;state.selected=null;state.undo=[];state.redo=[];state.dirty=false;state.time=0;}
-  renderProject();renderSource();renderProgram();renderTimeline();renderInspector();updateTitles();
-  if(job&&!job.source_available){toast('Original media is offline. Existing rendered output is still available.','warn');state.programMode='final';$('#program-mode').value='final';renderProgram();return;}
-  state.sourceInfo=await metadata(path);state.out=Math.min(2,state.sourceInfo.duration);
-  if(job&&job.clips?.length){state.sequence=await api(jobURL('sequence'));state.programMode='sequence';$('#program-mode').value='sequence';}
-  renderSource();renderProgram();renderTimeline();renderInspector();updateTitles();renderSourceEvidence();
+  const request=++state.selectionRequest;pause();state.source=path;state.sourceInfo=null;state.sourceTime=0;state.in=0;state.out=0;state.reviewEditing=null;state.rotation=0;state.proposal=-1;
+  state.job=state.jobs.find(j=>pathKey(j.source)===pathKey(path))||null;
+  renderProject();renderSource();renderTimeline();renderInspector();updateTitles();renderSourceEvidence();
+  if(state.job?.source_available===false||assets().find(a=>a.path===path)?.source_available===false)return toast('Original media is offline.','warn');
+  const info=await metadata(path);if(request!==state.selectionRequest)return;
+  state.sourceInfo=info;state.out=info.duration;
+  syncTransport();renderInspector();updateTitles();
 }
+function newProjectDialog(){openDialog(`${dialogHead('PROJECT','New project')}<form id="new-project-form"><div class="dialog-body"><label class="stacked">Project name<input name="name" required maxlength="100" placeholder="My edit" autofocus></label><p>Create a project, import media, then drag assets onto the timeline. Analysis is optional.</p></div><footer class="dialog-footer">${button('close-dialog','Cancel')}<button type="submit" class="primary">Create project</button></footer></form>`,'new-project');}
+async function openProjectDialog(){await load();openDialog(`${dialogHead('PROJECT','Open project')}<div class="dialog-body project-choices">${state.projects.map(p=>button('choose-project',`<strong>${esc(p.name)}</strong><small>${p.assets.length} assets · ${p.sequence.clips.length} timeline clips</small>`,'project-choice',`data-id="${p.id}"`)).join('')||'<p>No projects yet. Create your first project to start editing.</p>'}${state.jobs.some(j=>j.clips?.length&&j.source_available)?`<details><summary>Existing edits · open as a project</summary>${state.jobs.filter(j=>j.clips?.length&&j.source_available).map(j=>button('open-legacy',esc(basename(j.source)),'project-choice',`data-id="${esc(j.id)}"`)).join('')}</details>`:''}</div><footer class="dialog-footer">${button('new-project','New project','primary')}${button('close-dialog','Cancel')}</footer>`,'open-project');}
+async function openProject(id){
+  await saveSequence();const project=await api('/api/projects/'+encodeURIComponent(id));pause();clearError();
+  state.selectionRequest++;state.project=project;state.sequence=project.sequence;state.fitDuration=Math.max(10,T.sequenceDuration(project.sequence));state.source=null;state.sourceInfo=null;state.job=null;state.selected=null;state.selection.clear();state.checked.clear();state.undo=[];state.redo=[];state.dirty=false;state.time=0;state.zoom=1;state.search='';state.bin='all';state.programMode='sequence';
+  $('#media-search').value='';$('#timeline-zoom').value=1;$('#program-mode').value='sequence';$('#timeline-scroll').scrollLeft=0;
+  try{localStorage.setItem('smartcut.project',id);}catch{}
+  renderProject();renderSource();renderProgram();renderTimeline();renderInspector();renderSourceEvidence();updateTitles();
+  if(project.assets[0])await selectAsset(project.assets[0].path);
+}
+async function createProject(name,job_id){await saveSequence();const payload={name,...(job_id?{job_id}:{})};await post('/api/projects?dry_run=true',payload);const project=await post('/api/projects',payload);closeDialog();await load();await openProject(project.id);}
+async function addAssets(paths,projectId=state.project?.id){
+  if(!projectId)throw new Error('Create or open a project first');
+  const url='/api/projects/'+encodeURIComponent(projectId)+'/assets';await post(url+'?dry_run=true',{paths});const project=await post(url,{paths});
+  if(state.project?.id===projectId){state.project=project;renderProject();updateTitles();}return project;
+}
+function existingMediaDialog(){if(!state.project)return newProjectDialog();const current=new Set(assets().map(a=>pathKey(a.path))),available=libraryAssets().filter(a=>!current.has(pathKey(a.path))&&a.job?.source_available!==false);openDialog(`${dialogHead('PROJECT ASSETS','Add existing media')}<form id="existing-media-form"><div class="dialog-body project-choices"><p>Reuse media already imported on this computer.</p>${available.map(a=>`<label class="project-choice"><input type="checkbox" name="paths" value="${esc(a.path)}">${esc(a.name)}</label>`).join('')||'<p>All available media is already in this project.</p>'}</div><footer class="dialog-footer">${button('close-dialog','Cancel')}<button type="submit" class="primary">Add to project</button></footer></form>`,'existing-media');}
+async function removeAsset(){if(!state.source||!state.project)throw new Error('Select a project asset first');await saveSequence();state.project=await api(projectURL('assets')+'?path='+encodeURIComponent(state.source),{method:'DELETE'});state.selectionRequest++;state.source=null;state.sourceInfo=null;state.job=null;renderProject();renderSource();renderInspector();renderTimeline();renderSourceEvidence();updateTitles();toast('Removed from project · original file kept');}
 function updateTitles(){
-  $('#project-name').textContent=state.job?basename(state.job.source):'Untitled project';
-  $('#sequence-name').textContent=state.job?basename(state.job.source).replace(/\.[^.]+$/,''): '01';
+  $('#project-name').textContent=state.project?.name||'Create or open a project';
+  $('#sequence-name').textContent=state.project?.name||'01';
   $('#save-state').innerHTML=state.saving?badge('Saving…'):state.dirty?badge('Unsaved','warn'):state.sequence?badge(state.sequence.revision?'Saved':'Draft',state.sequence.revision?'ok':''):'';
   $('#source-name').textContent=state.source?basename(state.source):'No source selected';
   $('#source-format').textContent=state.sourceInfo?`${state.sourceInfo.width} × ${state.sourceInfo.height}`:'SOURCE';
@@ -176,7 +200,7 @@ function loadingMedia(element){
 function renderSource(){
   const stage=$('#source-stage');
   if(!state.source){stage.innerHTML=emptyMonitor('Find your first frame','Select media from the Project panel.','import','Import media');return;}
-  if(state.job?.source===state.source&&!state.job.source_available){stage.innerHTML=emptyMonitor('Original offline','This source file is no longer at its saved path.');return;}
+  if(state.job?.source===state.source&&!state.job.source_available||assets().find(a=>a.path===state.source)?.source_available===false){stage.innerHTML=emptyMonitor('Original offline','This source file is no longer at its saved path.');return;}
   const kind=kindOf(state.source);
   stage.innerHTML=kind==='image'?`<img id="source-media" src="${fileURL(state.source)}" alt="${esc(basename(state.source))}">`:
     `${kind==='audio'?`<span class="audio-art">${icon('audio-waveform')}</span>`:''}<${kind==='audio'?'audio':'video'} id="source-media" src="${fileURL(state.source)}" preload="metadata" playsinline></${kind==='audio'?'audio':'video'}>`;
@@ -190,13 +214,13 @@ function renderSource(){
 function renderProgram(){
   const stage=$('#program-stage');
   if(state.programMode!=='sequence'){
-    const output=state.programMode==='final'?state.job?.final_output:state.job?.preview_output;
+    const output=state.programMode==='final'?state.project?.final_output:state.job?.preview_output;
     if(!output?.path){stage.innerHTML=emptyMonitor('No render yet','Render your approved sequence or build a preview reel.',state.programMode==='final'?'render':'preview',state.programMode==='final'?'Render approved cut':'Build preview');return;}
     stage.innerHTML=`<video id="output-media" src="${fileURL(output.path)}" preload="metadata" playsinline></video>`;
     const media=$('#output-media');loadingMedia(media);media.addEventListener('timeupdate',()=>{state.time=media.currentTime;syncTransport();});return;
   }
-  if(!state.sequence){stage.innerHTML=emptyMonitor('Make room for the good parts','Analyze a source to build an editable sequence.','analyze','Analyze source');return;}
-  if(!state.sequence.clips.length){stage.innerHTML=emptyMonitor('Sequence is empty','Mark a source range, then Insert it here.','insert','Insert source range');return;}
+  if(!state.sequence){stage.innerHTML=emptyMonitor('Start a new edit','Create a project or open an existing one from the left panel.','new-project','New project');return;}
+  if(!state.sequence.clips.length){stage.innerHTML=emptyMonitor('Your timeline is ready','Import media, then drag a project asset onto a track.',assets().length?'insert':'import',assets().length?'Insert source range':'Import media');return;}
   stage.innerHTML=`<div id="program-canvas" style="aspect-ratio:${state.sequence.width}/${state.sequence.height}">${state.sequence.clips.map(c=>{
     const tag=c.track.startsWith('A')?'audio':c.kind==='image'?'img':'video';
     return `<${tag} data-program-clip="${c.id}" src="${fileURL(c.source)}" ${tag==='img'?`alt="${esc(c.name)}"`:'preload="metadata" playsinline'} style="display:none" ${tag==='video'?'muted':''}>${tag==='img'?'':`</${tag}>`}`;
@@ -278,19 +302,21 @@ function shuttle(direction){
   else reverseTimer=setInterval(()=>{const value=(state.focus==='source'?state.sourceTime:state.time)-.08*rate;if(state.focus==='source')seekSource(value);else seekProgram(value);if(value<=0)pause();},80);
 }
 
-function pps(){return Math.max(2,(($('#timeline-scroll')?.clientWidth||800)-32)/Math.max(10,state.sequence?T.sequenceDuration(state.sequence):60))*state.zoom;}
+function pps(){return state.timelineScale||2;}
 function renderTimeline(){
-  const seq=state.sequence,scale=pps(),seconds=Math.max(10,seq?T.sequenceDuration(seq):60),width=Math.max($('#timeline-scroll').clientWidth-2,seconds*scale+60);
+  const seq=state.sequence,seconds=Math.max(10,seq?T.sequenceDuration(seq):60);
+  // Keep one scale for the rendered canvas and every pointer calculation.
+  const scale=state.timelineScale=Math.max(2,(($('#timeline-scroll')?.clientWidth||800)-32)/(state.fitDuration||seconds))*state.zoom,width=Math.max($('#timeline-scroll').clientWidth-2,seconds*scale+60);
   const lanes=state.prefs.lanes&&!!seq&&!!state.job?.observations?.length;$('.timeline-body').classList.toggle('lanes',lanes);
   $('#track-headers').innerHTML=(lanes?'<div class="lane-header" title="AI frame scores, flagged spans and scene changes"><strong>AI</strong><span>score · flags</span></div><div class="lane-header" title="Transcript mapped through your edit"><strong>TX</strong><span>transcript</span></div>':'')+(seq?.tracks||['V2','V1','A1','A2'].map(id=>({id}))).map(t=>`<div class="track-header ${t.id[0]==='A'?'audio':''}"><strong>${t.id}</strong><span>${t.id==='V2'?'Overlay':t.id==='V1'?'Picture':t.id==='A1'?'Source audio':'Music / audio'}</span><button data-track-mute="${t.id}" aria-pressed="${!!t.muted}" aria-label="${t.id[0]==='A'?'Mute':'Hide'} ${t.id}" title="${t.id[0]==='A'?'Mute':'Hide'} ${t.id}" class="${t.muted?'active':''}">${icon(t.id[0]==='A'?(t.muted?'volume-x':'volume-2'):(t.muted?'eye-off':'eye'))}</button><button data-track-lock="${t.id}" aria-pressed="${!!t.locked}" aria-label="Lock ${t.id}" title="Lock ${t.id}" class="${t.locked?'active':''}">${icon(t.locked?'lock':'lock-open')}</button></div>`).join('');
   const step=[1,2,5,10,15,30,60,120,300].find(s=>s*scale>=65)||600;
   const ticks=Array.from({length:Math.ceil(seconds/step)+1},(_,i)=>`<span class="ruler-tick" style="left:${i*step*scale}px">${short(i*step)}</span>`).join('');
   $('#timeline-canvas').style.width=width+'px';
   $('#timeline-canvas').innerHTML=`<div class="ruler" data-scrub>${ticks}${(seq?.markers||[]).map(m=>`<button class="marker" data-marker="${esc(m.id)}" title="${esc(m.label)}" aria-label="Marker: ${esc(m.label)}" style="left:${m.time*scale}px"></button>`).join('')}</div>`+(lanes?aiLanes(seq,scale):'')+
-    ['V2','V1','A1','A2'].map(track=>`<div class="track-row ${track[0]==='A'?'audio':''} ${T.locked(seq||{tracks:[]},track)?'locked':''}" data-track="${track}">${(seq?.clips||[]).filter(c=>c.track===track).map(c=>`<div class="timeline-clip ${c.track[0]==='A'?'audio':''} ${c.id===state.selected?'selected':''} ${!c.enabled?'disabled':''}" data-clip="${c.id}" tabindex="0" role="button" aria-label="${esc(c.name)} on ${track}" style="left:${c.start*scale}px;width:${Math.max(4,T.duration(c)*scale)}px" title="${esc(c.name)} · ${tc(c.source_start)}–${tc(c.source_end)}">${c.track[0]==='A'?`<canvas class="clip-wave" data-wave-clip="${c.id}" aria-hidden="true"></canvas>`:filmstrip(c,scale)}<span class="trim-edge left" data-trim="start" title="Trim start"></span><span class="clip-label">${icon(c.track[0]==='A'?'music':c.kind==='image'?'image':'film')}${esc(c.name||basename(c.source))}</span><span class="clip-detail">${c.speed!==1?c.speed+'× · ':''}${tc(T.duration(c))}</span><span class="trim-edge right" data-trim="end" title="Trim end"></span></div>`).join('')}${!seq&&track==='V1'?'<span class="timeline-hint">Analyze a source to create your sequence</span>':''}</div>`).join('')+`<div id="playhead" style="left:${state.time*scale}px"><i></i></div>`;
+    ['V2','V1','A1','A2'].map(track=>`<div class="track-row ${track[0]==='A'?'audio':''} ${T.locked(seq||{tracks:[]},track)?'locked':''}" data-track="${track}">${(seq?.clips||[]).filter(c=>c.track===track).map(c=>`<div class="timeline-clip ${c.track[0]==='A'?'audio':''} ${state.selection.has(c.id)?'selected':''} ${!c.enabled?'disabled':''}" data-clip="${c.id}" tabindex="0" role="button" aria-label="${esc(c.name)} on ${track}" style="left:${c.start*scale}px;width:${Math.max(4,T.duration(c)*scale)}px" title="${esc(c.name)} · ${tc(c.source_start)}–${tc(c.source_end)}">${c.track[0]==='A'?`<canvas class="clip-wave" data-wave-clip="${c.id}" aria-hidden="true"></canvas>`:filmstrip(c,scale)}<span class="trim-edge left" data-trim="start" title="Trim start"></span><span class="clip-label">${icon(c.track[0]==='A'?'music':c.kind==='image'?'image':'film')}${esc(c.name||basename(c.source))}</span><span class="clip-detail">${c.speed!==1?c.speed+'× · ':''}${tc(T.duration(c))}</span><span class="trim-edge right" data-trim="end" title="Trim end"></span></div>`).join('')}${!seq&&track==='V1'?'<span class="timeline-hint">Create or open a project to start editing</span>':''}</div>`).join('')+`<div id="playhead" style="left:${state.time*scale}px"><i></i></div>`;
   $('#timeline-summary').textContent=seq?`${seq.clips.filter(c=>c.track.startsWith('V')).length} video clips · ${tc(T.sequenceDuration(seq))} · ${seq.fps} fps`:'Select a sequence to start editing';
   $$('[data-action="undo"]').forEach(b=>b.disabled=!state.undo.length);$$('[data-action="redo"]').forEach(b=>b.disabled=!state.redo.length);
-  drawWaves();
+  paintSelection();drawWaves();
 }
 const isModelProposal=r=>!(r.reasons||[]).some(x=>String(x).startsWith('editor-review'));
 // Every review save or reload replaces state.job, so the job object itself is a safe cache key.
@@ -334,20 +360,21 @@ function renderSourceEvidence(){
   node.hidden=false;syncTransport();
 }
 function edit(label,change){
-  if(!state.sequence)throw new Error('Analyze a source or open a sequence first');
+  if(!state.sequence)throw new Error('Create or open a project first');
   const before=T.clone(state.sequence),next=T.clone(state.sequence);change(next);T.validate(next);
   state.undo.push(before);if(state.undo.length>75)state.undo.shift();state.redo=[];state.sequence=next;changed(label);
 }
 function changed(label){state.dirty=true;state.editVersion++;state.programMode='sequence';$('#program-mode').value='sequence';pause();renderTimeline();renderProgram();renderInspector();updateTitles();clearTimeout(saveTimer);saveTimer=setTimeout(()=>operation('Save sequence',()=>saveSequence()),900);if(label)toast(label);}
 async function saveSequence(force=false){
   clearTimeout(saveTimer);
-  if(state.saving)await state.saving;
-  if(force&&state.sequence?.revision===0&&state.job?.sequence_revision==null)state.dirty=true;
-  if(!state.dirty||!state.sequence||!state.job)return;
-  const version=state.editVersion,sequence=T.clone(state.sequence),url=jobURL('sequence');
-  state.saving=(async()=>{const result=await api(url,{method:'PUT',body:JSON.stringify(sequence)});state.sequence.revision=result.sequence.revision;state.job.sequence_revision=result.sequence.revision;if(version===state.editVersion)state.dirty=false;})();updateTitles();
+  if(force&&state.sequence?.revision===0)state.dirty=true;
+  if(state.saving)return state.saving;
+  if(!state.dirty||!state.sequence||!state.project)return;
+  const id=state.project.id,url=projectURL('sequence');
+  // One writer drains edits made during an in-flight save. Manual Save, autosave,
+  // and project switching all await the same writer and cannot race revisions.
+  state.saving=(async()=>{while(state.dirty&&state.project?.id===id){const version=state.editVersion,sequence=T.clone(state.sequence);const result=await api(url,{method:'PUT',body:JSON.stringify(sequence)});state.sequence.revision=result.sequence.revision;if(version===state.editVersion)state.dirty=false;}})();updateTitles();
   try{await state.saving;}finally{state.saving=null;updateTitles();}
-  if(state.dirty)await saveSequence();
 }
 function undo(redo=false){const from=redo?state.redo:state.undo,to=redo?state.undo:state.redo;if(!from.length)return;to.push(T.clone(state.sequence));const revision=state.sequence.revision;state.sequence=from.pop();state.sequence.revision=revision;changed(redo?'Redo':'Undo');}
 async function addSource(overwrite=false){
@@ -355,22 +382,24 @@ async function addSource(overwrite=false){
   const start=Math.min(state.in,state.out),finish=Math.max(state.in,state.out);if(finish-start<.02)throw new Error('Mark an In and Out range first');
   const link=T.uid(),base={source:state.source,source_sha256:info.sha256,kind,source_start:start,source_end:finish,start:state.time,speed:1,opacity:1,scale:1,x:0,y:0,rotation:0,volume:1,enabled:true,link_id:link,name:basename(state.source)};
   const clips=kind==='audio'?[{...base,id:T.uid(),track:'A2'}]:[{...base,id:T.uid(),track:'V1'},...(kind==='video'&&info.has_audio?[{...base,id:T.uid(),track:'A1'}]:[])];
-  edit(overwrite?'Source range overwritten':'Source range inserted',seq=>T.insert(seq,clips,state.time,overwrite));state.selected=clips[0].id;renderInspector();
+  edit(overwrite?'Source range overwritten':'Source range inserted',seq=>T.insert(seq,clips,state.time,overwrite));chooseClip(clips[0].id);
 }
 async function rebuildSequence(){
   if(!state.job)throw new Error('Select an analyzed source first');await saveSequence();const next=await api(jobURL('sequence?use_plan=true'));
-  if(state.sequence)state.undo.push(T.clone(state.sequence));state.sequence=next;state.selected=null;state.time=0;changed('Approved plan loaded · Undo restores your previous sequence');
+  next.source_sha256=state.sequence.source_sha256;next.revision=state.sequence.revision;
+  if(state.sequence)state.undo.push(T.clone(state.sequence));state.sequence=next;state.selected=null;state.selection.clear();state.time=0;changed('Approved plan loaded · Undo restores your previous sequence');
 }
 function commit(label,next){
-  T.validate(next);next.revision=state.sequence.revision;state.undo.push(T.clone(state.sequence));if(state.undo.length>75)state.undo.shift();state.redo=[];
+  T.validate(next);next.revision=state.sequence.revision;next.source_sha256=state.sequence.source_sha256;state.undo.push(T.clone(state.sequence));if(state.undo.length>75)state.undo.shift();state.redo=[];
   state.sequence=next;if(!next.clips.some(c=>c.id===state.selected))state.selected=null;state.time=Math.min(state.time,T.sequenceDuration(next));changed(label);
 }
 const secs=n=>(n>=60?short(n)+' min':n.toFixed(1)+'s');
-function needSequence(){if(!state.job||!state.sequence)throw new Error('Open an analyzed sequence first');}
+function needSequence(){if(!state.sequence)throw new Error('Create or open a project first');}
 // One pass of the automatic editor over a copy of the sequence; nothing touches state until the caller commits.
 async function runAuto(o){
   needSequence();
-  const job=state.job,src=job.source,keeps=currentReview().keep_intervals||[],protect=ranges=>ranges.flatMap(r=>A.subtract(r,keeps)),lines=[];
+  if((o.fromPlan||o.waste||o.scenes||o.highlights)&&!state.job)throw new Error('Analyze the selected source to use AI edits');
+  const job=state.job||{},src=state.source,keeps=currentReview().keep_intervals||[],protect=ranges=>ranges.flatMap(r=>A.subtract(r,keeps)),lines=[];
   const next=o.fromPlan?await api(jobURL('sequence?use_plan=true')):T.clone(state.sequence);
   if(o.fromPlan)lines.push('Rebuilt from the approved plan');
   if(o.waste){const r=A.removeSourceRanges(next,src,protect([...aiProposals().filter(p=>p.status!=='rejected'),...(currentReview().cut_intervals||[])]));if(r.ranges.length)lines.push(`AI waste & your cuts: ${r.ranges.length} range${r.ranges.length>1?'s':''} · −${secs(r.seconds)}`);}
@@ -382,8 +411,9 @@ async function runAuto(o){
 }
 function autoOptions(form){const f=new FormData(form),n=k=>Number(f.get(k));return {fromPlan:f.has('fromPlan'),waste:f.has('waste'),silence:f.has('silence'),threshold:n('threshold'),minSilence:n('minSilence'),pad:n('pad'),gaps:f.has('gaps'),scenes:f.has('scenes'),highlights:f.has('highlights'),highlightCount:n('highlightCount')};}
 function autoEditDialog(only=null){
-  needSequence();const o={...state.prefs.auto,...(only?{fromPlan:false,waste:false,silence:false,gaps:false,scenes:false,highlights:false,[only]:true}:{})},job=state.job;
-  const step=(key,title,detail,extra='')=>`<label class="auto-step"><input type="checkbox" name="${key}" ${o[key]?'checked':''}><span><strong>${title}</strong><small>${detail}</small>${extra}</span></label>`;
+  needSequence();const o={...state.prefs.auto,...(only?{fromPlan:false,waste:false,silence:false,gaps:false,scenes:false,highlights:false,[only]:true}:{})},job=state.job||{};
+  const aiSteps=['fromPlan','waste','scenes','highlights'];if(!state.job)aiSteps.forEach(key=>o[key]=false);
+  const step=(key,title,detail,extra='')=>`<label class="auto-step"><input type="checkbox" name="${key}" ${o[key]?'checked':''} ${!state.job&&aiSteps.includes(key)?'disabled':''}><span><strong>${title}</strong><small>${!state.job&&aiSteps.includes(key)?'Analyze the selected source to enable this step.':detail}</small>${extra}</span></label>`;
   openDialog(`${dialogHead('AUTO',only==='silence'?'Remove silences':'Auto-edit this sequence')}<form id="auto-form" data-only="${only||''}"><div class="dialog-body"><p>Everything below runs as <b>one undoable edit</b>. Your Keep and Protect decisions are never cut.</p><div class="auto-steps">
     ${step('fromPlan','Start from the approved plan','Rebuild from Brain’s plan before the steps below.')}
     ${step('waste','Remove AI-flagged waste',`Cuts ${aiProposals().filter(p=>p.status!=='rejected').length} model proposals and ${(currentReview().cut_intervals||[]).length} of your cut decisions wherever they still play.`)}
@@ -392,7 +422,7 @@ function autoEditDialog(only=null){
     ${step('scenes','Mark scene changes',`${(job.scene_boundaries||[]).length} detected boundaries in the source.`)}
     ${step('highlights','Mark top AI moments','Spaced markers on the best-scoring kept frames.',`<span class="auto-fields"><label>Up to <input name="highlightCount" type="number" min="1" max="20" value="${o.highlightCount}"> markers</label></span>`)}
   </div><output id="auto-preview" class="auto-preview" aria-live="polite">Calculating…</output></div><footer class="dialog-footer"><span>Undo restores the current sequence.</span>${button('close-dialog','Cancel')}<button class="primary" type="submit">Apply auto-edit</button></footer></form>`,'auto');
-  updateAutoPreview();peaksFor(job.source).then(w=>levelNote(A.analyzeLevels(w.peaks||[])));
+  updateAutoPreview();const audio=state.source||state.sequence.clips.find(c=>c.track==='A1')?.source;if(audio)peaksFor(audio).then(w=>levelNote(A.analyzeLevels(w.peaks||[])));else levelNote(A.analyzeLevels([]));
 }
 function levelNote(levels){
   const note=$('#level-note');if(!note)return levels;
@@ -462,12 +492,12 @@ function markerDialog(id){
   openDialog(`${dialogHead('MARKER','Edit marker')}<form id="marker-form" data-marker-form="${esc(id)}"><div class="dialog-body"><label class="stacked">Label<input name="label" maxlength="200" value="${esc(m.label)}" required></label><label class="stacked">Time (seconds)<input name="time" type="number" min="0" step=".01" value="${round(m.time)}" required></label></div><footer class="dialog-footer">${button('delete-marker','Delete marker','danger',`data-marker-id="${esc(id)}"`)}${button('close-dialog','Cancel')}<button class="primary" type="submit">Save marker</button></footer></form>`,'marker');
 }
 function exportCaptions(){
-  needSequence();const captions=A.editCaptions(state.sequence,state.job.source,state.job.transcript_segments||[]);if(!captions.length)throw new Error('No transcribed speech plays in this sequence');
+  needSequence();if(!state.job)throw new Error('Transcribe the selected source first');const captions=A.editCaptions(state.sequence,state.job.source,state.job.transcript_segments||[]);if(!captions.length)throw new Error('No transcribed speech plays in this sequence');
   const a=document.createElement('a');a.href=URL.createObjectURL(new Blob([A.toSRT(captions)],{type:'application/x-subrip'}));a.download=basename(state.job.source).replace(/\.[^.]+$/,'')+'_edit.srt';
   document.body.append(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(a.href),2000);toast(`${captions.length} captions exported, timed to this edit`,'ok');
 }
 function shortcutsDialog(){
-  const keys=[['Space','Play / pause'],['J K L','Shuttle reverse, stop, forward'],['← / →','Previous / next frame'],['↑ / ↓','Previous / next edit point or marker'],['I / O','Mark In / Out'],['P','Audition the AI proposal or In→Out'],['C','Split at playhead'],['V','Selection tool'],['M','Add marker (double-click a marker to edit)'],['Delete','Lift clip'],['Shift + Delete','Ripple delete'],['= / − / \\','Zoom in / out / fit (Ctrl + wheel zooms at the cursor)'],['Ctrl + Z / Y','Undo / redo'],['Ctrl + S','Save sequence'],['N / Shift + N','Next / previous AI proposal'],['A','Accept proposal as a cut'],['X','Reject proposal and protect it'],['?','This list']];
+  const keys=[['Space','Play / pause'],['J K L','Shuttle reverse, stop, forward'],['← / →','Previous / next frame'],['↑ / ↓','Previous / next edit point or marker'],['I / O','Mark In / Out'],['P','Audition the AI proposal or In→Out'],['C','Split at playhead'],['V','Selection tool'],['M','Add marker (double-click a marker to edit)'],['Drag empty track space','Box-select clips across tracks'],['Shift / Ctrl + click','Add or remove a clip from selection'],['Escape','Cancel drag or box selection'],['Delete','Lift selected clips'],['Shift + Delete','Ripple delete'],['= / − / \\','Zoom in / out / fit (Ctrl + wheel zooms at the cursor)'],['Ctrl + Z / Y','Undo / redo'],['Ctrl + S','Save sequence'],['N / Shift + N','Next / previous AI proposal'],['A','Accept proposal as a cut'],['X','Reject proposal and protect it'],['?','This list']];
   openDialog(`${dialogHead('HELP','Keyboard shortcuts')}<div class="dialog-body"><dl class="shortcut-list">${keys.map(([k,v])=>`<dt><kbd>${esc(k)}</kbd></dt><dd>${esc(v)}</dd>`).join('')}</dl></div><footer class="dialog-footer">${button('close-dialog','Done','primary')}</footer>`,'help');
 }
 
@@ -475,12 +505,13 @@ function renderInspector(){
   $$('[data-tab]').forEach(t=>t.setAttribute('aria-selected',t.dataset.tab===state.tab));
   const body=$('#inspector-content');
   if(state.tab==='effects'){
+    if(state.selection.size>1){body.innerHTML=`<div class="inspector-section"><h3>${state.selection.size} clips selected</h3><p>Drag to move together. Shift-click adds or removes clips.</p>${button('delete','Delete selected','wide')}${button('duplicate','Duplicate selected','wide')}${button('enable','Toggle enabled','wide')}</div>`;return;}
     const clip=state.sequence?.clips.find(c=>c.id===state.selected);
     if(!clip){body.innerHTML=`<div class="inspector-intro"><span class="eyebrow">EFFECT CONTROLS</span><h3>Every frame, in place.</h3><p>Select a timeline clip to adjust its properties.</p></div><div class="inspector-section"><h3>Sequence</h3><dl><dt>Resolution</dt><dd>${state.sequence?state.sequence.width+' × '+state.sequence.height:'—'}</dd><dt>Frame rate</dt><dd>${state.sequence?.fps||'—'} fps</dd><dt>Tracks</dt><dd>2 video · 2 audio</dd></dl>${button('sequence-settings','Sequence settings','wide')}</div><div class="inspector-section"><h3>Editing guide</h3><p>Drag edges to trim. Drag clips between matching tracks. Right-click a clip for more actions.</p><p>Linked editing keeps picture and sound together.</p></div>`;return;}
     const audio=clip.track.startsWith('A');
     body.innerHTML=`<div class="clip-inspector-title"><span class="media-icon ${audio?'audio':'video'}">${icon(audio?'music':'film')}</span><div><strong>${esc(clip.name)}</strong><small>${clip.track} · ${tc(T.duration(clip))}</small></div></div><div class="inspector-section"><h3>Clip properties</h3><dl><dt>Source In</dt><dd>${tc(clip.source_start)}</dd><dt>Source Out</dt><dd>${tc(clip.source_end)}</dd><dt>Sequence start</dt><dd>${tc(clip.start)}</dd></dl><label class="toggle-row">Enabled<input type="checkbox" data-effect="enabled" ${clip.enabled?'checked':''}></label></div><details class="inspector-section" open><summary>Time &amp; audio</summary>${effect('speed','Speed',clip.speed,.25,4,.05,'×')}${effect('volume','Audio gain',clip.volume,0,4,.05,'×')}<p class="field-note">Gain above 1× is applied on render; live preview is capped at 1×.</p></details><details class="inspector-section" ${!audio?'open':''}><summary>Motion &amp; opacity</summary>${effect('opacity','Opacity',clip.opacity,0,1,.01)}${effect('scale','Scale',clip.scale,.1,4,.01,'×')}${audio?'':`<div class="effect-auto">${button('auto-fit','Fit frame','quiet')}${button('auto-fill','Fill frame','quiet','title="Scale so the picture covers the whole sequence frame"')}</div>`}${effect('x','Position X',clip.x,-4096,4096,1,'px')}${effect('y','Position Y',clip.y,-4096,4096,1,'px')}${effect('rotation','Rotation',clip.rotation,-360,360,1,'°')}</details><div class="inspector-section">${button('reset-effects','Reset effects','wide')}</div>`;
   }else if(state.tab==='review')renderReview();
-  else body.innerHTML=`<div class="inspector-intro"><span class="eyebrow">PIPELINE</span><h3>From source to story.</h3><p>Control each stage from Project Settings.</p></div>${['Connection','Ear','Eye','Temporal & multi-pass','Brain','Preview','Reel','Voice','Blade'].map((group,i)=>`<details class="inspector-section" ${i<2?'open':''}><summary>${esc(group)} <small>${Object.values(state.schema).filter(f=>f.group===group).length} controls</small></summary><p>${stageSummary(group)}</p><button class="wide" data-settings-group="${esc(group)}">Configure ${esc(group)}</button></details>`).join('')}<div class="inspector-section"><h3>Background tasks</h3><div id="task-list">${taskList()}</div></div>`;
+  else body.innerHTML=`<div class="inspector-intro"><span class="eyebrow">PIPELINE</span><h3>From source to story.</h3><p>Control each stage from Pipeline Settings.</p></div>${['Connection','Ear','Eye','Temporal & multi-pass','Brain','Preview','Reel','Voice','Blade'].map((group,i)=>`<details class="inspector-section" ${i<2?'open':''}><summary>${esc(group)} <small>${Object.values(state.schema).filter(f=>f.group===group).length} controls</small></summary><p>${stageSummary(group)}</p><button class="wide" data-settings-group="${esc(group)}">Configure ${esc(group)}</button></details>`).join('')}<div class="inspector-section"><h3>Background tasks</h3><div id="task-list">${taskList()}</div></div>`;
 }
 function effect(key,label,value,min,max,step,suffix=''){return `<label class="effect-control"><span>${label}<small>${suffix}</small></span><input type="number" data-effect="${key}" value="${round(value)}" min="${min}" max="${max}" step="${step}" aria-label="${label}"></label><input type="range" class="effect-slider" data-effect="${key}" value="${value}" min="${min}" max="${max}" step="${step}" aria-label="${label} slider">`;}
 function stageSummary(group){const c=state.config;return esc(({Connection:c.vision_model,Ear:`${c.whisper_model} · ${c.whisper_device} · ${c.whisper_compute_type}`,Eye:`Every ${c.frame_interval_seconds}s · ${c.vision_max_width}px · batches of ${c.vision_batch_size}`,'Temporal & multi-pass':c.multi_pass_apply_cuts?'Targeted cuts enabled':'Review before applying targeted cuts',Brain:`Minimum surviving segment ${c.full_edit_min_segment_seconds}s`,Preview:`${c.preview_min_clip_seconds}–${c.preview_max_clip_seconds}s clips`,Reel:`${c.reel_target_seconds}s target · multiple sources`,Voice:c.performer||'No performer configured',Blade:`CRF ${c.blade_crf} · ${c.blade_preset} · ${c.blade_output_fps}fps`})[group]||'');}
@@ -532,7 +563,7 @@ function settingControl(key,spec){
 }
 function openSettings(group='Connection'){
   const groups=[...new Set(Object.values(state.schema).map(s=>s.group))];
-  openDialog(`${dialogHead('PROJECT','Project settings')}<form id="settings-form"><div class="settings-layout"><nav class="settings-nav" aria-label="Settings sections">${groups.map(g=>`<a href="#settings-${g.replace(/\W/g,'')}" data-settings-nav="${esc(g)}">${esc(g)}</a>`).join('')}</nav><div class="settings-content">${groups.map(g=>`<details id="settings-${g.replace(/\W/g,'')}" data-settings-section="${esc(g)}" ${g===group?'open':''}><summary>${esc(g)}<small>${Object.values(state.schema).filter(s=>s.group===g).length} settings</small></summary><div class="settings-fields">${Object.entries(state.schema).filter(([,s])=>s.group===g).map(([k,s])=>settingControl(k,s)).join('')}</div></details>`).join('')}</div></div><footer class="dialog-footer"><span>Changes apply to the next task.</span>${button('settings-test','Test connection')}${button('close-dialog','Cancel')}<button class="primary" type="submit">Save settings</button></footer></form>`,'settings');
+  openDialog(`${dialogHead('PROJECT','Pipeline settings')}<form id="settings-form"><div class="settings-layout"><nav class="settings-nav" aria-label="Settings sections">${groups.map(g=>`<a href="#settings-${g.replace(/\W/g,'')}" data-settings-nav="${esc(g)}">${esc(g)}</a>`).join('')}</nav><div class="settings-content">${groups.map(g=>`<details id="settings-${g.replace(/\W/g,'')}" data-settings-section="${esc(g)}" ${g===group?'open':''}><summary>${esc(g)}<small>${Object.values(state.schema).filter(s=>s.group===g).length} settings</small></summary><div class="settings-fields">${Object.entries(state.schema).filter(([,s])=>s.group===g).map(([k,s])=>settingControl(k,s)).join('')}</div></details>`).join('')}</div></div><footer class="dialog-footer"><span>Changes apply to the next task.</span>${button('settings-test','Test connection')}${button('close-dialog','Cancel')}<button class="primary" type="submit">Save settings</button></footer></form>`,'settings');
 }
 function settingsValues(){
   const values={};for(const [key,spec] of Object.entries(state.schema)){const input=$(`[name="${key}"]`,$('#settings-form'));if(!input)continue;
@@ -545,10 +576,11 @@ function settingsValues(){
   }return values;
 }
 function analyzeDialog(){
-  openDialog(`${dialogHead('PIPELINE','Analyze source')}<form id="analyze-form"><div class="dialog-body"><label class="stacked">Source<select name="source" required>${assets().filter(f=>f.kind==='video'&&f.job?.source_available!==false).map(f=>`<option value="${esc(f.path)}" ${state.source===f.path?'selected':''}>${esc(f.name)}</option>`).join('')}</select></label><h3>Stages to run</h3><div class="stage-options">${[['ear','Ear','Transcribe speech locally'],['eye','Eye','Judge frames and scene boundaries'],['voice','Voice','Write a persona caption']].map(([id,name,description])=>`<label><input type="checkbox" name="stages" value="${id}" checked><span><strong>${name}</strong><small>${description}</small></span></label>`).join('')}</div><p class="field-note">Unchecked Ear/Eye stages reuse saved evidence when available. Voice is skipped. No render runs during analysis.</p><label class="toggle-row">Refresh selected stages from scratch<input type="checkbox" name="refresh"></label></div><footer class="dialog-footer">${button('settings','Project settings')}${button('close-dialog','Cancel')}<button type="submit" class="primary">Start analysis</button></footer></form>`,'analyze');
+  if(!state.project)return newProjectDialog();if(!assets().some(f=>f.kind==='video'))return toast('Import a video into this project first','warn');
+  openDialog(`${dialogHead('PIPELINE','Analyze source')}<form id="analyze-form"><div class="dialog-body"><label class="stacked">Source<select name="source" required>${assets().filter(f=>f.kind==='video'&&f.job?.source_available!==false).map(f=>`<option value="${esc(f.path)}" ${state.source===f.path?'selected':''}>${esc(f.name)}</option>`).join('')}</select></label><h3>Stages to run</h3><div class="stage-options">${[['ear','Ear','Transcribe speech locally'],['eye','Eye','Judge frames and scene boundaries'],['voice','Voice','Write a persona caption']].map(([id,name,description])=>`<label><input type="checkbox" name="stages" value="${id}" checked><span><strong>${name}</strong><small>${description}</small></span></label>`).join('')}</div><p class="field-note">Unchecked Ear/Eye stages reuse saved evidence when available. Voice is skipped. No render runs during analysis.</p><label class="toggle-row">Refresh selected stages from scratch<input type="checkbox" name="refresh"></label></div><footer class="dialog-footer">${button('settings','Pipeline settings')}${button('close-dialog','Cancel')}<button type="submit" class="primary">Start analysis</button></footer></form>`,'analyze');
 }
 function previewDialog(reel=false){
-  openDialog(`${dialogHead('ASSEMBLY',reel?'Build a best-of reel':'Preview reel')}<form id="preview-form" data-reel="${reel}"><div class="dialog-body"><p>${reel?'Select analyzed sources. Brain ranks moments across them.':'Build a short trailer from the strongest moments in this source.'}</p><label class="stacked">Target duration (seconds)<input name="target" type="number" min="1" max="3600" value="${reel?state.config.reel_target_seconds:state.config.preview_target_seconds||state.config.preview_max_target_seconds||30}" required></label>${reel?`<div class="reel-sources">${state.jobs.filter(j=>j.source_available&&j.clips?.length).map(j=>`<label><input type="checkbox" name="jobs" value="${esc(j.id)}" ${state.checked.has(j.id)?'checked':''}><span>${esc(basename(j.source))}</span><small>${short(j.duration)}</small></label>`).join('')}</div>`:''}</div><footer class="dialog-footer">${button('close-dialog','Cancel')}<button class="primary" type="submit">${reel?'Build reel':'Build preview'}</button></footer></form>`,'preview');
+  openDialog(`${dialogHead('ASSEMBLY',reel?'Build a best-of reel':'Preview reel')}<form id="preview-form" data-reel="${reel}"><div class="dialog-body"><p>${reel?'Select analyzed sources. Brain ranks moments across them.':'Build a short trailer from the strongest moments in this source.'}</p><label class="stacked">Target duration (seconds)<input name="target" type="number" min="1" max="3600" value="${reel?state.config.reel_target_seconds:state.config.preview_target_seconds||state.config.preview_max_target_seconds||30}" required></label>${reel?`<div class="reel-sources">${assets().map(a=>a.job).filter(j=>j?.source_available&&j.clips?.length).map(j=>`<label><input type="checkbox" name="jobs" value="${esc(j.id)}" ${state.checked.has(j.id)?'checked':''}><span>${esc(basename(j.source))}</span><small>${short(j.duration)}</small></label>`).join('')}</div>`:''}</div><footer class="dialog-footer">${button('close-dialog','Cancel')}<button class="primary" type="submit">${reel?'Build reel':'Build preview'}</button></footer></form>`,'preview');
 }
 async function startTask(path,payload,callback){const task=await post(path,payload);if(!task.id)throw new Error('Server did not return a task');if(callback)state.taskCallbacks.set(task.id,callback);state.tasks.unshift(task);toast(task.label+' · queued');renderTasks();}
 function taskList(){return state.tasks.slice(0,10).map(t=>`<div class="task-card"><div><strong>${esc(t.label)}</strong>${badge(t.status,t.status==='failed'?'error':t.status==='succeeded'?'ok':'')}</div><small>${esc(t.error||t.stage||t.status)}</small>${['running','queued'].includes(t.status)?`<progress max="100" value="${t.progress||0}" aria-label="${esc(t.label)} stage progress"></progress>`:''}</div>`).join('')||'<p>No background tasks.</p>';}
@@ -569,32 +601,34 @@ function renderGateway(){const names={untested:'Not tested',testing:'Testing…'
 async function testConnection(values){state.gateway='testing';renderGateway();await startTask('/api/connection/test',values?{values}:undefined,()=>{state.gateway='ok';renderGateway();});}
 function download(path){const a=document.createElement('a');a.href=fileURL(path);a.download=basename(path);document.body.append(a);a.click();a.remove();}
 async function exportFile(format){
-  if(!state.job)throw new Error('Select an analyzed source first');if(format==='srt')return exportCaptions();await saveSequence();
+  needSequence();if(format==='srt')return exportCaptions();await saveSequence();
   if(format==='mp4'){await renderCut();return;}
-  const result=await post(jobURL('export'),{format});download(result.path);toast(format.toUpperCase()+' exported','ok');
+  const result=await post(projectURL('export'),{format});download(result.path);toast(format.toUpperCase()+' exported','ok');
   if(result.warnings?.length)openDialog(`${dialogHead('EXPORT','Export notes')}<div class="dialog-body">${result.warnings.map(w=>`<p>${esc(w)}</p>`).join('')}</div><footer class="dialog-footer">${button('close-dialog','Done','primary')}</footer>`,'export');
 }
-async function renderCut(){if(!state.job)throw new Error('Select a sequence first');await saveSequence(true);await startTask(jobURL('render'),{},async()=>{await load();state.programMode='final';$('#program-mode').value='final';state.time=0;renderProgram();});}
-async function replan(){if(!state.job)throw new Error('Select a source first');await saveSequence();await startTask(jobURL('replan'),{},async()=>{await load();await rebuildSequence();});}
+async function renderCut(){needSequence();await saveSequence(true);const id=state.project.id;await startTask(projectURL('render'),{},async()=>{await load();if(state.project?.id!==id)return;state.programMode='final';$('#program-mode').value='final';state.time=0;renderProgram();});}
+async function replan(){if(!state.job)throw new Error('Select an analyzed source first');await saveSequence();const id=state.project?.id;await startTask(jobURL('replan'),{},async()=>{await load();if(state.project?.id===id)toast('Plan updated · use Auto-edit or Load approved plan to apply it to the timeline');});}
 async function transcribe(){if(!state.source)throw new Error('Select a video or audio source first');await startTask('/api/actions/transcribe',{source:state.source,refresh:true},result=>{download(result.path);return load();});}
-async function importFiles(files){if(!files.length)return;const form=new FormData();[...files].forEach(f=>form.append('files',f));toast('Importing '+files.length+' files…');const saved=await api('/api/inbox/upload',{method:'POST',body:form});await load();toast('Media imported','ok');
-  const video=saved.find(f=>f.kind==='video');if(video){await selectAsset(video.path);analyzeDialog();}}
+async function importFiles(files){if(!files.length)return;if(!state.project){newProjectDialog();throw new Error('Create or open a project before importing media');}const id=state.project.id,form=new FormData();[...files].forEach(f=>form.append('files',f));toast('Importing '+files.length+' files…');const saved=await api('/api/inbox/upload',{method:'POST',body:form});await addAssets(saved.map(f=>f.path),id);await load();toast('Media imported · drag an asset onto the timeline','ok');
+  if(state.project?.id===id&&saved[0])await selectAsset(saved[0].path);}
 function sequenceSettings(){if(!state.sequence)throw new Error('Select a sequence first');openDialog(`${dialogHead('SEQUENCE','Sequence settings')}<form id="sequence-form"><div class="dialog-body"><div class="preset-row" role="group" aria-label="Format presets">${[['match','Match source'],['1080x1920','9:16 Vertical'],['1920x1080','16:9'],['1080x1080','1:1'],['1080x1350','4:5']].map(([value,label])=>button('format-preset',label,'quiet',`data-preset="${value}"`)).join('')}</div><label class="stacked">Width<input name="width" type="number" min="64" max="4096" step="2" value="${state.sequence.width}" required></label><label class="stacked">Height<input name="height" type="number" min="64" max="4096" step="2" value="${state.sequence.height}" required></label><label class="stacked">Frame rate<input name="fps" type="number" min="1" max="120" value="${state.sequence.fps}" required></label><p>Manual sequences use exact cuts. Transition settings apply to generated previews and reels.</p></div><footer class="dialog-footer">${button('close-dialog','Cancel')}<button type="submit" class="primary">Apply</button></footer></form>`,'sequence');}
 
 const actions={
-  import:()=>$('#file-input').click(),settings:()=>openSettings(),connection:()=>testConnection(),refresh:async()=>{await load();toast('Project refreshed');},
+  import:()=>state.project?$('#file-input').click():newProjectDialog(),'new-project':newProjectDialog,'open-project':openProjectDialog,
+  'choose-project':async t=>{await openProject(t.dataset.id);closeDialog();},'open-legacy':t=>createProject(basename(state.jobs.find(j=>j.id===t.dataset.id).source).replace(/\.[^.]+$/,''),t.dataset.id),'add-existing':existingMediaDialog,'remove-asset':removeAsset,
+  settings:()=>openSettings(),connection:()=>testConnection(),refresh:async()=>{await load();toast('Project refreshed');},
   analyze:analyzeDialog,preview:()=>previewDialog(),reel:()=>previewDialog(true),render:renderCut,replan,transcribe,rebuild:rebuildSequence,
-  folder:async()=>{await post('/api/open-folder?path='+encodeURIComponent(state.job?.final_output?.path||state.config.output_dir));toast('Output folder opened');},
+  folder:async()=>{await post('/api/open-folder?path='+encodeURIComponent(state.project?.final_output?.path||state.config.output_dir));toast('Output folder opened');},
   'close-dialog':closeDialog,'dismiss-error':clearError,retry:()=>state.retry?.(),'retry-media':()=>{renderSource();renderProgram();},
   'settings-test':()=>testConnection(settingsValues()),'clear-key':()=>{const key=$('[name="vision_api_key"]');key.value='';key.dataset.clear='true';key.placeholder='Saved key will be cleared on Save';},
   'list-view':()=>{state.view='list';renderProject();},'icon-view':()=>{state.view='icons';renderProject();},
   save:async()=>{await saveSequence(true);toast('Sequence saved','ok');},undo:()=>undo(),redo:()=>undo(true),
   'select-tool':()=>setTool('select'),'razor-tool':()=>setTool('razor'),
   split:()=>edit('Clip split',s=>T.split(s,state.selected,state.time,state.linked)),
-  delete:()=>edit('Clip removed',s=>T.remove(s,state.selected,false,state.linked)),
-  ripple:()=>edit('Gap closed',s=>T.remove(s,state.selected,true,state.linked)),
-  duplicate:()=>edit('Clip duplicated at sequence end',s=>T.duplicate(s,state.selected,state.linked)),
-  enable:()=>edit('Clip enabled state changed',s=>{const clips=T.linkedClips(s,state.selected,state.linked);if(clips.some(c=>T.locked(s,c.track)))throw new Error('Unlock the track first');const enabled=!clips[0].enabled;clips.forEach(c=>c.enabled=enabled);}),
+  delete:()=>edit('Clips removed',s=>T.remove(s,selectedIds(),false,state.linked)),
+  ripple:()=>edit('Gaps closed',s=>T.remove(s,selectedIds(),true,state.linked)),
+  duplicate:()=>edit('Clip duplicated at sequence end',s=>T.duplicate(s,selectedIds(),state.linked)),
+  enable:()=>edit('Clip enabled state changed',s=>{const clips=T.linkedClips(s,selectedIds(),state.linked);if(clips.some(c=>T.locked(s,c.track)))throw new Error('Unlock the track first');const enabled=!clips[0].enabled;clips.forEach(c=>c.enabled=enabled);}),
   snap:()=>{state.snap=!state.snap;$$('[data-action="snap"]').forEach(b=>{b.classList.toggle('active',state.snap);b.setAttribute('aria-pressed',state.snap);});},
   linked:()=>{state.linked=!state.linked;$$('[data-action="linked"]').forEach(b=>{b.classList.toggle('active',state.linked);b.setAttribute('aria-pressed',state.linked);});},
   in:()=>{state.in=state.sourceTime;syncTransport();if(state.tab==='review')renderReview();},out:()=>{state.out=state.sourceTime;syncTransport();if(state.tab==='review')renderReview();},
@@ -610,24 +644,74 @@ const actions={
   'sequence-settings':sequenceSettings,
   'auto-edit':()=>autoEditDialog(),'auto-silence':()=>autoEditDialog('silence'),'auto-waste':()=>quickAuto({waste:true}),'auto-gaps':()=>quickAuto({gaps:true}),
   'auto-scenes':()=>quickAuto({scenes:true}),'auto-highlights':()=>quickAuto({highlights:true}),'auto-fill':()=>fillFrame(),'auto-fit':()=>fillFrame(true),
-  'auto-threshold':async()=>{const levels=levelNote(A.analyzeLevels((await peaksFor(state.job.source)).peaks||[]));$('[name="threshold"]').value=levels.threshold;updateAutoPreview();},
+  'auto-threshold':async()=>{const source=state.source||state.sequence.clips.find(c=>c.track==='A1')?.source;if(!source)throw new Error('Import audio first');const levels=levelNote(A.analyzeLevels((await peaksFor(source)).peaks||[]));$('[name="threshold"]').value=levels.threshold;updateAutoPreview();},
   'next-proposal':()=>stepProposal(1),'accept-proposal':t=>{focusProposal(Number(t.dataset.index));return decideCurrent('accept');},'reject-proposal':t=>{focusProposal(Number(t.dataset.index));return decideCurrent('reject');},
   'accept-all':()=>decideProposals(aiProposals().filter(p=>p.status==='pending'),'accept'),'accept-strong':()=>decideProposals(aiProposals().filter(p=>p.status==='pending'&&p.strength==='strong'),'accept'),'reject-all':()=>decideProposals(aiProposals().filter(p=>p.status==='pending'),'reject'),
   'toggle-lanes':()=>{state.prefs.lanes=!state.prefs.lanes;savePrefs();syncToggles();renderTimeline();},
   'toggle-cc':()=>{state.prefs.cc=!state.prefs.cc;savePrefs();syncToggles();overlayKey='';renderOverlay();},
   'toggle-hud':()=>{state.prefs.hud=!state.prefs.hud;savePrefs();syncToggles();overlayKey='';renderOverlay();},
   'theme-cycle':()=>setTheme(Theme.nextMode(state.themeMode)),'theme-auto':()=>setTheme('auto'),'theme-light':()=>setTheme('light'),'theme-dark':()=>setTheme('dark'),
-  'format-preset':async t=>{const form=$('#sequence-form');let [w,h]=t.dataset.preset.split('x').map(Number);if(t.dataset.preset==='match'){const m=await metadata(state.job.source);[w,h]=[m.width,m.height];}form.width.value=Math.round(w/2)*2;form.height.value=Math.round(h/2)*2;},
+  'format-preset':async t=>{const form=$('#sequence-form');let [w,h]=t.dataset.preset.split('x').map(Number);if(t.dataset.preset==='match'){if(!state.source)throw new Error('Select a project asset first');const m=await metadata(state.source);[w,h]=[m.width,m.height];}form.width.value=Math.round(w/2)*2;form.height.value=Math.round(h/2)*2;},
   audition,'prev-edit':()=>editPoint(-1),'next-edit':()=>editPoint(1),'frame-back':()=>actions[state.focus==='source'?'source-back':'program-back'](),'frame-next':()=>actions[state.focus==='source'?'source-next':'program-next'](),
-  'zoom-fit':()=>{setZoom(1,0);$('#timeline-scroll').scrollLeft=0;},'zoom-in':()=>setZoom(state.zoom*1.5),'zoom-out':()=>setZoom(state.zoom/1.5),
+  'zoom-fit':()=>{state.fitDuration=Math.max(10,T.sequenceDuration(state.sequence||{clips:[]}));setZoom(1,0);$('#timeline-scroll').scrollLeft=0;},'zoom-in':()=>setZoom(state.zoom*1.5),'zoom-out':()=>setZoom(state.zoom/1.5),
   'delete-marker':t=>{const id=t.dataset.markerId;closeDialog();edit('Marker deleted',s=>{s.markers=s.markers.filter(m=>m.id!==id);});},
   'clear-markers':()=>{needSequence();if(!state.sequence.markers.length)return toast('No markers to clear','warn');edit(`${state.sequence.markers.length} markers cleared`,s=>{s.markers=[];});},
   shortcuts:shortcutsDialog,'prev-proposal':()=>stepProposal(-1),'accept-current':()=>decideCurrent('accept'),'reject-current':()=>decideCurrent('reject'),
-  'reset-effects':()=>edit('Effects reset',s=>{const clips=T.linkedClips(s,state.selected,state.linked);if(clips.some(c=>T.locked(s,c.track)))throw new Error('Unlock the track first');clips.forEach(c=>Object.assign(c,{speed:1,opacity:1,scale:1,x:0,y:0,rotation:0,volume:1}));}),
+  'reset-effects':()=>edit('Effects reset',s=>{const clips=T.linkedClips(s,selectedIds(),state.linked);if(clips.some(c=>T.locked(s,c.track)))throw new Error('Unlock the track first');clips.forEach(c=>Object.assign(c,{speed:1,opacity:1,scale:1,x:0,y:0,rotation:0,volume:1}));}),
 };
 function setTool(tool){state.tool=tool;$$('[data-action$="-tool"]').forEach(b=>b.classList.toggle('active',b.dataset.action===tool+'-tool'));$('#timeline-canvas').classList.toggle('razor',tool==='razor');}
-function chooseClip(id){state.selected=id;state.focus='program';$$('[data-clip]').forEach(c=>c.classList.toggle('selected',c.dataset.clip===id));renderInspector();}
+function selectedIds(){return state.selection.size?[...state.selection]:state.selected?[state.selected]:[];}
+function paintSelection(){
+  const valid=new Set(state.sequence?.clips.map(c=>c.id)||[]);state.selection=new Set([...state.selection].filter(id=>valid.has(id)));
+  if(!state.selection.has(state.selected))state.selected=[...state.selection][0]||null;
+  $$('[data-clip]').forEach(c=>{const selected=state.selection.has(c.dataset.clip);c.classList.toggle('selected',selected);c.setAttribute('aria-pressed',selected);});
+}
+function chooseClip(id,add=false){if(add){if(state.selection.has(id))state.selection.delete(id);else state.selection.add(id);}else state.selection=new Set([id]);state.selected=state.selection.has(id)?id:[...state.selection][0]||null;state.focus='program';paintSelection();renderInspector();}
 function timelineAt(event){const rect=$('#timeline-canvas').getBoundingClientRect();return Math.max(0,(event.clientX-rect.left)/pps());}
+function mediaClips(path,info,track,start=0,finish=info.duration){
+  const kind=kindOf(path),link=T.uid(),base={source:path,source_sha256:info.sha256,kind,source_start:start,source_end:finish,start:0,speed:1,opacity:1,scale:1,x:0,y:0,rotation:0,volume:1,enabled:true,link_id:link,name:basename(path)};
+  if((kind==='audio')!==(track[0]==='A'))throw new Error('Drop video and images on V tracks, audio on A tracks');
+  return [{...base,id:T.uid(),track},...(kind==='video'&&info.has_audio?[{...base,id:T.uid(),track:track==='V1'?'A1':'A2'}]:[])];
+}
+let mediaDrag=null,dragFrame=0;
+function clearDropPreview(){
+  cancelAnimationFrame(dragFrame);dragFrame=0;$$('.drop-preview,.drop-snap').forEach(n=>n.remove());
+  if(mediaDrag){mediaDrag.preview=null;mediaDrag.pointer=null;if(mediaDrag.width)$('#timeline-canvas').style.width=mediaDrag.width;}
+}
+function updateDropPreview(event){
+  const drag=mediaDrag,canvas=$('#timeline-canvas');if(!drag||!state.sequence||drag.project!==state.project?.id)return;
+  drag.pointer={clientX:event.clientX,clientY:event.clientY};
+  const row=document.elementFromPoint(event.clientX,event.clientY)?.closest('.track-row');
+  if(!row||!canvas.contains(row)){clearDropPreview();return;}
+  const info=drag.info;if(!info?.duration)return;
+  const scale=pps(),track=row.dataset.track,position=T.dropPlacement(state.sequence,timelineAt(event),info.duration,scale,state.snap,[state.time]);
+  let clips=[],error=null;try{clips=mediaClips(drag.path,info,track);T.insert(T.clone(state.sequence),clips,position.start);}catch(err){error=err;}
+  drag.preview={...position,track,error,scale,duration:info.duration};
+  $$('.drop-preview,.drop-snap').forEach(n=>n.remove());
+  const tracks=clips.length?clips.map(c=>c.track):[track];
+  canvas.style.width=Math.max(parseFloat(drag.width)||0,(position.start+info.duration)*scale+60)+'px';
+  for(const id of tracks){const target=$(`[data-track="${id}"]`,canvas),ghost=document.createElement('div');ghost.className='drop-preview'+(error?' invalid':'');ghost.style.left=position.start*scale+'px';ghost.style.width=info.duration*scale+'px';ghost.dataset.start=position.start;ghost.dataset.duration=info.duration;ghost.textContent=error?error.message:`${basename(drag.path)} · ${tc(position.start)} → ${tc(position.start+info.duration)}`;target.append(ghost);}
+  if(position.snap!==null){const line=document.createElement('div');line.className='drop-snap';line.style.left=position.snap*scale+'px';canvas.append(line);}
+  if(event.dataTransfer)event.dataTransfer.dropEffect=error?'none':'copy';
+  if(!dragFrame){const scroll=()=>{dragFrame=0;if(!mediaDrag?.pointer)return;const p=mediaDrag.pointer,s=$('#timeline-scroll'),r=s.getBoundingClientRect();const dx=p.clientX>r.right-30?12:p.clientX<r.left+30?-12:0;if(dx){s.scrollLeft+=dx;updateDropPreview(p);}if(mediaDrag?.pointer&&!dragFrame)dragFrame=requestAnimationFrame(scroll);};dragFrame=requestAnimationFrame(scroll);}
+}
+function bindMediaDrag(){
+  document.addEventListener('dragstart',e=>{const row=e.target.closest('[data-source]');if(!row||!state.project)return;const path=row.dataset.source,asset=assets().find(a=>a.path===path);if(asset?.source_available===false){e.preventDefault();return;}
+    e.dataTransfer.setData('text/anna-source',path);e.dataTransfer.effectAllowed='copy';
+    const drag=mediaDrag={path,project:state.project.id,info:state.meta.get(path)||asset,width:$('#timeline-canvas').style.width,pointer:null};
+    drag.ready=metadata(path).then(info=>{drag.info=info;if(mediaDrag===drag&&drag.pointer)updateDropPreview(drag.pointer);return info;});drag.ready.catch(error=>{if(mediaDrag===drag){clearDropPreview();fail(error);}});
+  });
+  document.addEventListener('dragend',()=>{clearDropPreview();mediaDrag=null;});
+  document.addEventListener('keydown',e=>{if(e.key==='Escape'){clearDropPreview();mediaDrag=null;}});
+  const panel=$('.project-panel'),canvas=$('#timeline-canvas');
+  for(const target of [panel,canvas]){
+    target.addEventListener('dragover',e=>{if(!state.project)return;e.preventDefault();if(target===canvas&&mediaDrag)updateDropPreview(e);else if([...e.dataTransfer.types].includes('Files'))panel.classList.add('drop-active');});
+    target.addEventListener('dragleave',e=>{if(target.contains(e.relatedTarget))return;target.classList.remove('drop-active');if(target===canvas)clearDropPreview();});
+    target.addEventListener('drop',e=>{e.preventDefault();panel.classList.remove('drop-active');if(target===canvas&&mediaDrag)updateDropPreview(e);const drag=mediaDrag,placement=drag?.preview;clearDropPreview();mediaDrag=null;
+      operation('Drop media',async()=>{if(e.dataTransfer.files.length)return importFiles(e.dataTransfer.files);if(target!==canvas||!drag||!placement)return;if(placement.error)throw placement.error;const info=await drag.ready;if(state.project?.id!==drag.project)throw new Error('Project changed during the drag');if(Math.abs(info.duration-placement.duration)>.001)throw new Error('Media duration changed. Drag the asset again.');const clips=mediaClips(drag.path,info,placement.track);edit('Media added to timeline',seq=>T.insert(seq,clips,placement.start));state.time=placement.start;chooseClip(clips[0].id);syncTransport();});
+    });
+  }
+}
 function bind(){
   document.addEventListener('click',event=>{
     const target=event.target.closest('button,[data-source],a[data-settings-nav]');
@@ -665,8 +749,10 @@ function bind(){
   });
   document.addEventListener('input',e=>{if(e.target.closest('#auto-form'))updateAutoPreview();if(e.target.dataset.settingRange){const input=$(`[name="${e.target.dataset.settingRange}"]`);input.value=e.target.value;}if(e.target.name&&state.schema[e.target.name]){const r=$(`[data-setting-range="${e.target.name}"]`);if(r)r.value=e.target.value;}});
   document.addEventListener('submit',e=>{e.preventDefault();operation('Submit',async()=>{
-    if(e.target.id==='settings-form'){const values=settingsValues();await api('/api/config',{method:'PUT',body:JSON.stringify({values,revision:state.config.revision,dry_run:true})});const result=await api('/api/config',{method:'PUT',body:JSON.stringify({values,revision:state.config.revision})});state.config={...state.config,...result.config};state.gateway='untested';renderGateway();$('#model-label').textContent=state.config.vision_model;closeDialog();renderInspector();toast('Project settings saved','ok');}
-    if(e.target.id==='analyze-form'){const form=new FormData(e.target),source=form.get('source'),stages=form.getAll('stages');if(!source||!stages.length)throw new Error('Choose a source and at least one stage');closeDialog();await startTask('/api/actions/analyze',{source,stages,refresh:form.has('refresh')},async()=>{await load();await selectAsset(source);});}
+    if(e.target.id==='new-project-form')await createProject(String(new FormData(e.target).get('name')).trim());
+    if(e.target.id==='existing-media-form'){const paths=new FormData(e.target).getAll('paths');if(!paths.length)throw new Error('Select media to add');await addAssets(paths);closeDialog();await selectAsset(paths[0]);}
+    if(e.target.id==='settings-form'){const values=settingsValues();await api('/api/config',{method:'PUT',body:JSON.stringify({values,revision:state.config.revision,dry_run:true})});const result=await api('/api/config',{method:'PUT',body:JSON.stringify({values,revision:state.config.revision})});state.config={...state.config,...result.config};state.gateway='untested';renderGateway();$('#model-label').textContent=state.config.vision_model;closeDialog();renderInspector();toast('Pipeline settings saved','ok');}
+    if(e.target.id==='analyze-form'){const form=new FormData(e.target),source=form.get('source'),stages=form.getAll('stages'),id=state.project?.id;if(!source||!stages.length)throw new Error('Choose a source and at least one stage');closeDialog();await startTask('/api/actions/analyze',{source,stages,refresh:form.has('refresh')},async()=>{await load();if(state.project?.id===id&&state.source===source)await selectAsset(source);});}
     if(e.target.id==='preview-form'){const form=new FormData(e.target),target_seconds=Number(form.get('target')),reel=e.target.dataset.reel==='true',job_ids=form.getAll('jobs');if(reel&&job_ids.length<2)throw new Error('Select at least two sources');if(!reel&&!state.job)throw new Error('Select an analyzed source');closeDialog();await saveSequence();await startTask(reel?'/api/actions/reel':jobURL('preview'),reel?{job_ids,target_seconds}:{target_seconds},async result=>{await load();if(reel){download(result.final_output.path);}else{state.programMode='preview';$('#program-mode').value='preview';state.time=0;renderProgram();}});}
     if(e.target.id==='sequence-form'){const f=new FormData(e.target),reshaped=Number(f.get('width'))/Number(f.get('height'))!==state.sequence.width/state.sequence.height;edit('Sequence format updated',s=>{s.width=Number(f.get('width'));s.height=Number(f.get('height'));s.fps=Number(f.get('fps'));});closeDialog();if(reshaped&&state.sequence.clips.some(c=>c.track[0]==='V'))toast('New aspect ratio · Auto ▸ Fill frame covers it without letterboxing','warn');}
     if(e.target.id==='auto-form')await applyAuto(e.target);
@@ -682,29 +768,53 @@ function bind(){
     e.preventDefault();operation('Keyboard edit',()=>{if(map[key]==='play')togglePlay();else if(map[key]==='reverse')shuttle(-1);else if(map[key]==='forward')shuttle(1);else if(map[key]==='pause')pause();else return actions[map[key]]();});
   });
   $('#timeline-canvas').addEventListener('pointerdown',timelinePointer);
-  $('#timeline-canvas').addEventListener('contextmenu',e=>{const el=e.target.closest('[data-clip]');if(!el)return;e.preventDefault();chooseClip(el.dataset.clip);const menu=$('#context-menu');menu.innerHTML=[['split','Split at playhead'],['delete','Delete'],['ripple','Ripple delete'],['duplicate','Duplicate'],['enable','Toggle enabled']].map(([a,l])=>button(a,l,'','role="menuitem"')).join('');menu.style.left=Math.min(e.clientX,innerWidth-210)+'px';menu.style.top=Math.min(e.clientY,innerHeight-220)+'px';menu.hidden=false;});
-  document.addEventListener('dragstart',e=>{const row=e.target.closest('[data-source]');if(row)e.dataTransfer.setData('text/anna-source',row.dataset.source);});
-  for(const target of [$('.project-panel'),$('#timeline-canvas')]){target.addEventListener('dragover',e=>{e.preventDefault();target.classList.add('drop-active');});target.addEventListener('dragleave',()=>target.classList.remove('drop-active'));target.addEventListener('drop',e=>{e.preventDefault();target.classList.remove('drop-active');operation('Drop media',async()=>{if(e.dataTransfer.files.length)return importFiles(e.dataTransfer.files);const path=e.dataTransfer.getData('text/anna-source');if(!path)return;if(target.id==='timeline-canvas'){state.source=path;state.sourceInfo=await metadata(path);state.in=0;state.out=Math.min(5,state.sourceInfo.duration);state.time=timelineAt(e);renderSource();await addSource(false);renderProject();}});});}
+  $('#timeline-canvas').addEventListener('contextmenu',e=>{const el=e.target.closest('[data-clip]');if(!el)return;e.preventDefault();if(!state.selection.has(el.dataset.clip))chooseClip(el.dataset.clip);const menu=$('#context-menu');menu.innerHTML=[['split','Split at playhead'],['delete','Delete'],['ripple','Ripple delete'],['duplicate','Duplicate'],['enable','Toggle enabled']].map(([a,l])=>button(a,l,'','role="menuitem"')).join('');menu.style.left=Math.min(e.clientX,innerWidth-210)+'px';menu.style.top=Math.min(e.clientY,innerHeight-220)+'px';menu.hidden=false;});
+  bindMediaDrag();
   document.addEventListener('visibilitychange',()=>{if(!document.hidden&&document.title.startsWith('✓'))document.title='SmartCut';});
   // Closing the desktop window stops the server, so an unsaved edit or a running render both deserve a warning.
   window.addEventListener('resize',()=>{renderTimeline();syncProgram();});window.addEventListener('beforeunload',e=>{if(state.dirty||state.tasks.some(t=>['running','queued'].includes(t.status))){e.preventDefault();e.returnValue='';}});
 }
 function timelinePointer(e){
-  if(e.button!==0||!state.sequence||e.target.closest('[data-marker]'))return;
+  if(e.button!==0||!state.sequence||e.target.closest('button,input,select,textarea,a,[contenteditable="true"]'))return;
   const el=e.target.closest('[data-clip]'),flag=e.target.closest('[data-proposal-start]');
   if(flag){const index=aiProposals().findIndex(p=>p.start===Number(flag.dataset.proposalStart));if(index>=0){pause();focusProposal(index);return;}}
-  if(!el){pause();const update=event=>seekProgram(timelineAt(event));update(e);const done=()=>{window.removeEventListener('pointermove',update);window.removeEventListener('pointerup',done);};window.addEventListener('pointermove',update);window.addEventListener('pointerup',done);return;}
-  const id=el.dataset.clip;chooseClip(id);
+  if(!el){
+    if(e.target.closest('.track-row')&&state.tool==='select'){startMarquee(e);return;}
+    pause();const update=event=>seekProgram(timelineAt(event));update(e);const done=()=>{window.removeEventListener('pointermove',update);window.removeEventListener('pointerup',done);window.removeEventListener('pointercancel',done);};window.addEventListener('pointermove',update);window.addEventListener('pointerup',done);window.addEventListener('pointercancel',done);return;
+  }
+  e.preventDefault();$('#timeline-canvas').focus({preventScroll:true});const id=el.dataset.clip;
+  if(e.shiftKey||e.ctrlKey||e.metaKey){chooseClip(id,true);return;}
+  if(!state.selection.has(id))chooseClip(id);else{state.selected=id;renderInspector();}
   if(state.tool==='razor'){seekProgram(timelineAt(e));operation('Split',()=>actions.split());return;}
-  const before=T.clone(state.sequence),original=before.clips.find(c=>c.id===id),edge=e.target.dataset.trim,startX=e.clientX,initial=timelineAt(e),scale=pps();
+  const before=T.clone(state.sequence),original=before.clips.find(c=>c.id===id),edge=e.target.dataset.trim,startX=e.clientX,startY=e.clientY,scale=pps();
   const scenes=state.job?(state.job.scene_boundaries||[]).flatMap(b=>A.sourcePoint(before,state.job.source,b)):[];
   if(T.locked(before,original.track))return;
   pause();let changedPointer=false,candidate=null,error=null;
-  const targets=T.linkedClips(before,id,state.linked).map(c=>c.id);
-  const update=event=>{if(Math.abs(event.clientX-startX)<3&&!changedPointer)return;changedPointer=true;const delta=(event.clientX-startX)/scale;candidate=T.clone(before);const pointerTrack=document.elementFromPoint(event.clientX,event.clientY)?.closest('[data-track]')?.dataset.track||original.track;
-    try{const value=edge==='start'?original.start+delta:edge==='end'?T.end(original)+delta:original.start+delta;const snapped=T.snap(candidate,value,scale,targets,state.snap,scenes);if(edge)T.trim(candidate,id,edge,snapped,state.linked);else T.move(candidate,id,snapped,pointerTrack,state.linked);error=null;const c=candidate.clips.find(c=>c.id===id);el.style.left=(c.start*scale)+'px';el.style.width=Math.max(4,T.duration(c)*scale)+'px';el.classList.remove('invalid');}catch(err){error=err;el.classList.add('invalid');}};
-  const done=()=>{window.removeEventListener('pointermove',update);window.removeEventListener('pointerup',done);if(!changedPointer)return;if(error){renderTimeline();fail(error);return;}state.undo.push(before);state.redo=[];state.sequence=candidate;changed(edge?'Clip trimmed':'Clip moved');};
-  window.addEventListener('pointermove',update);window.addEventListener('pointerup',done);
+  const ids=edge?[id]:selectedIds(),targets=T.linkedClips(before,ids,state.linked).map(c=>c.id);
+  const update=event=>{if(Math.hypot(event.clientX-startX,event.clientY-startY)<3&&!changedPointer)return;changedPointer=true;const delta=(event.clientX-startX)/scale;candidate=T.clone(before);const pointerTrack=document.elementFromPoint(event.clientX,event.clientY)?.closest('[data-track]')?.dataset.track||original.track;
+    try{const value=edge==='start'?original.start+delta:edge==='end'?T.end(original)+delta:original.start+delta;const snapped=T.snap(candidate,value,scale,targets,state.snap,scenes);if(edge)T.trim(candidate,id,edge,snapped,state.linked);else T.moveSelection(candidate,ids,id,snapped,pointerTrack,state.linked);error=null;for(const c of candidate.clips.filter(c=>targets.includes(c.id))){const node=$(`[data-clip="${c.id}"]`);node.style.left=(c.start*scale)+'px';node.style.width=Math.max(4,T.duration(c)*scale)+'px';$(`[data-track="${c.track}"]`).append(node);}el.classList.remove('invalid');}catch(err){error=err;el.classList.add('invalid');}};
+  const done=event=>{window.removeEventListener('pointermove',update);window.removeEventListener('pointerup',done);window.removeEventListener('pointercancel',done);window.removeEventListener('keydown',cancel);if(event?.type==='pointercancel'||event?.key==='Escape'){renderTimeline();return;}if(!changedPointer){chooseClip(id);return;}if(error){renderTimeline();fail(error);return;}state.undo.push(before);state.redo=[];state.sequence=candidate;changed(edge?'Clip trimmed':'Clips moved');};
+  const cancel=event=>{if(event.key==='Escape')done(event);};
+  window.addEventListener('pointermove',update);window.addEventListener('pointerup',done);window.addEventListener('pointercancel',done);window.addEventListener('keydown',cancel);
+}
+
+function startMarquee(e){
+  e.preventDefault();pause();state.focus='program';const canvas=$('#timeline-canvas'),scroller=$('#timeline-scroll');canvas.focus({preventScroll:true});
+  const point=event=>{const r=canvas.getBoundingClientRect();return {x:Math.max(0,event.clientX-r.left),y:Math.max(0,event.clientY-r.top)};};
+  const origin=point(e),before=new Set(state.selection),add=e.shiftKey||e.ctrlKey||e.metaKey;let active=false,box=null,last=e,frame=0;
+  const update=event=>{last=event;const p=point(event);if(!active&&Math.hypot(p.x-origin.x,p.y-origin.y)<3)return;active=true;
+    if(!box){box=document.createElement('div');box.className='timeline-marquee';box.setAttribute('aria-hidden','true');canvas.append(box);}
+    const bounds={left:Math.min(origin.x,p.x),right:Math.max(origin.x,p.x),top:Math.min(origin.y,p.y),bottom:Math.max(origin.y,p.y)},r=canvas.getBoundingClientRect();
+    Object.assign(box.style,{left:bounds.left+'px',top:bounds.top+'px',width:(bounds.right-bounds.left)+'px',height:(bounds.bottom-bounds.top)+'px'});
+    const ids=add?new Set(before):new Set();for(const node of $$('[data-clip]',canvas)){const b=node.getBoundingClientRect();if(T.intersects(bounds,{left:b.left-r.left,right:b.right-r.left,top:b.top-r.top,bottom:b.bottom-r.top}))ids.add(node.dataset.clip);}
+    state.selection=ids;paintSelection();renderInspector();
+  };
+  const scroll=()=>{if(active){const r=scroller.getBoundingClientRect(),left=scroller.scrollLeft,top=scroller.scrollTop;scroller.scrollLeft+=last.clientX>r.right-24?10:last.clientX<r.left+24?-10:0;scroller.scrollTop+=last.clientY>r.bottom-20?8:last.clientY<r.top+20?-8:0;if(left!==scroller.scrollLeft||top!==scroller.scrollTop)update(last);}frame=requestAnimationFrame(scroll);};
+  const done=event=>{cancelAnimationFrame(frame);box?.remove();window.removeEventListener('pointermove',update);window.removeEventListener('pointerup',done);window.removeEventListener('pointercancel',done);window.removeEventListener('keydown',cancel);
+    if(event.type==='pointercancel'||event.key==='Escape')state.selection=before;else if(!active&&!add)state.selection.clear();paintSelection();renderInspector();if(!active&&event.type==='pointerup')seekProgram(timelineAt(event));
+  };
+  const cancel=event=>{if(event.key==='Escape')done(event);};
+  window.addEventListener('pointermove',update);window.addEventListener('pointerup',done);window.addEventListener('pointercancel',done);window.addEventListener('keydown',cancel);frame=requestAnimationFrame(scroll);
 }
 
 shell();bind();applyThemeNow();syncToggles();

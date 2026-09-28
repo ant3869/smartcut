@@ -26,3 +26,6 @@ installed Node can run the same checks without installing anything.
 `config.json`, work/jobs, media, renders, and `.agent/CONTINUITY.md` are local state.
 Do not commit credentials or real source media. Sequence edits use separate
 `sequence.json` files; reviewer feedback retains the original source-time shape.
+Editing projects live in `work/projects/<id>/project.json` plus `sequence.json`;
+their assets and timelines are independent of source analysis jobs. Project renders
+live in `vault/projects/<id>/`. Import and manual editing must work without analysis.

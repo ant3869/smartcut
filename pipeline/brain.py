@@ -241,17 +241,18 @@ class PipelineBrain:
         write_json(job / "source_fingerprint.json", fingerprint)
         return {"path": str(path), "segments": len(transcript.segments), "source": str(source)}
 
-    def render_edit(self, source: Path, sequence, *, progress=None) -> dict:
+    def render_edit(self, source: Path, sequence, *, progress=None, project_dir: Path | None = None) -> dict:
         report = progress or (lambda stage, percent: None)
         report("Verifying source media", 10)
         for media in {c.source: c.source_sha256 for c in sequence.clips}.items():
             if source_fingerprint(Path(media[0]))["sha256"] != media[1]:
                 raise PipelineError("Sequence media changed; re-import before rendering")
-        job = self.job_dir(source)
-        root = self.output_dir / job.name
-        final = root / f"{source.stem}_sequence.mp4"
+        job = project_dir or self.job_dir(source)
+        root = self.output_dir / ("projects" if project_dir else "") / job.name
+        stem = "timeline" if project_dir else source.stem
+        final = root / f"{stem}_sequence.mp4"
         bumper = Path(self.config["bumper_path"]) if self.config.get("bumper_path") else None
-        content = root / f"{source.stem}_sequence_content.mp4" if bumper else final
+        content = root / f"{stem}_sequence_content.mp4" if bumper else final
         report("Blade · compositing sequence", 30)
         self.blade.render_sequence(sequence, content, watermark=self._watermark())
         if bumper:

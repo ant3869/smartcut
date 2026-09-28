@@ -6,9 +6,11 @@ export const sequenceDuration = sequence => Math.max(0, ...sequence.clips.map(en
 export const uid = () => crypto.randomUUID().slice(0, 12);
 export const locked = (sequence, track) => sequence.tracks.find(t => t.id === track)?.locked;
 export function linkedClips(sequence, id, linked = true) {
-  const clip = sequence.clips.find(c => c.id === id);
-  if (!clip) throw new Error('Select a clip first');
-  return sequence.clips.filter(c => c.id === id || (linked && clip.link_id && c.link_id === clip.link_id));
+  const ids = new Set(Array.isArray(id) ? id : [id]);
+  const selected = sequence.clips.filter(c => ids.has(c.id));
+  if (!selected.length) throw new Error('Select a clip first');
+  const links = new Set(linked ? selected.map(c=>c.link_id).filter(Boolean) : []);
+  return sequence.clips.filter(c => ids.has(c.id) || links.has(c.link_id));
 }
 function editable(sequence, clips) {
   if (clips.some(c => locked(sequence, c.track))) throw new Error('Unlock the affected track first');
@@ -39,6 +41,19 @@ export function split(sequence, id, time, linked = true) {
 export function remove(sequence, id, ripple = false, linked = true) {
   const targets = linkedClips(sequence, id, linked);
   editable(sequence, targets);
+  if (Array.isArray(id)) {
+    if (!ripple) {const ids=new Set(targets.map(c=>c.id));sequence.clips=sequence.clips.filter(c=>!ids.has(c.id));return validate(sequence);}
+    const spans=targets.map(c=>[c.start,end(c)]).sort((a,b)=>a[0]-b[0]),merged=[];
+    for(const [a,b] of spans){const last=merged.at(-1);if(last&&a<=last[1]+.001)last[1]=Math.max(last[1],b);else merged.push([a,b]);}
+    const ids=new Set(targets.map(c=>c.id));sequence.clips=sequence.clips.filter(c=>!ids.has(c.id));
+    for(const [a,b] of merged.reverse()){
+      if(sequence.clips.some(c=>c.start<b-.001&&end(c)>a+.001))throw new Error('Another clip crosses this ripple range. Split it or use Delete.');
+      editable(sequence,sequence.clips.filter(c=>c.start>=b-.001));
+      sequence.clips.filter(c=>c.start>=b-.001).forEach(c=>c.start-=b-a);
+      sequence.markers.forEach(m=>{m.time=m.time>=b?m.time-(b-a):m.time>a?a:m.time;});
+    }
+    return validate(sequence);
+  }
   const clip = sequence.clips.find(c => c.id === id), start = clip.start, finish = end(clip), delta = duration(clip);
   const ids = new Set(targets.map(c => c.id));
   if (ripple) {
@@ -55,9 +70,12 @@ export function remove(sequence, id, ripple = false, linked = true) {
 export function duplicate(sequence, id, linked = true) {
   const targets = linkedClips(sequence,id,linked);
   editable(sequence,targets);
-  const link = uid(), finish = Math.max(...sequence.clips.map(end));
+  const links = new Map(), finish = Math.max(...sequence.clips.map(end));
   const base = Math.min(...targets.map(c => c.start));
-  targets.forEach(c => sequence.clips.push({...c,id:uid(),link_id:linked ? link : null,start:finish+c.start-base}));
+  targets.forEach(c => {
+    if(linked&&c.link_id&&!links.has(c.link_id))links.set(c.link_id,uid());
+    sequence.clips.push({...c,id:uid(),link_id:linked ? links.get(c.link_id)||null : null,start:finish+c.start-base});
+  });
   return validate(sequence);
 }
 export function trim(sequence, id, edge, time, linked = true) {
@@ -81,6 +99,31 @@ export function move(sequence, id, time, track, linked = true) {
   for (const c of targets) { c.start += delta; if(c.id===id)c.track=track; }
   return validate(sequence);
 }
+export function moveSelection(sequence, ids, anchorId, time, track, linked=true) {
+  const targets=linkedClips(sequence,ids,linked),anchor=targets.find(c=>c.id===anchorId);
+  if(!anchor)throw new Error('Select a clip first');
+  editable(sequence,targets);
+  if(track[0]!==anchor.track[0])throw new Error('Move video between V tracks and audio between A tracks');
+  const delta=time-anchor.start,trackDelta=Number(track[1])-Number(anchor.track[1]);
+  for(const c of targets){
+    // Linked audio keeps its track when moving a video clip between picture tracks.
+    const destination=c.track[0]===anchor.track[0]?c.track[0]+(Number(c.track[1])+trackDelta):c.track;
+    if(!sequence.tracks.some(t=>t.id===destination)||locked(sequence,destination))throw new Error('Selection does not fit on the destination tracks');
+    c.start+=delta;c.track=destination;
+  }
+  return validate(sequence);
+}
+export function dropPlacement(sequence,time,duration,pixelsPerSecond,enabled=true,extra=[]) {
+  time=Math.max(0,time);if(!enabled)return {start:time,snap:null};
+  const points=[0,...extra,...sequence.markers.map(m=>m.time),...sequence.clips.flatMap(c=>[c.start,end(c)])];
+  let best={start:time,snap:null},distance=8/pixelsPerSecond;
+  for(const edge of [0,duration])for(const point of points){
+    const delta=Math.abs(point-time-edge),start=point-edge;
+    if(start>=0&&delta<=distance&&(delta<distance||best.snap===null)){best={start,snap:point};distance=delta;}
+  }
+  return best;
+}
+export function intersects(a,b){return a.left<=b.right&&a.right>=b.left&&a.top<=b.bottom&&a.bottom>=b.top;}
 export function insert(sequence, clips, time, overwrite = false) {
   const span = Math.max(...clips.map(duration));
   const tracks = new Set(clips.map(c=>c.track));
