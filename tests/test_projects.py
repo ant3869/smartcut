@@ -146,6 +146,34 @@ def test_removing_last_external_project_asset_revokes_file_access(workspace, tmp
     assert client.get("/api/media", params={"path": str(external)}).status_code == 403
 
 
+def test_tasks_expose_live_stage_and_timing(workspace, monkeypatch):
+    from pipeline import web
+
+    client, path, cfg, source = workspace
+    clock = iter(f"2026-09-28T07:00:{second:02d}+00:00" for second in range(60))
+    monkeypatch.setattr(web, "utc_now", lambda: next(clock))
+    queued = []
+    monkeypatch.setattr(web, "submit_task", queued.append)
+    seen = []
+
+    def fake_analyze(self, source, *, refresh=False, stages=None, progress=None):
+        progress("Eye · judging frames (2/4)", 42)
+        seen.append(client.get("/api/tasks").json()[0])
+        return {"ok": True}
+
+    monkeypatch.setattr(web.PipelineBrain, "analyze", fake_analyze)
+    task = client.post("/api/actions/analyze", json={"source": str(source)}).json()
+    assert task["status"] == "queued" and task["updated_at"] == task["created_at"]
+
+    queued[0]()
+
+    during = seen[0]
+    assert (during["status"], during["stage"], during["progress"]) == ("running", "Eye · judging frames (2/4)", 42)
+    assert during["created_at"] < during["started_at"] < during["updated_at"]
+    finished = client.get(f"/api/tasks/{task['id']}").json()
+    assert finished["status"] == "succeeded" and finished["completed_at"] > during["updated_at"]
+
+
 def test_projects_render_and_export_to_separate_outputs(workspace, monkeypatch):
     from pipeline import web
 

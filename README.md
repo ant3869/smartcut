@@ -190,7 +190,9 @@ Analysis jobs and source-time review decisions remain separate from each project
   zoom slider fits the whole sequence at its default setting and reaches 1/32× to 64×.
 - **Inspector**: per-clip effects (speed, gain, opacity, scale, position, rotation, fit/fill frame);
   **Review** with the AI summary, the proposal queue, your decisions, nearby evidence and the transcript;
-  **Pipeline** with per-stage settings and background tasks.
+  **Pipeline** with per-stage settings and background tasks. Each task shows its live stage (with
+  frame and story-section counts during Eye), elapsed time and how long since it last reported
+  progress; after 3 minutes without progress it is flagged as slow rather than silently waiting.
 
 **Review** turns every model cut proposal into an accept/reject queue (`N` next, `A` accept, `X`
 reject, `P` audition with pre-roll). Answers become the same hash-bound Keep/Cut/Protect decisions as

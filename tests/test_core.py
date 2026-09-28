@@ -1468,6 +1468,57 @@ def test_truncated_batch_halves_and_retries(tmp_path):
     assert set(calls) == {4, 2, 1}
 
 
+class _OpenCapture:
+    def isOpened(self):
+        return True
+
+    def release(self):
+        pass
+
+
+def test_eye_reports_frame_progress_after_each_batch(tmp_path, monkeypatch):
+    from pipeline import eye as eye_module
+
+    vision = VisionEye(base_url="http://127.0.0.1:1234/v1", model="test-model", interval=2.0,
+                       cache_dir=tmp_path, max_width=512, batch_size=2)
+    vision._check_server = lambda: None
+    vision._ask_batch = lambda frames, prompt, *, frame_hints=None, transcript_segments=None: [{
+        "timestamp": ts, "score": 7.0, "description": "ok", "keep": True,
+        "dark": False, "cull_reason": "", "confidence": 0.9,
+    } for ts, _ in frames]
+    monkeypatch.setattr(eye_module.cv2, "VideoCapture", lambda source: _OpenCapture())
+    monkeypatch.setattr(eye_module, "media_duration", lambda source: 6.0)
+    monkeypatch.setattr(eye_module, "read_frame_with_tail_fallback",
+                        lambda cap, timestamp: (timestamp, np.zeros((32, 18, 3), dtype=np.uint8)))
+    source = tmp_path / "source.mp4"
+    source.write_bytes(b"video")
+    updates = []
+
+    vision.analyze(source, progress=lambda done, total: updates.append((done, total)))
+
+    assert updates == [(0, 4), (2, 4), (4, 4)]
+
+
+def test_story_map_reports_section_progress(tmp_path, monkeypatch):
+    from pipeline import eye as eye_module
+
+    eye = VisionEye(base_url="http://localhost/v1", model="test-model", interval=2.0, cache_dir=tmp_path)
+    eye._check_server = lambda: None
+    eye._ask_section_summary = lambda frames, start, end, **kwargs: {
+        "section_type": "performance", "editorial_action": "keep_candidate", "summary": "ok", "confidence": 0.9}
+    monkeypatch.setattr(eye_module.cv2, "VideoCapture", lambda source: _OpenCapture())
+    monkeypatch.setattr(eye_module, "read_frame_with_tail_fallback",
+                        lambda cap, timestamp: (timestamp, np.zeros((32, 32, 3), dtype=np.uint8)))
+    updates = []
+
+    eye.summarize_sections(tmp_path / "source.mp4", duration=10.0, cache_path=tmp_path / "sections.json",
+                           sections=[{"index": 0, "start_seconds": 0, "end_seconds": 5},
+                                     {"index": 1, "start_seconds": 5, "end_seconds": 10}],
+                           progress=lambda done, total: updates.append((done, total)))
+
+    assert updates == [(0, 2), (1, 2), (2, 2)]
+
+
 def test_truncated_single_frame_still_raises(tmp_path):
     from pipeline import eye as eye_module
 
