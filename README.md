@@ -65,7 +65,10 @@ Double-click **SmartCut** on the desktop. The first launch writes `config.json` 
 
 Projects save their assets and timeline independently under `work/projects/<id>/`; selecting another
 asset only changes the Source monitor. Removing an unused asset from a project keeps its original
-file. Pipeline settings are shared across projects; resolution and frame rate belong to each sequence.
+file. An imported asset stays usable after its original analysis job is cleaned up, including media
+outside the configured inbox. A missing file is marked **Offline**; restore it at its saved path
+before analyzing it. Analyze only lists available video assets. Pipeline settings are shared across
+projects; resolution and frame rate belong to each sequence.
 
 `install-desktop.ps1 -StartMenu` also adds a Start menu entry. If PowerShell blocks the scripts, run
 them as `powershell -ExecutionPolicy Bypass -File .\setup.ps1`.
@@ -173,7 +176,8 @@ The Cutroom is a compact multitrack editor with persisted project and sequence A
 Analysis jobs and source-time review decisions remain separate from each project’s `sequence.json`:
 
 - **Project panel**: New/Open project, project-scoped import and assets, type filters, search,
-  list/icon views, and reel selection. Analysis is optional for importing, editing and rendering.
+  list/icon views, offline status, and reel selection. Analysis is optional for importing, editing
+  and rendering; the Analyze dialog only offers available project videos.
 - **Source and Program monitors**: frame-accurate transport, J/K/L shuttle, a source-time evidence
   minimap, live captions from the transcript, and the AI verdict for the frame under the playhead.
 - **Timeline**: V2/V1/A1/A2 tracks with filmstrips and waveforms; AI score/flag and transcript lanes
