@@ -12,6 +12,14 @@ from .util import PipelineError, write_json
 
 EXAMPLE_CONFIG = Path(__file__).resolve().parents[1] / "config.example.json"
 FOLDER_KEYS = ("input_dir", "work_dir", "analysis_dir", "output_dir")
+DEFAULT_GATEWAY_URL = "http://127.0.0.1:1234/v1"
+# eye.SECTION_SETUP_CLAUSE, spelled out so the launcher never imports OpenCV (a test keeps them equal).
+DEFAULT_SECTION_POLICY = (
+    "Prefer removing pre-roll and technical setup before the intended scene begins. "
+    "When the section-local transcript visibly discusses recording, camera/framing, checking how it looks, "
+    "or moving/positioning for the camera, classify the whole section as setup and cut_candidate even if "
+    "the frames include otherwise usable content."
+)
 
 
 def field(group, default, *, minimum=None, maximum=None, step=None, options=None, kind=None):
@@ -22,8 +30,8 @@ def field(group, default, *, minimum=None, maximum=None, step=None, options=None
 
 SETTINGS = {
     **{key: field("Project", "", kind="path") for key in ("input_dir", "work_dir", "analysis_dir", "output_dir")},
-    "lm_studio_url": field("Connection", "http://127.0.0.1:20128/v1"),
-    "vision_model": field("Connection", "meta/muse-spark-1.3-contributor", options=["meta/muse-spark-1.3-contributor", "minicpm-v-4_5"], kind="model"),
+    "lm_studio_url": field("Connection", DEFAULT_GATEWAY_URL),
+    "vision_model": field("Connection", "minicpm-v-4_5", options=["meta/muse-spark-1.3-contributor", "minicpm-v-4_5"], kind="model"),
     "vision_api_key": field("Connection", "", kind="password"),
     "caption_model": field("Voice", None, kind="model"),
     "whisper_model": field("Ear", "base", options=["tiny", "base", "small", "medium", "large-v3", "large-v3-turbo"], kind="model"),
@@ -46,7 +54,7 @@ SETTINGS = {
     "multi_pass_max_candidates": field("Temporal & multi-pass", 32, minimum=1, maximum=256, step=1),
     "multi_pass_boundary_context_seconds": field("Temporal & multi-pass", 1.0, minimum=.1, maximum=30, step=.1),
     "multi_pass_apply_cuts": field("Temporal & multi-pass", False),
-    "multi_pass_editorial_policy": field("Temporal & multi-pass", "Prefer removing pre-roll and technical setup before the intended scene begins.", kind="textarea"),
+    "multi_pass_editorial_policy": field("Temporal & multi-pass", DEFAULT_SECTION_POLICY, kind="textarea"),
     "full_edit_min_segment_seconds": field("Brain", .5, minimum=.04, maximum=30, step=.01),
     "waste_padding_seconds": field("Brain", .75, minimum=0, maximum=10, step=.05),
     "waste_terms": field("Brain", [], kind="list"),

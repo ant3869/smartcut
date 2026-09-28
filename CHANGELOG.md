@@ -5,6 +5,20 @@ All notable changes to this project are documented here. The project follows
 
 ## [Unreleased]
 
+### Fixed
+
+- Pipeline settings now show the defaults analysis actually uses when a key is missing from
+  `config.json`: gateway `http://127.0.0.1:1234/v1`, `minicpm-v-4_5`, and the full setup-section
+  editorial policy. Previously the dialog showed a different gateway port and a shortened policy,
+  and saving the dialog wrote the shortened policy back.
+- An upload interrupted by closing the window or a dropped connection no longer leaves a truncated
+  media file in the inbox; uploads stream to a `.part` file and are renamed only when complete.
+- EDL exports are titled `SMARTCUT` instead of the old `ANNA CUTROOM`.
+
+### Removed
+
+- The unused `watch` extra (`watchdog`); nothing imported it.
+
 ## [0.6.1] - 2026-09-28
 
 ### Fixed
