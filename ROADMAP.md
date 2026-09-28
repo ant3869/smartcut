@@ -9,12 +9,15 @@ building the frontend. The riskiest assumption is that sparse frame observations
 capture temporal intent; the roadmap replaces that assumption with multi-frame evidence and
 human feedback rather than stacking more brittle keywords.
 
-## Current baseline - v0.5.1
+## Current baseline - v0.5.2
 
 - Cutroom is a multitrack editor on a persisted `sequence.json` (V2/V1/A1/A2, trim/split/ripple,
   effects, undo), with an AI proposal queue, one-step Auto-edit, and EDL/CSV/OTIO/SRT/MP4 export.
 - Project media stays available by its saved path after the analysis job is removed; missing video
   is marked offline and excluded from Analyze.
+- Story-map section summaries and Voice captions retry when a reasoning model exhausts its output
+  budget; unusable section replies become manual-review sections and an unusable caption stays
+  blank. Timeline zoom fits the whole edit and reaches 1/32×.
 - SmartCut desktop launcher: `SmartCut.exe` and a desktop shortcut open the Cutroom in
   its own window and stop every process when it closes.
 

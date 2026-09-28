@@ -21,6 +21,13 @@ test('drop preview snaps either boundary within eight screen pixels at each zoom
   assert.deepEqual(T.dropPlacement(s,5.03,2,100,false,[7]),{start:5.03,snap:null});
   assert.deepEqual(T.dropPlacement(s,0,2,100,true),{start:0,snap:0});
 });
+test('zoom fits a long sequence and can pull back far beyond fit',()=>{
+  const viewport=800, seconds=1800;
+  const fit=T.pixelsPerSecond(viewport,seconds);
+  assert.ok(seconds*fit+60<=viewport);
+  assert.ok(seconds*T.pixelsPerSecond(viewport,seconds,1/32)<25);
+  assert.equal(T.pixelsPerSecond(viewport,seconds,64),fit*64);
+});
 test('marquee intersection includes partial hits on any track and excludes separated boxes',()=>{
   const box={left:10,right:20,top:10,bottom:80};
   assert.ok(T.intersects(box,{left:0,right:11,top:30,bottom:50}));

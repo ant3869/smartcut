@@ -116,7 +116,7 @@ function shell(){
         </section>
       </section>
       <aside class="panel inspector-panel" aria-label="Inspector"><div class="inspector-tabs" role="tablist">${[['effects','Effects','sliders-horizontal'],['review','Review','list-checks'],['pipeline','Pipeline','workflow']].map(([key,label,name])=>`<button role="tab" aria-selected="${key==='effects'}" data-tab="${key}">${icon(name)}<span>${label}</span></button>`).join('')}</div><div id="inspector-content"></div></aside>
-      <section class="panel timeline-panel" aria-label="Timeline"><div class="timeline-heading"><h2>${icon('clapperboard')}Sequence <span id="sequence-name">01</span></h2><div class="timeline-tools">${button('select-tool',icon('mouse-pointer-2'),'icon-button active','title="Selection tool · V" aria-label="Selection tool"')}${button('razor-tool',icon('scissors'),'icon-button','title="Razor tool" aria-label="Razor tool"')}${button('split',withIcon('scissors-line-dashed','Split'),'quiet','title="Split at playhead · C"')}${button('ripple',withIcon('arrow-left-to-line','Ripple'),'quiet','title="Ripple delete · Shift+Delete"')}<span class="transport-divider"></span>${button('snap',withIcon('magnet','Snap'),'quiet active','aria-pressed="true"')}${button('linked',withIcon('link','Linked'),'quiet active','aria-pressed="true"')}${button('toggle-lanes',withIcon('sparkles','AI lanes'),`quiet ${state.prefs.lanes?'active':''}`,`aria-pressed="${state.prefs.lanes}" title="Show AI scores, flags, scenes and transcript on the timeline"`)}${button('undo',icon('undo-2'),'icon-button','aria-label="Undo" title="Undo · Ctrl+Z"')}${button('redo',icon('redo-2'),'icon-button','aria-label="Redo" title="Redo · Ctrl+Y"')}<label class="zoom-control">${icon('zoom-out')}<input type="range" id="timeline-zoom" aria-label="Timeline zoom" min="1" max="60" step=".25" value="1">${icon('zoom-in')}</label>${button('save',withIcon('save','Save'),'quiet','title="Save sequence · Ctrl+S"')}</div></div>
+      <section class="panel timeline-panel" aria-label="Timeline"><div class="timeline-heading"><h2>${icon('clapperboard')}Sequence <span id="sequence-name">01</span></h2><div class="timeline-tools">${button('select-tool',icon('mouse-pointer-2'),'icon-button active','title="Selection tool · V" aria-label="Selection tool"')}${button('razor-tool',icon('scissors'),'icon-button','title="Razor tool" aria-label="Razor tool"')}${button('split',withIcon('scissors-line-dashed','Split'),'quiet','title="Split at playhead · C"')}${button('ripple',withIcon('arrow-left-to-line','Ripple'),'quiet','title="Ripple delete · Shift+Delete"')}<span class="transport-divider"></span>${button('snap',withIcon('magnet','Snap'),'quiet active','aria-pressed="true"')}${button('linked',withIcon('link','Linked'),'quiet active','aria-pressed="true"')}${button('toggle-lanes',withIcon('sparkles','AI lanes'),`quiet ${state.prefs.lanes?'active':''}`,`aria-pressed="${state.prefs.lanes}" title="Show AI scores, flags, scenes and transcript on the timeline"`)}${button('undo',icon('undo-2'),'icon-button','aria-label="Undo" title="Undo · Ctrl+Z"')}${button('redo',icon('redo-2'),'icon-button','aria-label="Redo" title="Redo · Ctrl+Y"')}<label class="zoom-control">${icon('zoom-out')}<input type="range" id="timeline-zoom" aria-label="Timeline zoom" min="-5" max="6" step=".1" value="0" title="Timeline zoom · 1/32× to 64×">${icon('zoom-in')}</label>${button('save',withIcon('save','Save'),'quiet','title="Save sequence · Ctrl+S"')}</div></div>
         <div class="timeline-body"><div class="track-headers"><div class="ruler-head" id="timeline-time">00:00:00:00</div><div id="track-headers"></div></div><div class="timeline-scroll" id="timeline-scroll"><div id="timeline-canvas" tabindex="0" aria-label="Timeline tracks"></div></div></div>
         <footer class="timeline-footer"><span id="timeline-summary">Select a sequence to start editing</span><span>Space Play &nbsp; C Split &nbsp; I / O Mark &nbsp; N Next AI proposal &nbsp; ? Shortcuts</span></footer>
       </section>
@@ -169,7 +169,7 @@ async function openProjectDialog(){await load();openDialog(`${dialogHead('PROJEC
 async function openProject(id){
   await saveSequence();const project=await api('/api/projects/'+encodeURIComponent(id));pause();clearError();
   state.selectionRequest++;state.project=project;state.sequence=project.sequence;state.fitDuration=Math.max(10,T.sequenceDuration(project.sequence));state.source=null;state.sourceInfo=null;state.job=null;state.selected=null;state.selection.clear();state.checked.clear();state.undo=[];state.redo=[];state.dirty=false;state.time=0;state.zoom=1;state.search='';state.bin='all';state.programMode='sequence';
-  $('#media-search').value='';$('#timeline-zoom').value=1;$('#program-mode').value='sequence';$('#timeline-scroll').scrollLeft=0;
+  $('#media-search').value='';$('#timeline-zoom').value=0;$('#program-mode').value='sequence';$('#timeline-scroll').scrollLeft=0;
   try{localStorage.setItem('smartcut.project',id);}catch{}
   renderProject();renderSource();renderProgram();renderTimeline();renderInspector();renderSourceEvidence();updateTitles();
   if(project.assets[0])await selectAsset(project.assets[0].path);
@@ -306,10 +306,12 @@ function pps(){return state.timelineScale||2;}
 function renderTimeline(){
   const seq=state.sequence,seconds=Math.max(10,seq?T.sequenceDuration(seq):60);
   // Keep one scale for the rendered canvas and every pointer calculation.
-  const scale=state.timelineScale=Math.max(2,(($('#timeline-scroll')?.clientWidth||800)-32)/(state.fitDuration||seconds))*state.zoom,width=Math.max($('#timeline-scroll').clientWidth-2,seconds*scale+60);
+  const viewport=$('#timeline-scroll').clientWidth||800;
+  const scale=state.timelineScale=T.pixelsPerSecond(viewport,Math.max(seconds,state.fitDuration||0),state.zoom);
+  const width=Math.max(viewport-2,seconds*scale+60);
   const lanes=state.prefs.lanes&&!!seq&&!!state.job?.observations?.length;$('.timeline-body').classList.toggle('lanes',lanes);
   $('#track-headers').innerHTML=(lanes?'<div class="lane-header" title="AI frame scores, flagged spans and scene changes"><strong>AI</strong><span>score · flags</span></div><div class="lane-header" title="Transcript mapped through your edit"><strong>TX</strong><span>transcript</span></div>':'')+(seq?.tracks||['V2','V1','A1','A2'].map(id=>({id}))).map(t=>`<div class="track-header ${t.id[0]==='A'?'audio':''}"><strong>${t.id}</strong><span>${t.id==='V2'?'Overlay':t.id==='V1'?'Picture':t.id==='A1'?'Source audio':'Music / audio'}</span><button data-track-mute="${t.id}" aria-pressed="${!!t.muted}" aria-label="${t.id[0]==='A'?'Mute':'Hide'} ${t.id}" title="${t.id[0]==='A'?'Mute':'Hide'} ${t.id}" class="${t.muted?'active':''}">${icon(t.id[0]==='A'?(t.muted?'volume-x':'volume-2'):(t.muted?'eye-off':'eye'))}</button><button data-track-lock="${t.id}" aria-pressed="${!!t.locked}" aria-label="Lock ${t.id}" title="Lock ${t.id}" class="${t.locked?'active':''}">${icon(t.locked?'lock':'lock-open')}</button></div>`).join('');
-  const step=[1,2,5,10,15,30,60,120,300].find(s=>s*scale>=65)||600;
+  const step=[1,2,5,10,15,30,60,120,300].find(s=>s*scale>=65)||Math.ceil(65/(600*scale))*600;
   const ticks=Array.from({length:Math.ceil(seconds/step)+1},(_,i)=>`<span class="ruler-tick" style="left:${i*step*scale}px">${short(i*step)}</span>`).join('');
   $('#timeline-canvas').style.width=width+'px';
   $('#timeline-canvas').innerHTML=`<div class="ruler" data-scrub>${ticks}${(seq?.markers||[]).map(m=>`<button class="marker" data-marker="${esc(m.id)}" title="${esc(m.label)}" aria-label="Marker: ${esc(m.label)}" style="left:${m.time*scale}px"></button>`).join('')}</div>`+(lanes?aiLanes(seq,scale):'')+
@@ -485,7 +487,7 @@ function editPoint(direction){
 }
 function setZoom(value,anchor=null){
   const scroller=$('#timeline-scroll'),old=pps(),offset=anchor??Math.max(0,state.time*old-scroller.scrollLeft),time=(scroller.scrollLeft+offset)/old;
-  state.zoom=Math.max(1,Math.min(60,value));$('#timeline-zoom').value=state.zoom;renderTimeline();scroller.scrollLeft=Math.max(0,time*pps()-offset);
+  state.zoom=Math.max(1/32,Math.min(64,value));$('#timeline-zoom').value=Math.log2(state.zoom);renderTimeline();scroller.scrollLeft=Math.max(0,time*pps()-offset);
 }
 function markerDialog(id){
   const m=state.sequence?.markers.find(x=>x.id===id);if(!m)return;
@@ -739,7 +741,7 @@ function bind(){
   $('#source-scrub').addEventListener('input',e=>seekSource(Number(e.target.value)));
   $('#source-evidence').addEventListener('pointerdown',e=>{if(e.button!==0||!state.job?.duration)return;const strip=e.currentTarget,seek=event=>{const r=strip.getBoundingClientRect();seekSource((event.clientX-r.left)/r.width*state.job.duration);};pause();seek(e);strip.setPointerCapture(e.pointerId);strip.onpointermove=seek;strip.onpointerup=()=>{strip.onpointermove=null;};});
   $('#program-scrub').addEventListener('input',e=>seekProgram(Number(e.target.value)));
-  $('#timeline-zoom').addEventListener('input',e=>{state.zoom=Number(e.target.value);renderTimeline();});
+  $('#timeline-zoom').addEventListener('input',e=>setZoom(2**Number(e.target.value)));
   $('#timeline-scroll').addEventListener('scroll',e=>{$('.track-headers').scrollTop=e.target.scrollTop;},{passive:true});
   $('#timeline-scroll').addEventListener('wheel',e=>{if(!(e.ctrlKey||e.altKey))return;e.preventDefault();setZoom(state.zoom*(e.deltaY<0?1.25:.8),e.clientX-e.currentTarget.getBoundingClientRect().left);},{passive:false});
   $('#timeline-canvas').addEventListener('dblclick',e=>{const marker=e.target.closest('[data-marker]');if(marker)markerDialog(marker.dataset.marker);});

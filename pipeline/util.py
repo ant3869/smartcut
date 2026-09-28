@@ -117,6 +117,24 @@ def post_json_with_retry(
     raise PipelineError(f"POST {url} failed after {tries} tries: {last}")
 
 
+def completion_texts(message: Any) -> list[str]:
+    """Return every non-empty answer text in an OpenAI-style chat message.
+
+    Reasoning models can spend their whole budget thinking and leave `content`
+    empty or null; some gateways put the answer in a reasoning field or a list
+    of text parts instead.
+    """
+    if not isinstance(message, dict):
+        return []
+    fields = [message.get(key) for key in ("content", "reasoning_content", "reasoning", "analysis")]
+    texts = [value for value in fields if isinstance(value, str) and value.strip()]
+    for value in fields:
+        if isinstance(value, list):
+            texts.extend(part["text"] for part in value
+                         if isinstance(part, dict) and isinstance(part.get("text"), str))
+    return texts
+
+
 def require_distinct(output: Path, *inputs: Path) -> None:
     resolved = output.expanduser().resolve()
     if any(resolved == item.expanduser().resolve() for item in inputs):
