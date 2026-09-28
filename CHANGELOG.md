@@ -5,6 +5,49 @@ All notable changes to this project are documented here. The project follows
 
 ## [Unreleased]
 
+### Added
+
+- **SmartCut desktop app**: `install-desktop.ps1` builds `SmartCut.exe` (from `packaging/SmartCut.cs`,
+  using the C# compiler that ships with Windows) and puts a SmartCut shortcut on the desktop
+  (`-StartMenu` adds a Start menu entry). `pipeline/launcher.py` starts the server without a console,
+  opens the Cutroom as an Edge/Chrome app window with its own persistent profile, and stops the server
+  when the window closes. It reuses a running server, reports startup failures with the server log
+  tail, and falls back to the default browser (`--browser`, `SMARTCUT_BROWSER`, `--port`).
+- `pipeline/lifecycle.py`: the launcher and web server put themselves in a kill-on-close Windows Job
+  Object, so closing the window, Ctrl+C, a crash, or a Task Manager kill also ends every FFmpeg,
+  ffprobe, server and window process they started. Explorer windows opened from the app break away
+  and stay open.
+- First run writes `config.json` from `config.example.json`, anchoring its folders inside the project.
+- SmartCut branding: the logo mark is the favicon, the Cutroom header brand, and the exe/shortcut icon;
+  the README opens with the logo and shows the features graphic (`docs/images/`).
+
+### Fixed
+
+- Ctrl+C or closing the app no longer hangs until a running analysis finishes: background tasks run on
+  a daemon worker instead of a `ThreadPoolExecutor` that was joined at interpreter exit.
+- FFmpeg and ffprobe no longer flash a console window per call when the server runs windowless.
+- Timeline thumbnails are written to a temporary file and renamed, so an interrupted FFmpeg can't leave
+  a truncated JPEG that is served from cache forever.
+- The CLI no longer warns that `vision_api_key` is unknown: its known keys now come from the settings
+  catalog instead of a hand-kept copy.
+- `setup.ps1` installs the `web` extra (FastAPI, uvicorn), so a fresh setup can run the Cutroom, warns
+  when FFmpeg is missing, and no longer claims models download into `.hf-cache`.
+- `start-web.bat` runs from its own folder instead of a hard-coded `E:\anna\content-pipeline`.
+- `config.example.json` uses project-relative folders and no machine-specific watermark path.
+- Closing the Cutroom window now also asks for confirmation while a task is running, since closing
+  the desktop window stops the server.
+- `Dockerfile.web` copies `run_pipeline.py`, so the CLI and its tests work in the container.
+
+### Changed
+
+- Importing `pipeline.web` no longer requires a config file; `uvicorn pipeline.web:app` still works.
+- OTIO timelines are named "SmartCut"; the web API title, CLI help and page titles use SmartCut.
+- ROADMAP baseline updated to v0.4.0.
+
+### Removed
+
+- The unused `VisionEye._ask` wrapper and the placeholder `frontend/favicon.svg`.
+
 ## [0.4.0] - 2026-09-27
 
 ### Changed

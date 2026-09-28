@@ -4,14 +4,12 @@ import hashlib
 import json
 import math
 import os
-import subprocess
-import sys
+import queue
 import threading
 import uuid
-from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from fastapi import FastAPI, File, HTTPException, Query, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
@@ -24,7 +22,8 @@ from .blade import FfmpegBlade
 from .brain import PipelineBrain
 from .contracts import Clip
 from .util import PipelineError, read_json, source_fingerprint, write_json, ffprobe_json
-from .settings import SETTINGS, public_settings, validate_settings, revision
+from .lifecycle import contain_children, spawn_detached
+from .settings import SETTINGS, ensure_config, public_settings, validate_settings, revision
 from .sequence import Sequence, from_plan, export_sequence
 
 MEDIA_EXTENSIONS = {".mp4", ".mov", ".mkv", ".avi", ".webm", ".mp3", ".wav", ".m4a", ".aac", ".flac", ".ogg", ".png", ".jpg", ".jpeg", ".webp", ".bmp"}
@@ -35,9 +34,30 @@ ROOT = Path(__file__).resolve().parents[1]
 FRONTEND_DIR = ROOT / "frontend"
 DEFAULT_CONFIG = ROOT / "config.json"
 
-executor = ThreadPoolExecutor(max_workers=1)
 tasks_lock = threading.Lock()
 tasks: dict[str, dict[str, Any]] = {}
+task_queue: queue.Queue[Callable[[], None]] = queue.Queue()
+_worker: threading.Thread | None = None
+
+
+def _run_tasks() -> None:
+    while True:
+        task_queue.get()()
+
+
+def submit_task(fn: Callable[[], None]) -> None:
+    """Run jobs one at a time on a daemon thread.
+
+    A ThreadPoolExecutor worker is joined at interpreter exit, so Ctrl+C or closing the
+    app used to hang until a long analysis finished. A daemon worker stops with the
+    process, and lifecycle.contain_children() takes its FFmpeg children down too.
+    """
+    global _worker
+    with tasks_lock:
+        if _worker is None or not _worker.is_alive():
+            _worker = threading.Thread(target=_run_tasks, name="smartcut-tasks", daemon=True)
+            _worker.start()
+    task_queue.put(fn)
 
 
 class ActionRequest(BaseModel):
@@ -120,7 +140,7 @@ def media_cache_key(path: Path, *parts: Any) -> str:
 def create_app(config_path: str | Path = DEFAULT_CONFIG) -> FastAPI:
     config_path = Path(config_path).resolve()
     config = load_config(config_path)
-    app = FastAPI(title="Anna Content Pipeline", version=__version__)
+    app = FastAPI(title="SmartCut", version=__version__)
     app.state.config_path = config_path
     app.state.config = config
     config_lock = threading.RLock()
@@ -350,7 +370,7 @@ def create_app(config_path: str | Path = DEFAULT_CONFIG) -> FastAPI:
                 with tasks_lock:
                     tasks[task_id].update({"status": "failed", "completed_at": utc_now(), "error": str(exc)})
 
-        executor.submit(run)
+        submit_task(run)
         return record
 
     @app.get("/api/health")
@@ -699,10 +719,7 @@ def create_app(config_path: str | Path = DEFAULT_CONFIG) -> FastAPI:
         folder = resolved if resolved.is_dir() else resolved.parent
         if dry_run:
             return {"ok": True, "dry_run": True, "folder": str(folder)}
-        if os.name == "nt":
-            subprocess.Popen(["explorer", str(folder)])
-        else:
-            subprocess.Popen(["xdg-open", str(folder)])
+        spawn_detached(["explorer" if os.name == "nt" else "xdg-open", str(folder)])
         return {"ok": True, "folder": str(folder)}
 
     if FRONTEND_DIR.exists():
@@ -711,19 +728,26 @@ def create_app(config_path: str | Path = DEFAULT_CONFIG) -> FastAPI:
     return app
 
 
-app = create_app(os.getenv("ANNA_PIPELINE_CONFIG", DEFAULT_CONFIG))
+def __getattr__(name: str) -> Any:
+    # `uvicorn pipeline.web:app` keeps working, but importing the module no longer
+    # needs a config file; main() writes one from the example on first run.
+    if name == "app":
+        return create_app(os.getenv("ANNA_PIPELINE_CONFIG", DEFAULT_CONFIG))
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 
 def main() -> int:
     import argparse
     import uvicorn
 
-    parser = argparse.ArgumentParser(description="Anna Content Pipeline web UI")
+    parser = argparse.ArgumentParser(description="SmartCut Cutroom web UI")
     parser.add_argument("--config", type=Path, default=DEFAULT_CONFIG)
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=8787)
     args = parser.parse_args()
 
+    ensure_config(args.config)
+    contain_children()
     uvicorn.run(create_app(args.config), host=args.host, port=args.port, reload=False)
     return 0
 

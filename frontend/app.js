@@ -70,7 +70,7 @@ async function operation(label, fn, retry=fn) {
 function shell(){
   $('#app').innerHTML=`
     <header class="app-header">
-      <a class="brand" href="/" aria-label="Anna Cutroom home"><span class="brand-mark">${icon('scissors')}</span><span class="brand-copy"><span class="brand-name">Anna Cutroom</span><span class="brand-suite">Editing suite</span></span></a>
+      <a class="brand" href="/" aria-label="SmartCut home"><img class="brand-mark" src="/favicon.png" alt="" width="32" height="32"><span class="brand-copy"><span class="brand-name">SmartCut</span><span class="brand-suite">Cutroom</span></span></a>
       <nav class="menus" aria-label="Application menu">
         ${menu('File',[['import','Import media…'],['transcribe','Re-transcribe source (.srt)'],['folder','Open output folder']])}
         ${menu('Project',[['settings','Project settings…'],['refresh','Refresh media']])}
@@ -553,7 +553,7 @@ function previewDialog(reel=false){
 async function startTask(path,payload,callback){const task=await post(path,payload);if(!task.id)throw new Error('Server did not return a task');if(callback)state.taskCallbacks.set(task.id,callback);state.tasks.unshift(task);toast(task.label+' · queued');renderTasks();}
 function taskList(){return state.tasks.slice(0,10).map(t=>`<div class="task-card"><div><strong>${esc(t.label)}</strong>${badge(t.status,t.status==='failed'?'error':t.status==='succeeded'?'ok':'')}</div><small>${esc(t.error||t.stage||t.status)}</small>${['running','queued'].includes(t.status)?`<progress max="100" value="${t.progress||0}" aria-label="${esc(t.label)} stage progress"></progress>`:''}</div>`).join('')||'<p>No background tasks.</p>';}
 function renderTasks(){const active=state.tasks.filter(t=>['running','queued'].includes(t.status));$('#tasks-status').textContent=active.length?`${active.length} active · ${active[0].stage||'Starting'} ${active[0].progress||0}%`:'No active tasks';
-  if(active.length)document.title=`${active[0].progress||0}% · ${active[0].label} — Anna Cutroom`;else if(!document.title.startsWith('✓'))document.title='Anna Cutroom';if($('#task-list'))$('#task-list').innerHTML=taskList();}
+  if(active.length)document.title=`${active[0].progress||0}% · ${active[0].label} — SmartCut`;else if(!document.title.startsWith('✓'))document.title='SmartCut';if($('#task-list'))$('#task-list').innerHTML=taskList();}
 async function pollTasks(){
   try{
     state.tasks=await api('/api/tasks');renderTasks();
@@ -561,7 +561,7 @@ async function pollTasks(){
       if(!['succeeded','failed'].includes(task.status)||state.handled.has(task.id))continue;
       state.handled.add(task.id);const callback=state.taskCallbacks.get(task.id);state.taskCallbacks.delete(task.id);
       if(task.status==='failed'){if(task.label==='Test gateway connection'){state.gateway='failed';renderGateway();}fail(new Error(task.label+': '+task.error),callback?.retry||null);}
-      else {toast(task.label+' complete','ok');if(document.hidden)document.title=`✓ ${task.label} — Anna Cutroom`;if(callback)await callback(task.result);}
+      else {toast(task.label+' complete','ok');if(document.hidden)document.title=`✓ ${task.label} — SmartCut`;if(callback)await callback(task.result);}
     }
   }catch(error){$('#tasks-status').textContent='Task polling unavailable · retrying';}
 }
@@ -685,8 +685,9 @@ function bind(){
   $('#timeline-canvas').addEventListener('contextmenu',e=>{const el=e.target.closest('[data-clip]');if(!el)return;e.preventDefault();chooseClip(el.dataset.clip);const menu=$('#context-menu');menu.innerHTML=[['split','Split at playhead'],['delete','Delete'],['ripple','Ripple delete'],['duplicate','Duplicate'],['enable','Toggle enabled']].map(([a,l])=>button(a,l,'','role="menuitem"')).join('');menu.style.left=Math.min(e.clientX,innerWidth-210)+'px';menu.style.top=Math.min(e.clientY,innerHeight-220)+'px';menu.hidden=false;});
   document.addEventListener('dragstart',e=>{const row=e.target.closest('[data-source]');if(row)e.dataTransfer.setData('text/anna-source',row.dataset.source);});
   for(const target of [$('.project-panel'),$('#timeline-canvas')]){target.addEventListener('dragover',e=>{e.preventDefault();target.classList.add('drop-active');});target.addEventListener('dragleave',()=>target.classList.remove('drop-active'));target.addEventListener('drop',e=>{e.preventDefault();target.classList.remove('drop-active');operation('Drop media',async()=>{if(e.dataTransfer.files.length)return importFiles(e.dataTransfer.files);const path=e.dataTransfer.getData('text/anna-source');if(!path)return;if(target.id==='timeline-canvas'){state.source=path;state.sourceInfo=await metadata(path);state.in=0;state.out=Math.min(5,state.sourceInfo.duration);state.time=timelineAt(e);renderSource();await addSource(false);renderProject();}});});}
-  document.addEventListener('visibilitychange',()=>{if(!document.hidden&&document.title.startsWith('✓'))document.title='Anna Cutroom';});
-  window.addEventListener('resize',()=>{renderTimeline();syncProgram();});window.addEventListener('beforeunload',e=>{if(state.dirty){e.preventDefault();e.returnValue='';}});
+  document.addEventListener('visibilitychange',()=>{if(!document.hidden&&document.title.startsWith('✓'))document.title='SmartCut';});
+  // Closing the desktop window stops the server, so an unsaved edit or a running render both deserve a warning.
+  window.addEventListener('resize',()=>{renderTimeline();syncProgram();});window.addEventListener('beforeunload',e=>{if(state.dirty||state.tasks.some(t=>['running','queued'].includes(t.status))){e.preventDefault();e.returnValue='';}});
 }
 function timelinePointer(e){
   if(e.button!==0||!state.sequence||e.target.closest('[data-marker]'))return;

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import tempfile
 from pathlib import Path
 from typing import Iterable
 
@@ -40,10 +41,17 @@ class FfmpegBlade:
         """Single scaled JPEG frame for timeline filmstrips; never touches the source."""
         require_distinct(output, source)
         output.parent.mkdir(parents=True, exist_ok=True)
-        run_checked(["ffmpeg", "-v", "error", "-y", "-ss", f"{max(0.0, time):.3f}", "-i", str(source),
-                     "-frames:v", "1", "-vf", f"scale=-2:{height}", "-q:v", "6", str(output)], timeout=60)
-        if not output.is_file():
-            raise PipelineError(f"no frame decoded at {time:.3f}s")
+        # Write beside the target and rename, so an interrupted FFmpeg never leaves a truncated cache hit.
+        with tempfile.NamedTemporaryFile(dir=output.parent, prefix=output.stem, suffix=output.suffix, delete=False) as handle:
+            partial = Path(handle.name)
+        try:
+            run_checked(["ffmpeg", "-v", "error", "-y", "-ss", f"{max(0.0, time):.3f}", "-i", str(source),
+                         "-frames:v", "1", "-vf", f"scale=-2:{height}", "-q:v", "6", str(partial)], timeout=60)
+            if not partial.stat().st_size:
+                raise PipelineError(f"no frame decoded at {time:.3f}s")
+            partial.replace(output)
+        finally:
+            partial.unlink(missing_ok=True)
         return output
 
     def render_sequence(self, sequence, output: Path, *, watermark: Path | None = None) -> Path:
