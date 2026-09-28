@@ -108,7 +108,7 @@ def test_eye_batches_multiple_labeled_frames_in_one_request(monkeypatch, tmp_pat
                 )}}]
             }
 
-    def fake_post(url, json, timeout):
+    def fake_post(url, json, timeout, headers=None):
         captured["payload"] = json
         return FakeResponse()
 
@@ -592,7 +592,7 @@ def test_persona_voice_grounds_prompt_in_real_clip_facts_and_parses_json_reply(m
         def json(self):
             return {"choices": [{"message": {"content": '```json\n{"caption": "don\'t miss me in this one..."}\n```'}}]}
 
-    def fake_post(url, json, timeout):
+    def fake_post(url, json, timeout, headers=None):
         captured["url"] = url
         captured["payload"] = json
         return FakeResponse()
@@ -634,7 +634,7 @@ def test_persona_voice_excludes_low_confidence_whisper_hallucination(monkeypatch
         def json(self):
             return {"choices": [{"message": {"content": '{"caption": "visual-only caption"}'}}]}
 
-    def fake_post(url, json, timeout):
+    def fake_post(url, json, timeout, headers=None):
         captured["payload"] = json
         return FakeResponse()
 
@@ -751,7 +751,7 @@ def test_temporal_eye_marks_target_frames_and_context(monkeypatch, tmp_path):
                 }]
             }
 
-    def fake_post(url, json, timeout):
+    def fake_post(url, json, timeout, headers=None):
         captured["url"] = url
         captured["payload"] = json
         return FakeResponse()
@@ -791,7 +791,7 @@ def test_section_summary_pass_receives_local_transcript_and_editorial_policy(mon
                 '"summary":"recording setup","confidence":0.95}'
             )}}]}
 
-    def fake_post(url, json, timeout):
+    def fake_post(url, json, timeout, headers=None):
         captured["payload"] = json
         return FakeResponse()
 
@@ -1095,7 +1095,7 @@ def test_batch_prompt_asks_for_confidence_and_temporal_context(monkeypatch, tmp_
                 ']}'
             )}}]}
 
-    def fake_post(url, payload, timeout):
+    def fake_post(url, payload, timeout, headers=None):
         captured["payload"] = payload
         return FakeResponse()
 
@@ -1313,7 +1313,7 @@ def test_transcript_audio_injected_per_frame(tmp_path, monkeypatch):
                 )}}]
             }
 
-    def fake_post(url, json, timeout):
+    def fake_post(url, json, timeout, headers=None):
         captured["payload"] = json
         return FakeResponse()
 

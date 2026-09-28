@@ -7,7 +7,8 @@ from pathlib import Path
 from typing import Iterable
 
 from .contracts import Clip, Segment, Transcript
-from .util import PipelineError, media_duration, read_json, run_checked, write_json
+from .blade import FfmpegBlade
+from .util import PipelineError, media_duration, read_json, write_json, ffprobe_json
 
 
 class WhisperEar:
@@ -29,6 +30,11 @@ class WhisperEar:
             data = read_json(cache)
             return self._from_dict(data, cached=True)
 
+        if not any(s.get("codec_type") == "audio" for s in ffprobe_json(source).get("streams", [])):
+            result = Transcript(ok=True, model=self.model, duration=media_duration(source))
+            write_json(cache, self._to_dict(result))
+            return result
+
         try:
             from faster_whisper import WhisperModel
         except ImportError as exc:
@@ -41,10 +47,7 @@ class WhisperEar:
         with tempfile.NamedTemporaryFile(prefix="anna-ear-", suffix=".wav", delete=False) as temp:
             wav = Path(temp.name)
         try:
-            run_checked([
-                "ffmpeg", "-v", "error", "-y", "-i", str(source),
-                "-ac", "1", "-ar", "16000", "-c:a", "pcm_s16le", str(wav),
-            ])
+            FfmpegBlade.extract_audio(source, wav)
             whisper = WhisperModel(self.model, device=self.device, compute_type=self.compute_type)
             segments_iter, info = whisper.transcribe(
                 str(wav), language=language, beam_size=1, vad_filter=True,

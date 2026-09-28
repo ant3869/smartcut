@@ -189,7 +189,7 @@ def read_frame_with_tail_fallback(cap: Any, timestamp: float) -> tuple[float, An
 
 
 class VisionEye:
-    """Frame sampler and LM Studio vision adapter. It returns facts, never shell commands."""
+    """Frame sampler and vision adapter. It returns facts, never shell commands."""
 
     def __init__(
         self,
@@ -201,6 +201,7 @@ class VisionEye:
         max_width: int = 1024,
         batch_size: int = 4,
         cull_confidence_threshold: float = 0.6,
+        api_key: str | None = None,
     ):
         self.base_url = base_url.rstrip("/")
         self.model = model
@@ -209,9 +210,25 @@ class VisionEye:
         self.max_width = max_width
         self.batch_size = max(1, batch_size)
         self.cull_confidence_threshold = cull_confidence_threshold
+        self.api_key = api_key or ""
         self.last_temporal_decisions: list[dict[str, Any]] = []
         self.model_disagreements: list[dict[str, Any]] = []
         self.model_calls: dict[str, int] = {}
+
+    def _headers(self) -> dict[str, str]:
+        """Auth headers — empty for local servers (LM Studio), Bearer for gateways (9Router)."""
+        if self.api_key:
+            return {"Authorization": f"Bearer {self.api_key}"}
+        return {}
+
+    def _post(self, payload: Any, *, timeout: float):
+        """POST to /chat/completions with auth headers."""
+        return post_json_with_retry(
+            f"{self.base_url}/chat/completions",
+            payload,
+            timeout=timeout,
+            headers=self._headers(),
+        )
 
     def _cache_path(self, source: Path, *, audio_enabled: bool = True) -> Path:
         stat = source.stat()
@@ -648,13 +665,29 @@ class VisionEye:
 
     def _check_server(self) -> None:
         try:
-            response = requests.get(f"{self.base_url}/models", timeout=10)
+            response = requests.get(f"{self.base_url}/models", timeout=30, headers=self._headers())
             response.raise_for_status()
-            models = [x.get("id") for x in response.json().get("data", [])]
-        except requests.RequestException as exc:
-            raise PipelineError(f"LM Studio is unavailable at {self.base_url}: {exc}") from exc
+            models = [x.get("id") for x in response.json().get("data", []) if isinstance(x, dict)]
+        except (requests.RequestException, ValueError, TypeError, AttributeError):
+            # /models missing or hanging (some gateways don't implement it) —
+            # fall through to the chat ping below.
+            models = []
+        # Empty model list (some gateways don't implement /models) — verify with
+        # a minimal chat ping instead of failing outright.
         if self.model not in models:
-            raise PipelineError(f"vision model is not loaded: {self.model}; loaded={models}")
+            try:
+                ping = post_json_with_retry(
+                    f"{self.base_url}/chat/completions",
+                    {"model": self.model, "max_tokens": 5, "stream": False,
+                     "messages": [{"role": "user", "content": "Reply OK."}]},
+                    timeout=60.0,
+                    headers=self._headers(),
+                )
+                ping.json()["choices"][0]["message"]
+            except (requests.RequestException, KeyError, IndexError, TypeError, ValueError) as exc:
+                raise PipelineError(
+                    f"vision model ping failed: {self.model} at {self.base_url}: {exc}"
+                ) from exc
 
     def _ask(self, frame: Any, timestamp: float, prompt: str | None) -> dict[str, Any]:
         return self._ask_batch([(timestamp, frame)], prompt)[0]
@@ -702,13 +735,11 @@ class VisionEye:
                 },
             ])
         try:
-            response = post_json_with_retry(
-                f"{self.base_url}/chat/completions",
+            response = self._post(
                 {
                     "model": self.model,
                     "temperature": 0.1,
                     "max_tokens": 800,
-                    "reasoning_effort": "none",
                     "stream": False,
                     "messages": [
                         {"role": "system", "content": "You are a strict temporal video editor. Return JSON only."},
@@ -780,11 +811,10 @@ class VisionEye:
                 {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{base64.b64encode(encoded).decode('ascii')}"}},
             ])
         try:
-            response = post_json_with_retry(
-                f"{self.base_url}/chat/completions",
+            response = self._post(
                 {
                     "model": self.model, "temperature": 0.1, "max_tokens": 500,
-                    "reasoning_effort": "none", "stream": False, "messages": [
+                    "stream": False, "messages": [
                         {"role": "system", "content": "You are a concise video-editor story analyst. Return JSON only."},
                         {"role": "user", "content": content},
                     ],
@@ -864,14 +894,13 @@ class VisionEye:
             if audio:
                 content.append({"type": "text", "text": audio})
         payload = {
-            "model": self.model, "temperature": 0.1, "max_tokens": 1000,
-            "reasoning_effort": "none", "stream": False, "messages": [
+            "model": self.model, "temperature": 0.1, "max_tokens": 4000,
+            "stream": False, "messages": [
                 {"role": "system", "content": "You are a concise video-editor vision analyst. Return JSON only."},
                 {"role": "user", "content": content},
             ],
         }
-        response = post_json_with_retry(
-            f"{self.base_url}/chat/completions",
+        response = self._post(
             payload,
             timeout=300.0,
         )
