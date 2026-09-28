@@ -116,3 +116,24 @@ test('removed map reports what the edit took out, in the original timeline', () 
   assert.deepEqual(A.removedMap(before, after), [{start:2,end:4},{start:12,end:13}]);
   assert.deepEqual(A.removedMap(before, T.clone(before)), []);
 });
+
+test('each frame verdict covers the time around its sample, matching how cuts are proposed', () => {
+  const obs = [{timestamp:0}, {timestamp:2}, {timestamp:4}, {timestamp:6}];
+  assert.deepEqual(A.sampleSpans(obs, 7).map(r => [r.start, r.end]), [[0,1],[1,3],[3,5],[5,7]]);
+  // A frame at 70s rejected by Eye becomes the 69-71s cut; its heat span must be the same.
+  assert.deepEqual(A.sampleSpans([{timestamp:68}, {timestamp:70}, {timestamp:72}], 227.5)[1], {start:69, end:71, observation:{timestamp:70}});
+  assert.deepEqual(A.sampleSpans([{timestamp:4}], 10).map(r => [r.start, r.end]), [[3,5]]);
+  assert.deepEqual(A.sampleSpans([], 10), []);
+  // A lone sample in a short source analysed every 10s is Eye's 1-11s cut, not a 2s sliver.
+  assert.deepEqual(A.sampleSpans([{timestamp:6}], 30, 10).map(r => [r.start, r.end]), [[1,11]]);
+  assert.deepEqual(A.sampleSpans([{timestamp:1}], 3, 10).map(r => [r.start, r.end]), [[0,3]]);
+});
+
+test('the verdict at a moment is the nearest sampled frame, not the last one before it', () => {
+  const obs = [{timestamp:68, keep:true}, {timestamp:70, keep:false}, {timestamp:72, keep:true}];
+  assert.equal(A.sampleAt(obs, 69.2).timestamp, 70);
+  assert.equal(A.sampleAt(obs, 70.9).timestamp, 70);
+  assert.equal(A.sampleAt(obs, 71.1).timestamp, 72);
+  assert.equal(A.sampleAt(obs, 0).timestamp, 68);
+  assert.equal(A.sampleAt([], 5), null);
+});
