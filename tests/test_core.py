@@ -664,6 +664,49 @@ def test_persona_voice_excludes_low_confidence_whisper_hallucination(monkeypatch
     assert "confident pose toward the camera" in user_message
 
 
+def _voice_facts():
+    return {
+        "persona": "playful and confident",
+        "transcript": None,
+        "observations": [Observation(0.5, 8.0, "confident pose toward the camera", True, False)],
+        "clips": [Clip(0.0, 2.0)],
+    }
+
+
+def test_persona_voice_retries_empty_reasoning_reply_with_more_tokens(monkeypatch):
+    budgets = []
+
+    class FakeResponse:
+        def __init__(self, body):
+            self.body = body
+
+        def json(self):
+            return self.body
+
+    def fake_post(url, json, timeout, headers=None):
+        budgets.append(json["max_tokens"])
+        if len(budgets) == 1:
+            return FakeResponse({"choices": [{"finish_reason": "length", "message": {"content": None}}]})
+        return FakeResponse({"choices": [{"finish_reason": "stop", "message": {"content": '{"caption": "posed and proud"}'}}]})
+
+    monkeypatch.setattr("pipeline.voice.post_json_with_retry", fake_post)
+    result = PersonaVoice(base_url="http://127.0.0.1:1234/v1", model="test-model").caption(**_voice_facts())
+
+    assert result == "posed and proud"
+    assert budgets == [1200, 2400]
+
+
+def test_persona_voice_empty_replies_leave_caption_blank_instead_of_crashing(monkeypatch):
+    class FakeResponse:
+        def json(self):
+            return {"choices": [{"finish_reason": "length", "message": {"content": None}}]}
+
+    monkeypatch.setattr("pipeline.voice.post_json_with_retry", lambda url, json, timeout, headers=None: FakeResponse())
+    result = PersonaVoice(base_url="http://127.0.0.1:1234/v1", model="test-model").caption(**_voice_facts())
+
+    assert result == ""
+
+
 def test_editorial_review_intervals_become_explicit_waste(tmp_path):
     job = tmp_path / "job"
     job.mkdir()
@@ -809,6 +852,64 @@ def test_section_summary_pass_receives_local_transcript_and_editorial_policy(mon
     prompt = captured["payload"]["messages"][1]["content"][0]["text"]
     assert "Is it recording?" in prompt
     assert "Cut technical setup" in prompt
+
+
+def test_section_summary_retries_empty_model_output_with_more_tokens(tmp_path):
+    eye = VisionEye(base_url="http://localhost/v1", model="test-model", interval=2.0, cache_dir=tmp_path)
+    budgets = []
+
+    class Response:
+        def __init__(self, body):
+            self.body = body
+
+        def json(self):
+            return self.body
+
+    def fake_post(payload, *, timeout):
+        budgets.append(payload["max_tokens"])
+        if len(budgets) == 1:
+            return Response({"choices": [{"finish_reason": "length", "message": {"content": ""}}]})
+        return Response({"choices": [{"finish_reason": "stop", "message": {"content": (
+            '{"section_type":"performance","editorial_action":"keep_candidate",'
+            '"summary":"intentional scene","confidence":0.9}'
+        )}}]})
+
+    eye._post = fake_post
+    result = eye._ask_section_summary([(0.0, np.zeros((32, 32, 3), dtype=np.uint8))], 0.0, 16.733)
+    assert result["editorial_action"] == "keep_candidate"
+    assert budgets == [2400, 4000]
+
+
+def test_empty_section_summary_stays_reviewable_without_authorizing_cut(tmp_path, monkeypatch):
+    from pipeline import eye as eye_module
+
+    eye = VisionEye(base_url="http://localhost/v1", model="test-model", interval=2.0, cache_dir=tmp_path)
+    eye._check_server = lambda: None
+
+    class Capture:
+        def isOpened(self):
+            return True
+
+        def release(self):
+            pass
+
+    class Response:
+        def json(self):
+            return {"choices": [{"finish_reason": "length", "message": {"content": ""}}]}
+
+    monkeypatch.setattr(eye_module.cv2, "VideoCapture", lambda source: Capture())
+    monkeypatch.setattr(eye_module, "read_frame_with_tail_fallback",
+                        lambda cap, timestamp: (timestamp, np.zeros((32, 32, 3), dtype=np.uint8)))
+    eye._post = lambda payload, *, timeout: Response()
+    source = tmp_path / "source.mp4"
+    result = eye.summarize_sections(source, sections=[{"index": 0, "start_seconds": 0,
+                                                      "end_seconds": 16.733}], duration=16.733,
+                                    cache_path=tmp_path / "sections.json")
+
+    assert result[0]["editorial_action"] == "review"
+    assert result[0]["confidence"] == 0
+    assert "review it manually" in result[0]["summary"]
+    assert json.loads((tmp_path / "sections.json").read_text())["sections"] == result
 
 
 def test_editorial_loop_prioritizes_technical_talk_then_interaction():
