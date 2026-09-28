@@ -591,7 +591,7 @@ function analyzeAllDialog(){
   if(!state.project)return newProjectDialog();
   const entries=A.analyzableAssets(assets());
   if(!entries.length)return toast('No video assets in this project to analyze.','warn');
-  if(!entries.some(e=>e.queue))return toast('Nothing to analyze · every available video already has a plan.','warn');
+  if(entries.every(e=>e.offline))return toast('Nothing to analyze · every video source is offline.','warn');
   openDialog(`${dialogHead('PIPELINE','Analyze all')}<form id="analyze-all-form"><div class="dialog-body"><h3>Stages to run</h3><div class="stage-options">${stageOptionsHtml()}</div><label class="toggle-row">Include already-analyzed sources<input type="checkbox" name="includeAnalyzed"></label><p class="field-note">Included analyzed sources are refreshed from scratch. Offline sources are skipped.</p><div id="analyze-all-list" class="project-choices"></div></div><footer class="dialog-footer">${button('close-dialog','Cancel')}<button type="submit" class="primary" id="analyze-all-submit"></button></footer></form>`,'analyze-all');
   renderAnalyzeAllList();
 }
