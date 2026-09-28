@@ -2,12 +2,12 @@
 
 ## Purpose
 
-Cutroom is the local editing and review surface for Anna pipeline jobs: a compact nonlinear editor whose
+Cutroom is SmartCut's local editing and review surface: a compact nonlinear editor whose
 automation (AI evidence, proposals, auto-edit) stays reviewable and undoable. It is not a marketing page.
 
 ## Working surface
 
-- Header: brand, menus (File, Project, Sequence, Markers, Auto, Export, View, Help), gateway status, theme toggle, settings.
+- Header: SmartCut logo mark (`frontend/favicon.png`, also the favicon and exe icon) with "SmartCut / Cutroom", menus (File, Project, Sequence, Markers, Auto, Export, View, Help), gateway status, theme toggle, settings.
 - Page header: job name with save state, and the pipeline actions (Import, Analyze, Auto-edit, Re-plan, Preview reel, Render).
 - Project panel: media bins, search, list/icon views, reel selection.
 - Source and Program monitors: transport, source-time evidence minimap, live captions and the AI verdict overlay.
