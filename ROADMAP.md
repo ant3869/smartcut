@@ -9,7 +9,7 @@ building the frontend. The riskiest assumption is that sparse frame observations
 capture temporal intent; the roadmap replaces that assumption with multi-frame evidence and
 human feedback rather than stacking more brittle keywords.
 
-## Current baseline - v0.6.0
+## Current baseline - v0.6.1
 
 - Cutroom is a multitrack editor on a persisted `sequence.json` (V2/V1/A1/A2, trim/split/ripple,
   effects, undo), with an AI proposal queue, one-step Auto-edit, and EDL/CSV/OTIO/SRT/MP4 export.

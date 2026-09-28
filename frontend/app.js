@@ -270,7 +270,7 @@ function renderOverlay(){
   const hud=$('#ai-hud'),caption=$('#live-caption');if(!hud||!caption)return;
   const job=state.job,hit=job&&state.sequence?A.sequenceToSource(state.sequence,state.time,job.source):null;
   const segment=state.prefs.cc&&hit?(job.transcript_segments||[]).find(s=>hit.time>=s.start&&hit.time<s.end):null;
-  const obs=state.prefs.hud&&hit?(job.observations||[]).filter(o=>o.timestamp<=hit.time+.01).pop():null;
+  const obs=state.prefs.hud&&hit?A.sampleAt(job.observations||[],hit.time):null;
   const flag=obs&&[...aiProposals().map(r=>({...r,kind:'waste'})),...(job.review_intervals||[]).map(r=>({...r,kind:'review'}))].find(r=>hit.time>=r.start&&hit.time<r.end);
   const key=[segment?.start,obs?.timestamp,flag?.start,flag?.kind].join('|');if(key===overlayKey)return;overlayKey=key;
   caption.hidden=!segment;caption.textContent=segment?.text||'';
@@ -329,10 +329,12 @@ function aiProposals(){
   return proposalCache.list;
 }
 const reasonText=r=>(r.reasons||[]).join(' · ').replace(/vision-(cull|review):/g,'').replace(/_/g,' ')||'model proposal';
+// Plans made before frame_interval was recorded were analysed at the configured interval.
+const frameInterval=job=>job?.frame_interval??state.config?.frame_interval_seconds??2;
 // Source-time evidence mapped through the edit, so the AI's opinion follows the material wherever it now sits.
 function aiLanes(seq,scale){
   const job=state.job,src=job.source,obs=job.observations||[],at=r=>`left:${r.start*scale}px;width:${Math.max(1,(r.end-r.start)*scale)}px`;
-  const heat=obs.flatMap((o,i)=>A.sourceToSequence(seq,src,o.timestamp,obs[i+1]?.timestamp??Math.min(job.duration||o.timestamp+2,o.timestamp+2)).map(r=>`<i class="heat ${o.keep===false?'cut':''}" style="${at(r)};--h:${(Number(o.score)||0)/10}" title="${esc(`${short(o.timestamp)} · AI ${o.score}/10 · ${o.keep===false?'cut':'keep'} — ${String(o.description||'').slice(0,180)}`)}"></i>`)).join('');
+  const heat=A.sampleSpans(obs,job.duration,frameInterval(job)).flatMap(({start,end,observation:o})=>A.sourceToSequence(seq,src,start,end).map(r=>`<i class="heat ${o.keep===false?'cut':''}" style="${at(r)};--h:${(Number(o.score)||0)/10}" title="${esc(`${short(o.timestamp)} · AI ${o.score}/10 · ${o.keep===false?'cut':'keep'} — ${String(o.description||'').slice(0,180)}`)}"></i>`)).join('');
   const flags=[...aiProposals().map(r=>({...r,kind:'waste'})),...(job.review_intervals||[]).map(r=>({...r,kind:'review'}))].flatMap(r=>A.sourceToSequence(seq,src,r.start,r.end).map(m=>`<i class="flag ${r.kind} ${r.status||''}" style="${at(m)}" ${r.kind==='waste'?`data-proposal-start="${r.start}"`:''} title="${esc(`${r.kind==='waste'?'AI suggests cutting':'Needs your eyes'} · ${reasonText(r)}`)}"></i>`)).join('');
   const scenes=(job.scene_boundaries||[]).flatMap(b=>A.sourcePoint(seq,src,b)).map(t=>`<i class="scene-tick" style="left:${t*scale}px" title="Scene change"></i>`).join('');
   const words=(job.transcript_segments||[]).flatMap(s=>A.sourceToSequence(seq,src,s.start,s.end).map(r=>`<span class="tx" style="${at(r)}" title="${esc(s.text)}">${(r.end-r.start)*scale>=30?esc(s.text):''}</span>`)).join('');
@@ -357,7 +359,7 @@ function renderSourceEvidence(){
   const node=$('#source-evidence');if(!node)return;const job=state.job,d=job?.duration;
   if(!job||state.source!==job.source||!d||!job.observations?.length){node.hidden=true;node.innerHTML='';return;}
   const pos=(a,b)=>`left:${(Math.max(0,a)/d*100).toFixed(3)}%;width:${(Math.max(.05,Math.min(d,b)-Math.max(0,a))/d*100).toFixed(3)}%`,obs=job.observations,review=currentReview();
-  const heat=obs.map((o,i)=>`<i class="heat ${o.keep===false?'cut':''}" style="${pos(o.timestamp,obs[i+1]?.timestamp??d)};--h:${(Number(o.score)||0)/10}"></i>`).join('');
+  const heat=A.sampleSpans(obs,d,frameInterval(job)).map(({start,end,observation:o})=>`<i class="heat ${o.keep===false?'cut':''}" style="${pos(start,end)};--h:${(Number(o.score)||0)/10}"></i>`).join('');
   const spans=[...(job.clips||[]).map(r=>['kept',r,'Kept by plan']),...aiProposals().map(r=>['waste '+r.status,r,'AI cut · '+r.status+' · '+reasonText(r)]),...(job.review_intervals||[]).map(r=>['review',r,'Needs your eyes · '+reasonText(r)]),...(review.cut_intervals||[]).map(r=>['human-cut',r,'Your cut · '+(r.reason||'')]),...(review.keep_intervals||[]).map(r=>['human-keep',r,'Your keep · '+(r.reason||'')])];
   node.innerHTML=`<div class="strip heat-strip">${heat}</div><div class="strip flag-strip">${spans.map(([kind,r,label])=>`<i class="${kind}" style="${pos(r.start,r.end)}" title="${esc(`${short(r.start)}–${short(r.end)} · ${label}`)}"></i>`).join('')}</div><div class="strip word-strip">${(job.transcript_segments||[]).map(s=>`<i style="${pos(s.start,s.end)}" title="${esc(s.text)}"></i>`).join('')}</div>${(job.scene_boundaries||[]).map(b=>`<i class="scene-tick" style="left:${(b/d*100).toFixed(3)}%"></i>`).join('')}<i class="strip-range" id="evidence-range"></i><i class="strip-head" id="evidence-head"></i>`;
   node.hidden=false;syncTransport();
@@ -389,11 +391,11 @@ async function addSource(overwrite=false){
 }
 async function rebuildSequence(){
   if(!state.job)throw new Error('Select an analyzed source first');await saveSequence();const next=await api(jobURL('sequence?use_plan=true'));
-  next.source_sha256=state.sequence.source_sha256;next.revision=state.sequence.revision;
+  T.keepSaveState(next,state.sequence);
   if(state.sequence)state.undo.push(T.clone(state.sequence));state.sequence=next;state.selected=null;state.selection.clear();state.time=0;changed('Approved plan loaded · Undo restores your previous sequence');
 }
 function commit(label,next){
-  T.validate(next);next.revision=state.sequence.revision;next.source_sha256=state.sequence.source_sha256;state.undo.push(T.clone(state.sequence));if(state.undo.length>75)state.undo.shift();state.redo=[];
+  T.validate(next);T.keepSaveState(next,state.sequence);state.undo.push(T.clone(state.sequence));if(state.undo.length>75)state.undo.shift();state.redo=[];
   state.sequence=next;if(!next.clips.some(c=>c.id===state.selected))state.selected=null;state.time=Math.min(state.time,T.sequenceDuration(next));changed(label);
 }
 const secs=n=>(n>=60?short(n)+' min':n.toFixed(1)+'s');
@@ -798,7 +800,7 @@ function timelinePointer(e){
   const ids=edge?[id]:selectedIds(),targets=T.linkedClips(before,ids,state.linked).map(c=>c.id);
   const update=event=>{if(Math.hypot(event.clientX-startX,event.clientY-startY)<3&&!changedPointer)return;changedPointer=true;const delta=(event.clientX-startX)/scale;candidate=T.clone(before);const pointerTrack=document.elementFromPoint(event.clientX,event.clientY)?.closest('[data-track]')?.dataset.track||original.track;
     try{const value=edge==='start'?original.start+delta:edge==='end'?T.end(original)+delta:original.start+delta;const snapped=T.snap(candidate,value,scale,targets,state.snap,scenes);if(edge)T.trim(candidate,id,edge,snapped,state.linked);else T.moveSelection(candidate,ids,id,snapped,pointerTrack,state.linked);error=null;for(const c of candidate.clips.filter(c=>targets.includes(c.id))){const node=$(`[data-clip="${c.id}"]`);node.style.left=(c.start*scale)+'px';node.style.width=Math.max(4,T.duration(c)*scale)+'px';$(`[data-track="${c.track}"]`).append(node);}el.classList.remove('invalid');}catch(err){error=err;el.classList.add('invalid');}};
-  const done=event=>{window.removeEventListener('pointermove',update);window.removeEventListener('pointerup',done);window.removeEventListener('pointercancel',done);window.removeEventListener('keydown',cancel);if(event?.type==='pointercancel'||event?.key==='Escape'){renderTimeline();return;}if(!changedPointer){chooseClip(id);return;}if(error){renderTimeline();fail(error);return;}state.undo.push(before);state.redo=[];state.sequence=candidate;changed(edge?'Clip trimmed':'Clips moved');};
+  const done=event=>{window.removeEventListener('pointermove',update);window.removeEventListener('pointerup',done);window.removeEventListener('pointercancel',done);window.removeEventListener('keydown',cancel);if(event?.type==='pointercancel'||event?.key==='Escape'){renderTimeline();return;}if(!changedPointer){chooseClip(id);return;}if(error){renderTimeline();fail(error);return;}state.undo.push(before);state.redo=[];state.sequence=T.keepSaveState(candidate,state.sequence);changed(edge?'Clip trimmed':'Clips moved');};
   const cancel=event=>{if(event.key==='Escape')done(event);};
   window.addEventListener('pointermove',update);window.addEventListener('pointerup',done);window.addEventListener('pointercancel',done);window.addEventListener('keydown',cancel);
 }
