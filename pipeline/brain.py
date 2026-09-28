@@ -105,9 +105,11 @@ class PipelineBrain:
             frame_hints=build_frame_hints(signals),
             transcript_segments=list(transcript.segments) if transcript.ok else None,
             audio_enabled=audio_evidence,
+            progress=_count_report(report, "Eye · judging frames", 30, 55),
         ) if "eye" in stages else [Observation(**item) for item in old.get("observations", [])]
         scenes = []
         if "eye" in stages and self.config.get("scene_detection_enabled", True):
+            report("Eye · detecting scenes", 56)
             scenes = detect_content_scenes(
                 source,
                 source_sha256=source_sha256,
@@ -139,6 +141,7 @@ class PipelineBrain:
                 editorial_policy=compose_section_policy(str(self.config.get(
                     "multi_pass_editorial_policy", SECTION_SETUP_CLAUSE,
                 ))),
+                progress=_count_report(report, "Eye · mapping story sections", 58, 70),
             ) if "eye" in stages and self.config.get("multi_pass_enabled", True) and self.config.get("multi_pass_section_summary_enabled", True) else []
         )
         story_map = build_story_map(
@@ -153,6 +156,10 @@ class PipelineBrain:
         # The temporal pass only runs when its cuts will actually be used. The old
         # config ran it as an expensive advisory pass (enabled, apply_cuts off) and
         # then threw the decisions away.
+        run_temporal = ("eye" in stages and self.config.get("multi_pass_enabled", False)
+                        and self.config.get("multi_pass_apply_cuts", False))
+        if run_temporal:
+            report("Eye · reviewing cut boundaries", 72)
         temporal_waste = (
             self.eye.temporal_cull_intervals(
                 source,
@@ -164,7 +171,7 @@ class PipelineBrain:
                 candidates=story_map["target_candidates"],
                 editorial_focus=learned_editorial_focus(self.work_dir),
             )
-            if "eye" in stages and self.config.get("multi_pass_enabled", False) and self.config.get("multi_pass_apply_cuts", False)
+            if run_temporal
             else []
         )
         temporal_path = job / "temporal_waste.json"
@@ -491,6 +498,14 @@ class PipelineBrain:
             (job / "caption.txt").write_text(plan.caption, encoding="utf-8")
         else:
             (job / "caption.txt").unlink(missing_ok=True)
+
+
+def _count_report(report, label: str, start: int, end: int):
+    """Show an inner done/total count in the stage text and on its slice of the progress bar."""
+    def update(done: int, total: int) -> None:
+        share = done / total if total else 1.0
+        report(f"{label} ({done}/{total})", start + round((end - start) * share))
+    return update
 
 
 def _resolve_persona(config: dict) -> str | None:
