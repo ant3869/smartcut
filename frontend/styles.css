@@ -541,6 +541,8 @@ kbd {
 .task-card .badge { min-height: 18px; font-size: 10px; }
 .task-card > small { display: block; margin: 6px 0; overflow-wrap: anywhere; }
 .task-card progress { width: 100%; height: 4px; accent-color: var(--color-accent); }
+.task-card > small.task-timing { margin: 4px 0 0; font-size: 11px; color: var(--color-fg-muted); font-variant-numeric: tabular-nums; }
+.task-card.stalled > small.task-timing { color: var(--color-warn); }
 
 /* AI summary: KPI cells read like OpenEval .timeline-review-stat. */
 .ai-stats { display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px; }

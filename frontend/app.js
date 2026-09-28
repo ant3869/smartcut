@@ -2,6 +2,7 @@ import * as T from './timeline.mjs';
 import * as A from './auto.mjs';
 import * as Theme from './theme.mjs';
 import {icon} from './icons.mjs';
+import * as Tasks from './tasks.mjs';
 
 const $ = (q, root=document) => root.querySelector(q);
 const $$ = (q, root=document) => [...root.querySelectorAll(q)];
@@ -587,7 +588,7 @@ function previewDialog(reel=false){
   openDialog(`${dialogHead('ASSEMBLY',reel?'Build a best-of reel':'Preview reel')}<form id="preview-form" data-reel="${reel}"><div class="dialog-body"><p>${reel?'Select analyzed sources. Brain ranks moments across them.':'Build a short trailer from the strongest moments in this source.'}</p><label class="stacked">Target duration (seconds)<input name="target" type="number" min="1" max="3600" value="${reel?state.config.reel_target_seconds:state.config.preview_target_seconds||state.config.preview_max_target_seconds||30}" required></label>${reel?`<div class="reel-sources">${assets().map(a=>a.job).filter(j=>j?.source_available&&j.clips?.length).map(j=>`<label><input type="checkbox" name="jobs" value="${esc(j.id)}" ${state.checked.has(j.id)?'checked':''}><span>${esc(basename(j.source))}</span><small>${short(j.duration)}</small></label>`).join('')}</div>`:''}</div><footer class="dialog-footer">${button('close-dialog','Cancel')}<button class="primary" type="submit">${reel?'Build reel':'Build preview'}</button></footer></form>`,'preview');
 }
 async function startTask(path,payload,callback){const task=await post(path,payload);if(!task.id)throw new Error('Server did not return a task');if(callback)state.taskCallbacks.set(task.id,callback);state.tasks.unshift(task);toast(task.label+' · queued');renderTasks();}
-function taskList(){return state.tasks.slice(0,10).map(t=>`<div class="task-card"><div><strong>${esc(t.label)}</strong>${badge(t.status,t.status==='failed'?'error':t.status==='succeeded'?'ok':'')}</div><small>${esc(t.error||t.stage||t.status)}</small>${['running','queued'].includes(t.status)?`<progress max="100" value="${t.progress||0}" aria-label="${esc(t.label)} stage progress"></progress>`:''}</div>`).join('')||'<p>No background tasks.</p>';}
+function taskList(){const now=Date.now();return state.tasks.slice(0,10).map(t=>{const timing=Tasks.timingText(t,now),stalled=Tasks.taskTiming(t,now).stalled;return `<div class="task-card${stalled?' stalled':''}"><div><strong>${esc(t.label)}</strong>${badge(t.status,t.status==='failed'?'error':t.status==='succeeded'?'ok':stalled?'warn':'')}</div><small>${esc(t.error||t.stage||t.status)}</small>${['running','queued'].includes(t.status)?`<progress max="100" value="${t.progress||0}" aria-label="${esc(t.label)} stage progress"></progress>`:''}${timing?`<small class="task-timing">${esc(timing)}</small>`:''}</div>`;}).join('')||'<p>No background tasks.</p>';}
 function renderTasks(){const active=state.tasks.filter(t=>['running','queued'].includes(t.status));$('#tasks-status').textContent=active.length?`${active.length} active · ${active[0].stage||'Starting'} ${active[0].progress||0}%`:'No active tasks';
   if(active.length)document.title=`${active[0].progress||0}% · ${active[0].label} — SmartCut`;else if(!document.title.startsWith('✓'))document.title='SmartCut';if($('#task-list'))$('#task-list').innerHTML=taskList();}
 async function pollTasks(){

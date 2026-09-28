@@ -375,24 +375,29 @@ def create_app(config_path: str | Path = DEFAULT_CONFIG) -> FastAPI:
 
     def start_task(label: str, fn, *, with_progress=False) -> dict[str, Any]:
         task_id = uuid.uuid4().hex[:12]
-        record = {"id": task_id, "label": label, "status": "queued", "stage": "Queued", "progress": 0, "created_at": utc_now(), "result": None, "error": None}
+        created = utc_now()
+        # updated_at moves on every progress report so the UI can tell a slow step from a stuck one.
+        record = {"id": task_id, "label": label, "status": "queued", "stage": "Queued", "progress": 0, "created_at": created, "updated_at": created, "result": None, "error": None}
         with tasks_lock:
             tasks[task_id] = record
 
         def progress(stage, percent):
             with tasks_lock:
-                tasks[task_id].update(stage=stage, progress=percent)
+                tasks[task_id].update(stage=stage, progress=percent, updated_at=utc_now())
 
         def run() -> None:
             try:
+                started = utc_now()
                 with tasks_lock:
-                    tasks[task_id].update(status="running", stage="Starting", progress=1)
+                    tasks[task_id].update(status="running", stage="Starting", progress=1, started_at=started, updated_at=started)
                 result = fn(progress) if with_progress else fn()
+                finished = utc_now()
                 with tasks_lock:
-                    tasks[task_id].update({"status": "succeeded", "stage": "Complete", "progress": 100, "completed_at": utc_now(), "result": result})
+                    tasks[task_id].update({"status": "succeeded", "stage": "Complete", "progress": 100, "completed_at": finished, "updated_at": finished, "result": result})
             except Exception as exc:  # surfaced via /api/tasks; keeps web process alive
+                finished = utc_now()
                 with tasks_lock:
-                    tasks[task_id].update({"status": "failed", "completed_at": utc_now(), "error": str(exc)})
+                    tasks[task_id].update({"status": "failed", "completed_at": finished, "updated_at": finished, "error": str(exc)})
 
         submit_task(run)
         return record

@@ -5,6 +5,15 @@ All notable changes to this project are documented here. The project follows
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-09-28
+
+### Added
+
+- Background tasks now show live counts for long Eye passes (for example "judging frames (12/41)"
+  and "mapping story sections (3/9)"), plus elapsed time and how long since the last progress
+  update. A running task with no progress for 3 minutes is flagged as slow, so a long model request
+  can be told apart from a stuck one. Finished tasks show how long they took.
+
 ## [0.5.2] - 2026-09-28
 
 ### Fixed
