@@ -689,9 +689,6 @@ class VisionEye:
                     f"vision model ping failed: {self.model} at {self.base_url}: {exc}"
                 ) from exc
 
-    def _ask(self, frame: Any, timestamp: float, prompt: str | None) -> dict[str, Any]:
-        return self._ask_batch([(timestamp, frame)], prompt)[0]
-
     def _ask_temporal(
         self,
         frames: list[tuple[float, Any]],

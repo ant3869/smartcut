@@ -8,7 +8,10 @@ import os
 from pathlib import Path
 from urllib.parse import urlsplit
 
-from .util import PipelineError
+from .util import PipelineError, write_json
+
+EXAMPLE_CONFIG = Path(__file__).resolve().parents[1] / "config.example.json"
+FOLDER_KEYS = ("input_dir", "work_dir", "analysis_dir", "output_dir")
 
 
 def field(group, default, *, minimum=None, maximum=None, step=None, options=None, kind=None):
@@ -70,6 +73,19 @@ SETTINGS = {
     "bumper_path": field("Blade", None, kind="path"),
     "auto_render": field("Blade", False),
 }
+
+
+def ensure_config(path: Path, example: Path = EXAMPLE_CONFIG) -> bool:
+    """First run: write the config from the example, its folders anchored beside the config file."""
+    if path.exists():
+        return False
+    data = json.loads(example.read_text(encoding="utf-8"))
+    base = path.resolve().parent
+    for key in FOLDER_KEYS:
+        if data.get(key) and not Path(data[key]).is_absolute():
+            data[key] = (base / data[key]).as_posix()
+    write_json(path, data)
+    return True
 
 
 def revision(data: dict) -> str:

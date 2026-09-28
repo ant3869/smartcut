@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "anna-content-pipeline"
 version = "0.4.0"
-description = "Modular local video content pipeline: Whisper Ear, vision Eye, FFmpeg Blade, orchestration Brain."
+description = "SmartCut: local, review-first AI video editing (Whisper Ear, vision Eye, deterministic Brain, FFmpeg Blade)."
 requires-python = ">=3.11"
 dependencies = [
   "requests>=2.31",

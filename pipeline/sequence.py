@@ -148,7 +148,7 @@ def export_sequence(sequence: Sequence, path: Path, fmt: str) -> list[str]:
         import opentimelineio as otio
     except ImportError as exc:
         raise PipelineError("OpenTimelineIO is not installed in this runtime") from exc
-    timeline = otio.schema.Timeline(name="Anna Cutroom")
+    timeline = otio.schema.Timeline(name="SmartCut")
     rt = lambda seconds: otio.opentime.RationalTime(seconds * sequence.fps, sequence.fps)
     for track_id in ("V1", "V2", "A1", "A2"):
         track = otio.schema.Track(name=track_id, kind=otio.schema.TrackKind.Video if track_id.startswith("V") else otio.schema.TrackKind.Audio)

@@ -19,6 +19,7 @@ RUN pip install --no-cache-dir \
     "httpx>=0.28"
 
 COPY pipeline ./pipeline
+COPY run_pipeline.py ./run_pipeline.py
 COPY frontend ./frontend
 COPY config.example.json ./config.example.json
 COPY tests ./tests

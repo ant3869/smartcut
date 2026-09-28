@@ -18,6 +18,8 @@ sandbox/
 .codebase-memory/
 .playwright-mcp/
 implementation-notes.md
+.smartcut/
+SmartCut.exe
 *.log
 *.mp4
 *.mov

@@ -1,8 +1,12 @@
-# Anna Content Pipeline
+# SmartCut (Anna Content Pipeline)
 
 Keep Python/FastAPI and no-build vanilla JavaScript. All FFmpeg invocations belong
-in `pipeline/blade.py`. Preserve Bearer auth and gateway compatibility (no
-`reasoning_effort`; an empty or unavailable `/models` is not a failed connection).
+in `pipeline/blade.py` and run through `util.run_checked`. Preserve Bearer auth and
+gateway compatibility (no `reasoning_effort`; an empty or unavailable `/models` is
+not a failed connection). Process lifetime lives in `pipeline/lifecycle.py`: new
+long-lived child processes must be started after `contain_children()` so they die
+with the app. `packaging/SmartCut.cs` is only a thin exe shim for
+`pipeline/launcher.py`; keep launcher logic in Python.
 
 Run the container workflow by default:
 
