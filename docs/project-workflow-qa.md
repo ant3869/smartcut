@@ -84,3 +84,19 @@ Library requirements follow the [upstream GPU documentation](https://github.com/
 - Focused Python tests: **99 passed**. Node tests: **28 passed**. Node syntax,
   Python compileall and diff checks passed. Docker build was attempted but its
   Linux daemon was unavailable; Ruff is absent from the existing project venv.
+
+## 0.5.2 follow-up: story-map reply and long-sequence zoom
+
+- The exact first `s006.mp4` story-map section (0–16.733s, six frames and its saved
+  transcript) was replayed against the configured vision gateway using the existing
+  environment credential. At `max_tokens=500`, the gateway reported
+  `finish_reason=length`, 500 completion tokens (497 reasoning), and no message
+  content. At 2,400 tokens, it stopped normally and returned a valid four-field
+  section summary. No source media was modified by this diagnostic request.
+- An isolated browser project used a generated 30-minute MP4 on V1. At default
+  zoom the full clip occupied 973px inside a 1,037px timeline viewport, with no
+  horizontal overflow. The minimum 1/32× zoom reduced it to 30.4px; the ruler
+  retained two readable ticks and the browser reported zero console errors.
+- Full Python suite: **101 passed**; Node suite: **29 passed**. Node syntax,
+  Python compileall and diff checks passed. Docker build could not connect to
+  its Linux daemon, and Ruff was absent from the existing project venv.

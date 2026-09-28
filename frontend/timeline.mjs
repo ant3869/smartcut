@@ -3,6 +3,9 @@ export const clone = value => JSON.parse(JSON.stringify(value));
 export const duration = clip => (clip.source_end - clip.source_start) / clip.speed;
 export const end = clip => clip.start + duration(clip);
 export const sequenceDuration = sequence => Math.max(0, ...sequence.clips.map(end));
+// Zoom 1 fits the full sequence; smaller values give room beyond the edit.
+export const pixelsPerSecond = (viewportWidth, seconds, zoom=1) =>
+  Math.max(1, viewportWidth-64)/Math.max(10, seconds)*zoom;
 export const uid = () => crypto.randomUUID().slice(0, 12);
 export const locked = (sequence, track) => sequence.tracks.find(t => t.id === track)?.locked;
 export function linkedClips(sequence, id, linked = true) {

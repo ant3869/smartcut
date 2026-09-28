@@ -6,7 +6,9 @@ import sys
 from typing import Any
 
 from .contracts import Clip, Observation, Transcript
-from .util import PipelineError, post_json_with_retry
+from .util import PipelineError, completion_texts, post_json_with_retry
+
+CAPTION_TOKEN_BUDGETS = (1200, 2400)
 
 DEFAULT_CAPTION_PROMPT = (
     "Write a short first-person social-media caption in this performer's voice, based only on the "
@@ -54,27 +56,35 @@ class PersonaVoice:
         if not facts:
             return ""
         instruction = prompt or DEFAULT_CAPTION_PROMPT
-        payload = {
-            "model": self.model,
-            "temperature": 0.7,
-            "max_tokens": 120,
-            "stream": False,
-            "messages": [
-                {"role": "system", "content": f"You are role-playing as this performer: {persona}"},
-                {"role": "user", "content": f"{instruction}\n\nFacts about this specific video:\n{facts}"},
-            ],
-        }
-        try:
-            response = post_json_with_retry(
-                f"{self.base_url}/chat/completions", payload, timeout=120.0,
-                headers=self._headers(),
-            )
-            text = response.json()["choices"][0]["message"]["content"]
-        except PipelineError as exc:
-            raise PipelineError(f"Voice caption request failed: {exc}") from exc
-        except (KeyError, IndexError, TypeError, ValueError) as exc:
-            raise PipelineError(f"Voice caption returned an unreadable response: {exc}") from exc
-        return _extract_caption(text)
+        messages = [
+            {"role": "system", "content": f"You are role-playing as this performer: {persona}"},
+            {"role": "user", "content": f"{instruction}\n\nFacts about this specific video:\n{facts}"},
+        ]
+        last_reason = "no usable JSON"
+        # Reasoning models can spend a small budget entirely on thinking and return
+        # null content, so start generous and retry once with more room.
+        for max_tokens in CAPTION_TOKEN_BUDGETS:
+            payload = {"model": self.model, "temperature": 0.7, "max_tokens": max_tokens,
+                       "stream": False, "messages": messages}
+            try:
+                response = post_json_with_retry(
+                    f"{self.base_url}/chat/completions", payload, timeout=120.0,
+                    headers=self._headers(),
+                )
+                choice = response.json()["choices"][0]
+                texts = completion_texts(choice["message"])
+            except PipelineError as exc:
+                raise PipelineError(f"Voice caption request failed: {exc}") from exc
+            except (KeyError, IndexError, TypeError, ValueError) as exc:
+                raise PipelineError(f"Voice caption returned an unreadable response: {exc}") from exc
+            for text in texts:
+                caption = _extract_caption(text)
+                if caption is not None:
+                    return caption
+            last_reason = f"finish_reason={choice.get('finish_reason', 'unknown')}, max_tokens={max_tokens}"
+        # The caption is optional: an unusable reply must not fail the whole analysis.
+        print(f"Voice: model returned no caption JSON ({last_reason}), leaving caption empty", file=sys.stderr)
+        return ""
 
 
 def _build_facts(
@@ -122,11 +132,11 @@ def _segment_word_confidence(transcript: Transcript, start: float, end: float) -
     return sum(confidences) / len(confidences) if confidences else 0.0
 
 
-def _extract_caption(text: str) -> str:
+def _extract_caption(text: str) -> str | None:
     """Pull the caption out of a JSON-only model reply.
 
     Never publishes unparsed model text: if the model did not return a caption
-    field, the caption is empty rather than raw reasoning chatter.
+    field, this returns None rather than raw reasoning chatter.
     """
     candidates = [text] + re.findall(r"```(?:json)?\s*(.*?)```", text, flags=re.DOTALL | re.IGNORECASE)
     match = re.search(r"\{.*\}", text, flags=re.DOTALL)
@@ -139,5 +149,4 @@ def _extract_caption(text: str) -> str:
             continue
         if isinstance(value, dict) and "caption" in value:
             return str(value["caption"]).strip()
-    print(f"Voice: model caption was not valid JSON, leaving caption empty: {text[:200]!r}", file=sys.stderr)
-    return ""
+    return None
