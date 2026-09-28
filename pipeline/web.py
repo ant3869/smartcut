@@ -140,6 +140,19 @@ def display_size(video: dict[str, Any]) -> tuple[int, int]:
     return (height, width) if quarter_turn else (width, height)
 
 
+def save_upload(source: Any, dest: Path, chunk_size: int = 1024 * 1024) -> None:
+    """Stream to a sibling .part file so an interrupted upload never looks like finished media."""
+    part = dest.with_name(dest.name + ".part")
+    try:
+        with part.open("wb") as fh:
+            while chunk := source.read(chunk_size):
+                fh.write(chunk)
+        part.replace(dest)
+    except BaseException:
+        part.unlink(missing_ok=True)
+        raise
+
+
 def media_cache_key(path: Path, *parts: Any) -> str:
     stat = path.stat()
     raw = "|".join(str(item) for item in (path.resolve(), stat.st_size, stat.st_mtime_ns, *parts))
@@ -721,12 +734,7 @@ def create_app(config_path: str | Path = DEFAULT_CONFIG) -> FastAPI:
             while dest.exists():
                 i += 1
                 dest = folder / f"{stem} ({i}){suffix}"
-            with dest.open("wb") as fh:
-                while True:
-                    chunk = upload.file.read(1024 * 1024)
-                    if not chunk:
-                        break
-                    fh.write(chunk)
+            save_upload(upload.file, dest)
             stat = dest.stat()
             kind = "video" if suffix in VIDEO_EXTENSIONS else ("audio" if suffix in AUDIO_EXTENSIONS else "image")
             saved.append({"path": str(dest), "name": dest.name, "kind": kind, "size": stat.st_size, "modified_at": datetime.fromtimestamp(stat.st_mtime, tz=timezone.utc).isoformat()})

@@ -8,7 +8,7 @@ from fastapi.testclient import TestClient
 
 from pipeline.sequence import from_plan
 from pipeline.util import source_fingerprint
-from pipeline.web import create_app
+from pipeline.web import create_app, save_upload
 from test_editor import config, media, plan
 
 
@@ -230,3 +230,31 @@ def test_cuda_directory_is_process_local_and_handles_stay_alive(tmp_path, monkey
     assert seen == [str(tmp_path)]
     assert runtime._dll_directories[str(tmp_path)] is handle
     assert os.environ["PATH"] == str(tmp_path) + os.pathsep + "original"
+
+
+def test_interrupted_upload_leaves_no_media_behind(tmp_path):
+    class DroppedConnection:
+        def __init__(self):
+            self.reads = 0
+
+        def read(self, size):
+            self.reads += 1
+            if self.reads > 1:
+                raise ConnectionResetError("client went away")
+            return b"x" * size
+
+    dest = tmp_path / "clip.mp4"
+    with pytest.raises(ConnectionResetError):
+        save_upload(DroppedConnection(), dest, chunk_size=4)
+    assert list(tmp_path.iterdir()) == []
+
+    class Complete:
+        def __init__(self):
+            self.chunks = [b"abcd", b"ef"]
+
+        def read(self, size):
+            return self.chunks.pop(0) if self.chunks else b""
+
+    save_upload(Complete(), dest, chunk_size=4)
+    assert dest.read_bytes() == b"abcdef"
+    assert list(tmp_path.iterdir()) == [dest]

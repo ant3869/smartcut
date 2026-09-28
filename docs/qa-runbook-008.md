@@ -11,7 +11,7 @@ fresh vision run. No rendering — analysis + evaluation only.
 
 1. In the smartcut repo: `git pull origin main` and confirm the v8 merge (`8fc14ef`)
    is present.
-2. Delete `E:\anna\content-pipeline\work\jobs\008-aef29e5a96b5\editor_review.json`
+2. Delete `work\jobs\008-aef29e5a96b5\editor_review.json` (in the repo folder)
    BEFORE measuring. It holds gold human decisions that would poison the run by
    replaying expected answers.
 3. LM Studio serves `minicpm-v-4_5` with context length 16384

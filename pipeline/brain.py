@@ -12,6 +12,7 @@ from .ear import WhisperEar, merge_intervals
 from .eye import VisionEye, SECTION_SETUP_CLAUSE, compose_section_policy
 from .highlights import Highlight, plan_highlights, select_reel_highlights
 from .scenes import detect_content_scenes
+from .settings import DEFAULT_GATEWAY_URL
 from .signals import build_frame_hints, detect_frame_signals
 from .story import build_story_map, learned_editorial_focus, write_story_map
 from .editorial_loop import build_editorial_loop
@@ -41,7 +42,7 @@ class PipelineBrain:
             or ""
         )
         self.eye = VisionEye(
-            base_url=config.get("lm_studio_url", "http://127.0.0.1:1234/v1"),
+            base_url=config.get("lm_studio_url", DEFAULT_GATEWAY_URL),
             model=config["vision_model"], interval=float(config.get("frame_interval_seconds", 2.0)),
             cache_dir=self.analysis_dir,
             max_width=int(config.get("vision_max_width", 512)),
@@ -55,7 +56,7 @@ class PipelineBrain:
             output_fps=int(config.get("blade_output_fps", 30)),
         )
         self.voice = PersonaVoice(
-            base_url=config.get("lm_studio_url", "http://127.0.0.1:1234/v1"),
+            base_url=config.get("lm_studio_url", DEFAULT_GATEWAY_URL),
             model=config.get("caption_model") or config["vision_model"],
             api_key=vision_api_key,
         )
