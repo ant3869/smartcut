@@ -184,12 +184,14 @@ export function fillScale(mediaWidth, mediaHeight, frameWidth, frameHeight) {
 }
 export const summary = sequence => ({duration:fix(sequenceDuration(sequence)), clips:sequence.clips.filter(c => c.track[0] === 'V').length, markers:sequence.markers.length});
 // A sampled frame speaks for the time around it, halfway to each neighbouring sample. Eye proposes
-// cuts the same way (sample ± half the interval), so heat and cut flags line up.
-export function sampleSpans(observations, duration) {
+// cuts the same way (sample ± half the interval), so heat and cut flags line up. A lone sample has no
+// neighbour to measure against, so it uses the analysis interval Eye cut with.
+export function sampleSpans(observations, duration, interval = 2) {
+  const half = Number(interval) > 0 ? Number(interval)/2 : 1;
   return observations.map((observation, i) => {
     const t = observation.timestamp, prev = observations[i-1]?.timestamp, next = observations[i+1]?.timestamp;
-    const before = prev != null ? (t-prev)/2 : next != null ? (next-t)/2 : 1;
-    const after = next != null ? (next-t)/2 : prev != null ? (t-prev)/2 : 1;
+    const before = prev != null ? (t-prev)/2 : next != null ? (next-t)/2 : half;
+    const after = next != null ? (next-t)/2 : prev != null ? (t-prev)/2 : half;
     const end = t + after;
     return {start:Math.max(0, t-before), end:Number.isFinite(duration) ? Math.min(duration, end) : end, observation};
   });
