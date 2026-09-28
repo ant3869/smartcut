@@ -20,17 +20,22 @@ DEFAULT_CAPTION_PROMPT = (
 
 
 class PersonaVoice:
-    """Text-completion adapter for the local LM Studio server.
+    """Text-completion adapter for the vision backend (LM Studio or 9Router).
 
     Reuses the exact same connection pattern as `VisionEye` (same `base_url`, same
     `/chat/completions` endpoint, same JSON-only response contract) instead of inventing a
-    second API integration -- the local model already answers plain text prompts, not just
-    vision ones.
+    second API integration.
     """
 
-    def __init__(self, *, base_url: str, model: str):
+    def __init__(self, *, base_url: str, model: str, api_key: str | None = None):
         self.base_url = base_url.rstrip("/")
         self.model = model
+        self.api_key = api_key or ""
+
+    def _headers(self) -> dict[str, str]:
+        if self.api_key:
+            return {"Authorization": f"Bearer {self.api_key}"}
+        return {}
 
     def caption(
         self,
@@ -60,7 +65,10 @@ class PersonaVoice:
             ],
         }
         try:
-            response = post_json_with_retry(f"{self.base_url}/chat/completions", payload, timeout=120.0)
+            response = post_json_with_retry(
+                f"{self.base_url}/chat/completions", payload, timeout=120.0,
+                headers=self._headers(),
+            )
             text = response.json()["choices"][0]["message"]["content"]
         except PipelineError as exc:
             raise PipelineError(f"Voice caption request failed: {exc}") from exc

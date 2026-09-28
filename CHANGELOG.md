@@ -5,7 +5,50 @@ All notable changes to this project are documented here. The project follows
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-09-27
+
+### Changed
+
+- Cutroom is rebuilt as a multitrack editor on the persisted `sequence.json`: Project panel,
+  Source/Program monitors, V2/V1/A1/A2 timeline with trim, split, ripple, overwrite, linked and
+  snapped moves, track mute/lock, effect controls (speed, gain, opacity, scale, position,
+  rotation), undo/redo, autosave, a settings dialog for every config key, and EDL/CSV/OTIO/MP4
+  export. Timeline commands live in the Node-tested `frontend/timeline.mjs`;
+  `GET /api/jobs/{id}/sequence?use_plan=true` rebuilds from the approved plan.
+- Cutroom now uses the OpenEval visual system: exact OpenEval tokens, `color-mix` surfaces, 12px cards,
+  status pills, uppercase tracked eyebrows, tabular mono numbers, openeval nav/tab/button/input/dialog/toast
+  recipes and lucide icons (vendored in `frontend/icons.mjs`, no build step). A new favicon and brand mark match.
+
 ### Added
+
+- Dark, Light and **Auto** themes (`frontend/theme.mjs`): Auto follows the operating system live, the choice
+  persists, `index.html` applies it before first paint, and it is switchable from the header toggle or the new
+  View menu (which also holds the AI lanes / captions / AI verdict toggles). Video monitors stay dark in both themes.
+
+- Cutroom **Auto** toolkit (`frontend/auto.mjs`, pure and Node-tested): one-dialog
+  **Auto-edit** that rebuilds from the plan, removes AI-flagged waste and your cut
+  decisions, removes silences, closes gaps, and drops scene/highlight markers, all as one
+  undoable edit with a live dry-run preview (durations plus a removed-range diff bar).
+  Human Keep/Protect ranges are never cut. Individual commands live in the Auto and
+  Markers menus.
+- Silence removal from real audio peaks with an **Auto** threshold measured from room tone
+  vs. speech; it warns when background sound sits too close to speech for reliable cuts.
+- **AI cut proposal queue** in Review: every model waste proposal with Accept (becomes a
+  hash-bound human cut) / Reject (becomes a protected keep), batch actions, keyboard
+  review (`N`/`Shift+N`, `A`, `X`, `P` to audition with pre-roll), and an evidence
+  strength chip from the proposal's own frame scores ("Weak · scored 8" flags cuts the
+  model itself rated well).
+- Evidence everywhere: an AI score/flag/scene lane and a transcript lane on the timeline,
+  mapped through the edit; a clickable source-time evidence minimap under the Source
+  monitor; an AI summary with score histogram; live captions and an AI verdict HUD on the
+  Program monitor.
+- Real waveforms on audio clips and thumbnail filmstrips on video clips, via cached
+  `GET /api/waveform` and `GET /api/thumbnail` (FFmpeg stays in `blade.py`).
+- Editing: fill/fit frame, sequence format presets (Match source, 9:16, 16:9, 1:1, 4:5),
+  scene-change snapping, `↑/↓` edit points, `←/→` frames, `= - \` and Ctrl+wheel zoom,
+  editable markers, captions (.srt) exported for the edit, a shortcuts sheet (`?`),
+  import-then-analyze, and task progress in the tab title.
+- Job summaries expose `scene_boundaries`.
 
 - `audio_evidence_enabled` config flag (default `true`): a single on/off switch for
   speech audio as edit evidence. When off, judged frames carry no transcript lines and
@@ -21,6 +64,13 @@ All notable changes to this project are documented here. The project follows
 
 ### Fixed
 
+- Sources without an audio stream now transcribe to an empty transcript instead of failing Ear.
+- The gateway check tolerates malformed or partial `/models` responses and verifies the model
+  with a chat ping whenever it is not listed, so gateways with an empty `/models` still connect.
+- Sequence autosave no longer re-hashes (SHA-256) and re-probes the full source on every
+  save: fingerprints and ffprobe results are cached per path+size+mtime.
+- `/api/media` and plan-built sequences honour rotation metadata, so phone footage stored
+  as rotated landscape reports its real portrait frame.
 - Vision prompt v8: the banter check now states that checks 6/7 do NOT override it and
   forbids reframing conversation as interaction, participation, or consent — the v7 QA
   showed the model detecting the two-voice banter (008@123–130) yet keeping the frames

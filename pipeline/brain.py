@@ -2,11 +2,12 @@ from __future__ import annotations
 
 import json
 import hashlib
+import os
 from dataclasses import asdict
 from datetime import datetime, timezone
 from pathlib import Path
 
-from .contracts import Clip, EditPlan, Observation
+from .contracts import Clip, EditPlan, Observation, Transcript
 from .ear import WhisperEar, merge_intervals
 from .eye import VisionEye, SECTION_SETUP_CLAUSE, compose_section_policy
 from .highlights import Highlight, plan_highlights, select_reel_highlights
@@ -31,6 +32,14 @@ class PipelineBrain:
             model=config.get("whisper_model", "base"), device=config.get("whisper_device", "cpu"),
             compute_type=config.get("whisper_compute_type", "int8"), cache_dir=self.analysis_dir,
         )
+        # Vision backend: LM Studio (local, no key) or 9Router (gateway, Bearer key).
+        # vision_api_key empty + 9router URL = auto-use NEXUS_LLM_API_KEY env.
+        vision_api_key = (
+            config.get("vision_api_key")
+            or os.getenv("NEXUS_LLM_API_KEY")
+            or os.getenv("NINEROUTER_API_KEY")
+            or ""
+        )
         self.eye = VisionEye(
             base_url=config.get("lm_studio_url", "http://127.0.0.1:1234/v1"),
             model=config["vision_model"], interval=float(config.get("frame_interval_seconds", 2.0)),
@@ -38,6 +47,7 @@ class PipelineBrain:
             max_width=int(config.get("vision_max_width", 512)),
             batch_size=int(config.get("vision_batch_size", 4)),
             cull_confidence_threshold=float(config.get("vision_cull_confidence_threshold", 0.6)),
+            api_key=vision_api_key,
         )
         self.blade = FfmpegBlade(
             crf=int(config.get("blade_crf", 20)),
@@ -47,13 +57,19 @@ class PipelineBrain:
         self.voice = PersonaVoice(
             base_url=config.get("lm_studio_url", "http://127.0.0.1:1234/v1"),
             model=config.get("caption_model") or config["vision_model"],
+            api_key=vision_api_key,
         )
 
     def job_dir(self, source: Path, fingerprint: dict[str, str] | None = None) -> Path:
         fingerprint = fingerprint or source_fingerprint(source)
         return self.work_dir / "jobs" / f"{source.stem}-{fingerprint['sha256'][:12]}"
 
-    def analyze(self, source: Path, *, refresh: bool = False) -> dict:
+    def analyze(self, source: Path, *, refresh: bool = False, stages: list[str] | None = None, progress=None) -> dict:
+        stages = set(["ear", "eye", "voice"] if stages is None else stages)
+        if stages - {"ear", "eye", "voice"}:
+            raise PipelineError("Unknown analysis stage")
+        report = progress or (lambda stage, percent: None)
+        report("Inspecting source", 5)
         source = source.resolve()
         if not source.exists():
             raise PipelineError(f"input does not exist: {source}")
@@ -62,7 +78,11 @@ class PipelineBrain:
         job.mkdir(parents=True, exist_ok=True)
         duration = media_duration(source)
         source_sha256 = fingerprint["sha256"]
-        transcript = self.ear.transcribe(source, refresh=refresh)
+        old = read_json(job / "edit_plan.json") if (job / "edit_plan.json").exists() else {}
+        report("Ear · transcribing" if "ear" in stages else "Ear · reusing evidence", 10)
+        transcript = (self.ear.transcribe(source, refresh=refresh) if "ear" in stages else
+                      WhisperEar._from_dict(old["transcript"], cached=True) if old.get("transcript") else
+                      Transcript(ok=False, model=self.ear.model, duration=duration, error="Ear skipped"))
         # Audio evidence (frame AUDIO lines, section audio, transcript waste terms)
         # can be disabled for videos where the soundtrack is music, TV, or other
         # non-speech audio that would mislead speech-based judgments.
@@ -75,18 +95,19 @@ class PipelineBrain:
                 interval=float(self.config.get("frame_interval_seconds", 2.0)),
                 refresh=refresh,
             )
-            if self.config.get("frame_signal_enabled", True)
+            if "eye" in stages and self.config.get("frame_signal_enabled", True)
             else []
         )
+        report("Eye · judging frames" if "eye" in stages else "Eye · reusing evidence", 30)
         observations = self.eye.analyze(
             source,
             refresh=refresh,
             frame_hints=build_frame_hints(signals),
             transcript_segments=list(transcript.segments) if transcript.ok else None,
             audio_enabled=audio_evidence,
-        )
+        ) if "eye" in stages else [Observation(**item) for item in old.get("observations", [])]
         scenes = []
-        if self.config.get("scene_detection_enabled", True):
+        if "eye" in stages and self.config.get("scene_detection_enabled", True):
             scenes = detect_content_scenes(
                 source,
                 source_sha256=source_sha256,
@@ -118,7 +139,7 @@ class PipelineBrain:
                 editorial_policy=compose_section_policy(str(self.config.get(
                     "multi_pass_editorial_policy", SECTION_SETUP_CLAUSE,
                 ))),
-            ) if self.config.get("multi_pass_section_summary_enabled", True) else []
+            ) if "eye" in stages and self.config.get("multi_pass_enabled", True) and self.config.get("multi_pass_section_summary_enabled", True) else []
         )
         story_map = build_story_map(
             duration=duration, observations=observations, scenes=scenes, transcript=transcript,
@@ -143,9 +164,15 @@ class PipelineBrain:
                 candidates=story_map["target_candidates"],
                 editorial_focus=learned_editorial_focus(self.work_dir),
             )
-            if self.config.get("multi_pass_enabled", False) and self.config.get("multi_pass_apply_cuts", False)
+            if "eye" in stages and self.config.get("multi_pass_enabled", False) and self.config.get("multi_pass_apply_cuts", False)
             else []
         )
+        temporal_path = job / "temporal_waste.json"
+        if "eye" in stages:
+            write_json(temporal_path, [asdict(c) for c in temporal_waste])
+        elif temporal_path.exists():
+            temporal_waste = [_clip_from_dict(c) for c in read_json(temporal_path)]
+        report("Brain · applying review decisions", 75)
         model_waste = _exclude_protected_intervals(visual_waste + temporal_waste, editorial_keep)
         waste = merge_intervals(transcript_waste + model_waste + editorial_waste)
         min_seconds = float(self.config.get("full_edit_min_segment_seconds", 0.5))
@@ -156,6 +183,7 @@ class PipelineBrain:
         clips = subtract_intervals([Clip(0.0, duration)], waste, min_seconds=min_seconds, dropped=dropped_slivers)
         clips = _tag_dark_overlaps(clips, self.eye.dark_intervals(observations, duration))
         persona = _resolve_persona(self.config)
+        report("Voice · captioning" if "voice" in stages else "Voice · skipped", 90)
         caption = (
             self.voice.caption(
                 persona=persona,
@@ -164,7 +192,7 @@ class PipelineBrain:
                 clips=clips,
                 min_word_confidence=float(self.config.get("caption_min_word_confidence", 0.55)),
             )
-            if persona
+            if persona and "voice" in stages
             else ""
         )
         plan = EditPlan(
@@ -179,7 +207,61 @@ class PipelineBrain:
             review_intervals=self.eye.review_intervals(observations, duration),
         )
         self._write_plan(job, plan, fingerprint)
-        return plan.to_dict()
+        result = plan.to_dict()
+        result["stages"] = {stage: "ran" if stage in stages else "reused" if old else "skipped" for stage in ("ear", "eye", "voice")}
+        write_json(job / "edit_plan.json", result)
+        report("Analysis complete", 100)
+        return result
+
+    def replan_review(self, source: Path, *, progress=None) -> dict:
+        """Rebuild from saved Ear/Eye evidence without another inference request."""
+        job = self.job_dir(source)
+        if not (job / "edit_plan.json").exists():
+            raise PipelineError("Analyze the source before re-planning")
+        return self.analyze(source, stages=[], progress=progress)
+
+    def transcribe_srt(self, source: Path, *, refresh=True) -> dict:
+        source = source.resolve()
+        fingerprint = source_fingerprint(source)
+        job = self.job_dir(source, fingerprint)
+        job.mkdir(parents=True, exist_ok=True)
+        transcript = self.ear.transcribe(source, refresh=refresh)
+        if not transcript.ok:
+            raise PipelineError(transcript.error or "Transcription failed")
+        def timestamp(value):
+            milliseconds = round(value * 1000)
+            seconds, ms = divmod(milliseconds, 1000)
+            minutes, sec = divmod(seconds, 60)
+            hours, minute = divmod(minutes, 60)
+            return f"{hours:02}:{minute:02}:{sec:02},{ms:03}"
+        text = "\n\n".join(f"{i}\n{timestamp(s.start)} --> {timestamp(s.end)}\n{s.text}" for i, s in enumerate(transcript.segments, 1))
+        path = job / "transcript.srt"
+        path.write_text(text + "\n", encoding="utf-8")
+        write_json(job / "transcript.json", asdict(transcript))
+        write_json(job / "source_fingerprint.json", fingerprint)
+        return {"path": str(path), "segments": len(transcript.segments), "source": str(source)}
+
+    def render_edit(self, source: Path, sequence, *, progress=None) -> dict:
+        report = progress or (lambda stage, percent: None)
+        report("Verifying source media", 10)
+        for media in {c.source: c.source_sha256 for c in sequence.clips}.items():
+            if source_fingerprint(Path(media[0]))["sha256"] != media[1]:
+                raise PipelineError("Sequence media changed; re-import before rendering")
+        job = self.job_dir(source)
+        root = self.output_dir / job.name
+        final = root / f"{source.stem}_sequence.mp4"
+        bumper = Path(self.config["bumper_path"]) if self.config.get("bumper_path") else None
+        content = root / f"{source.stem}_sequence_content.mp4" if bumper else final
+        report("Blade · compositing sequence", 30)
+        self.blade.render_sequence(sequence, content, watermark=self._watermark())
+        if bumper:
+            report("Blade · adding bumper", 85)
+            self.blade.prepend_bumper(bumper, content, final)
+        report("Verifying output", 95)
+        manifest = {"source": str(source), "mode": "sequence", "sequence_revision": sequence.revision,
+                    "final_output": self.blade.verify(final), "completed_at": datetime.now(timezone.utc).isoformat()}
+        write_json(job / "render_manifest.json", manifest)
+        return manifest
 
     def plan(self, source: Path, *, refresh: bool = False) -> dict:
         return self.analyze(source, refresh=refresh)
@@ -376,6 +458,7 @@ class PipelineBrain:
         ]
 
     def _preview_target(self, duration: float, requested: float | None) -> float:
+        requested = requested if requested is not None else self.config.get("preview_target_seconds")
         if requested is not None:
             return max(float(self.config.get("preview_min_clip_seconds", 3.0)), requested)
         ratio = float(self.config.get("preview_target_ratio", 0.25))
@@ -405,6 +488,8 @@ class PipelineBrain:
         write_json(job / "source_fingerprint.json", fingerprint)
         if plan.caption:
             (job / "caption.txt").write_text(plan.caption, encoding="utf-8")
+        else:
+            (job / "caption.txt").unlink(missing_ok=True)
 
 
 def _resolve_persona(config: dict) -> str | None:

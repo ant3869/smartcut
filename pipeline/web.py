@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import hashlib
 import json
+import math
 import os
 import subprocess
 import sys
@@ -11,17 +13,24 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import FastAPI, File, HTTPException, Query, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
+from . import __version__
+from .blade import FfmpegBlade
 from .brain import PipelineBrain
 from .contracts import Clip
-from .util import PipelineError, read_json, source_fingerprint
+from .util import PipelineError, read_json, source_fingerprint, write_json, ffprobe_json
+from .settings import SETTINGS, public_settings, validate_settings, revision
+from .sequence import Sequence, from_plan, export_sequence
 
-MEDIA_EXTENSIONS = {".mp4", ".mov", ".mkv", ".avi", ".webm"}
+MEDIA_EXTENSIONS = {".mp4", ".mov", ".mkv", ".avi", ".webm", ".mp3", ".wav", ".m4a", ".aac", ".flac", ".ogg", ".png", ".jpg", ".jpeg", ".webp", ".bmp"}
+VIDEO_EXTENSIONS = {".mp4", ".mov", ".mkv", ".avi", ".webm"}
+AUDIO_EXTENSIONS = {".mp3", ".wav", ".m4a", ".aac", ".flac", ".ogg"}
+IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".webp", ".bmp"}
 ROOT = Path(__file__).resolve().parents[1]
 FRONTEND_DIR = ROOT / "frontend"
 DEFAULT_CONFIG = ROOT / "config.json"
@@ -36,6 +45,20 @@ class ActionRequest(BaseModel):
     refresh: bool = False
     auto_plan: bool = False
     target_seconds: float | None = Field(default=None, ge=1)
+    stages: list[str] | None = None
+    dry_run: bool = False
+
+
+class ConfigUpdate(BaseModel):
+    values: dict[str, Any] = Field(default_factory=dict)
+    revision: str | None = None
+    dry_run: bool = False
+
+
+class ReelRequest(BaseModel):
+    job_ids: list[str] = Field(min_length=2)
+    target_seconds: float = Field(default=45, ge=1, le=3600)
+    dry_run: bool = False
 
 
 class ReviewPayload(BaseModel):
@@ -76,12 +99,57 @@ def utc_now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+def display_size(video: dict[str, Any]) -> tuple[int, int]:
+    """Frame size as players show it: phone footage often stores 90-degree rotation as metadata."""
+    width, height = int(video.get("width") or 1280), int(video.get("height") or 720)
+    rotation = (video.get("tags") or {}).get("rotate") or next(
+        (item.get("rotation") for item in video.get("side_data_list") or [] if "rotation" in item), 0)
+    try:
+        quarter_turn = round(float(rotation)) % 180 == 90
+    except (TypeError, ValueError):
+        quarter_turn = False
+    return (height, width) if quarter_turn else (width, height)
+
+
+def media_cache_key(path: Path, *parts: Any) -> str:
+    stat = path.stat()
+    raw = "|".join(str(item) for item in (path.resolve(), stat.st_size, stat.st_mtime_ns, *parts))
+    return hashlib.sha1(raw.encode("utf-8")).hexdigest()[:24]
+
+
 def create_app(config_path: str | Path = DEFAULT_CONFIG) -> FastAPI:
     config_path = Path(config_path).resolve()
     config = load_config(config_path)
-    app = FastAPI(title="Anna Content Pipeline", version="0.1.0")
+    app = FastAPI(title="Anna Content Pipeline", version=__version__)
     app.state.config_path = config_path
     app.state.config = config
+    config_lock = threading.RLock()
+    sequence_lock = threading.RLock()
+    # Hashing a multi-hundred-MB source on every autosave stalled the editor; identity is path+size+mtime.
+    fingerprints: dict[tuple[str, int, int], dict[str, Any]] = {}
+    probes: dict[tuple[str, int, int], dict[str, Any]] = {}
+    ffmpeg_slots = threading.BoundedSemaphore(3)
+
+    def file_version(path: Path) -> tuple[str, int, int]:
+        stat = path.stat()
+        return (str(path.resolve()), stat.st_size, stat.st_mtime_ns)
+
+    def fingerprint(path: Path) -> dict[str, Any]:
+        key = file_version(path)
+        if key not in fingerprints:
+            fingerprints[key] = source_fingerprint(path)
+        return fingerprints[key]
+
+    def probe(path: Path) -> dict[str, Any]:
+        """ffprobe once per file version; thumbnails and autosaves call media_info constantly."""
+        key = file_version(path)
+        if key not in probes:
+            probes[key] = ffprobe_json(path)
+        return probes[key]
+
+    @app.exception_handler(PipelineError)
+    async def pipeline_error(request, exc):
+        return JSONResponse(status_code=400, content={"detail": str(exc)})
 
     app.add_middleware(
         CORSMiddleware,
@@ -113,7 +181,10 @@ def create_app(config_path: str | Path = DEFAULT_CONFIG) -> FastAPI:
         return Path(value) if value else None
 
     def job_path(job_id: str) -> Path:
-        path = work_dir() / "jobs" / job_id
+        root = (work_dir() / "jobs").resolve()
+        path = (root / job_id).resolve()
+        if path.parent != root:
+            raise HTTPException(status_code=403, detail="invalid job id")
         if not path.exists() or not path.is_dir():
             raise HTTPException(status_code=404, detail=f"unknown job: {job_id}")
         return path
@@ -122,8 +193,10 @@ def create_app(config_path: str | Path = DEFAULT_CONFIG) -> FastAPI:
         plan = safe_read_json(path / "edit_plan.json")
         render_manifest = safe_read_json(path / "render_manifest.json")
         preview_manifest = safe_read_json(path / "preview_manifest.json")
+        sequence = safe_read_json(path / "sequence.json")
         source = safe_read_json(path / "source_fingerprint.json")
         review = safe_read_json(path / "editor_review.json")
+        scenes = (safe_read_json(path / "scene_boundaries.json") or {}).get("scenes") or []
         caption = safe_read_text(path / "caption.txt")
 
         source_path = None
@@ -182,9 +255,13 @@ def create_app(config_path: str | Path = DEFAULT_CONFIG) -> FastAPI:
             "model_calls": model_calls,
             "transcript_segments": transcript_segments,
             "frame_signals": (plan or {}).get("frame_signals", []),
+            "scene_boundaries": [float(s["start_seconds"]) for s in scenes
+                                 if isinstance(s, dict) and float(s.get("start_seconds") or 0) > 0],
             "dropped_slivers": (plan or {}).get("dropped_slivers", []),
             "caption": caption,
             "review": review,
+            "sequence_revision": (sequence or {}).get("revision"),
+            "source_sha256": (plan or {}).get("source_sha256") or (source or {}).get("sha256"),
             "render_manifest": render_manifest,
             "preview_manifest": preview_manifest,
             "final_output": output,
@@ -208,6 +285,7 @@ def create_app(config_path: str | Path = DEFAULT_CONFIG) -> FastAPI:
                 "preview_manifest": str(path / "preview_manifest.json") if (path / "preview_manifest.json").exists() else None,
                 "otio_timeline": str(path / "timeline.otio") if (path / "timeline.otio").exists() else None,
                 "caption": str(path / "caption.txt") if (path / "caption.txt").exists() else None,
+                "srt": str(path / "transcript.srt") if (path / "transcript.srt").exists() else None,
             },
             "updated_at": datetime.fromtimestamp(path.stat().st_mtime, tz=timezone.utc).isoformat(),
         }
@@ -251,17 +329,23 @@ def create_app(config_path: str | Path = DEFAULT_CONFIG) -> FastAPI:
                 continue
         raise HTTPException(status_code=403, detail="file is outside configured pipeline directories")
 
-    def start_task(label: str, fn, *args, **kwargs) -> dict[str, Any]:
+    def start_task(label: str, fn, *, with_progress=False) -> dict[str, Any]:
         task_id = uuid.uuid4().hex[:12]
-        record = {"id": task_id, "label": label, "status": "running", "created_at": utc_now(), "result": None, "error": None}
+        record = {"id": task_id, "label": label, "status": "queued", "stage": "Queued", "progress": 0, "created_at": utc_now(), "result": None, "error": None}
         with tasks_lock:
             tasks[task_id] = record
 
+        def progress(stage, percent):
+            with tasks_lock:
+                tasks[task_id].update(stage=stage, progress=percent)
+
         def run() -> None:
             try:
-                result = fn(*args, **kwargs)
                 with tasks_lock:
-                    tasks[task_id].update({"status": "succeeded", "completed_at": utc_now(), "result": result})
+                    tasks[task_id].update(status="running", stage="Starting", progress=1)
+                result = fn(progress) if with_progress else fn()
+                with tasks_lock:
+                    tasks[task_id].update({"status": "succeeded", "stage": "Complete", "progress": 100, "completed_at": utc_now(), "result": result})
             except Exception as exc:  # surfaced via /api/tasks; keeps web process alive
                 with tasks_lock:
                     tasks[task_id].update({"status": "failed", "completed_at": utc_now(), "error": str(exc)})
@@ -275,12 +359,125 @@ def create_app(config_path: str | Path = DEFAULT_CONFIG) -> FastAPI:
 
     @app.get("/api/config")
     def config_view() -> dict[str, Any]:
-        data = dict(cfg())
+        data = public_settings(cfg())
         data["config_path"] = str(app.state.config_path)
         data["work_dir"] = str(work_dir())
         data["output_dir"] = str(output_dir())
         data["analysis_dir"] = str(analysis_dir())
         return data
+
+    @app.get("/api/config/schema")
+    def config_schema():
+        return SETTINGS
+
+    @app.put("/api/config")
+    def config_save(payload: ConfigUpdate):
+        with config_lock:
+            current = cfg()
+            if payload.revision and payload.revision != revision(current):
+                raise HTTPException(409, "Settings changed in another window. Reload settings and retry.")
+            updated = validate_settings(current, payload.values)
+            if not payload.dry_run:
+                write_json(config_path, updated)
+                app.state.config = updated
+            return {"ok": True, "dry_run": payload.dry_run, "config": public_settings(updated)}
+
+    @app.post("/api/connection/test")
+    def test_connection(payload: ConfigUpdate | None = None):
+        settings = validate_settings(cfg(), payload.values) if payload else cfg()
+        if payload and payload.dry_run:
+            return {"ok": True, "dry_run": True, "model": settings["vision_model"]}
+        engine = PipelineBrain(settings)
+        def check():
+            engine.eye._check_server()
+            return {"ok": True, "model": engine.eye.model, "base_url": engine.eye.base_url}
+        return start_task("Test gateway connection", check)
+
+    @app.get("/api/media")
+    def media_info(path: str):
+        source = allowed_file(Path(path))
+        if not source.is_file() or source.suffix.lower() not in MEDIA_EXTENSIONS:
+            raise HTTPException(400, "Select an existing video, image, or audio file")
+        streams = probe(source)
+        video = next((s for s in streams.get("streams", []) if s.get("codec_type") == "video"), {})
+        width, height = display_size(video)
+        return {"path": str(source), "name": source.name, "duration": float(streams.get("format", {}).get("duration") or 5),
+                "width": width, "height": height,
+                "has_audio": any(s.get("codec_type") == "audio" for s in streams.get("streams", [])),
+                "sha256": fingerprint(source)["sha256"]}
+
+    @app.get("/api/waveform")
+    def waveform(path: str, rate: int = Query(50, ge=10, le=100)) -> dict[str, Any]:
+        """Cached per-bucket audio peaks for timeline waveforms and silence detection."""
+        info = media_info(path)
+        source = Path(info["path"])
+        if not info["has_audio"]:
+            return {"rate": rate, "duration": info["duration"], "peaks": []}
+        cache = analysis_dir() / "cutroom" / f"{media_cache_key(source, 'peaks', rate)}.json"
+        cached = safe_read_json(cache)
+        if cached and cached.get("rate") == rate:
+            return cached
+        with ffmpeg_slots:
+            peaks = FfmpegBlade.audio_peaks(source, rate=rate)
+        result = {"rate": rate, "duration": info["duration"], "peaks": peaks}
+        write_json(cache, result)
+        return result
+
+    @app.get("/api/thumbnail")
+    def thumbnail(path: str, t: float = Query(0, ge=0, le=86400), h: int = Query(72, ge=24, le=360)) -> FileResponse:
+        """Cached JPEG frame; times are quantized to a tenth of a second so filmstrips reuse frames."""
+        info = media_info(path)
+        source = Path(info["path"])
+        if source.suffix.lower() in AUDIO_EXTENSIONS:
+            raise HTTPException(400, "Audio files have no frames")
+        at = 0.0 if source.suffix.lower() in IMAGE_EXTENSIONS else round(min(t, max(0.0, info["duration"] - .1)), 1)
+        cache = analysis_dir() / "cutroom" / "thumbs" / f"{media_cache_key(source, at, h)}.jpg"
+        if not cache.is_file():
+            with ffmpeg_slots:
+                FfmpegBlade.thumbnail(source, cache, time=at, height=h)
+        return FileResponse(cache, media_type="image/jpeg", headers={"Cache-Control": "max-age=86400"})
+
+    def get_sequence(job_id: str, *, use_plan: bool = False) -> Sequence:
+        job = job_path(job_id)
+        if (job / "sequence.json").exists() and not use_plan:
+            return Sequence.model_validate(read_json(job / "sequence.json"))
+        plan = safe_read_json(job / "edit_plan.json")
+        if not plan or not plan.get("clips"):
+            raise HTTPException(400, "No plan clips; analyze first")
+        info = media_info(plan["source"])
+        sequence = from_plan(plan, width=int(info["width"]) // 2 * 2, height=int(info["height"]) // 2 * 2,
+                             fps=int(cfg().get("blade_output_fps", 30)), has_audio=info["has_audio"])
+        sequence.revision = (safe_read_json(job / "sequence.json") or {}).get("revision", 0)
+        return sequence
+
+    @app.get("/api/jobs/{job_id}/sequence")
+    def sequence_view(job_id: str, use_plan: bool = False):
+        return get_sequence(job_id, use_plan=use_plan).model_dump()
+
+    @app.put("/api/jobs/{job_id}/sequence")
+    def sequence_save(job_id: str, payload: Sequence, dry_run: bool = False):
+        with sequence_lock:
+            job = job_path(job_id)
+            current = safe_read_json(job / "sequence.json")
+            expected_revision = (current or {}).get("revision", 0)
+            if payload.revision != expected_revision:
+                raise HTTPException(409, "Sequence changed in another window. Reload before saving.")
+            source = source_for_job(job_id)
+            if payload.source_sha256 != fingerprint(source)["sha256"]:
+                raise HTTPException(409, "Sequence source hash does not match current source")
+            checked = {}
+            for clip in payload.clips:
+                if clip.source not in checked:
+                    checked[clip.source] = media_info(clip.source)
+                info = checked[clip.source]
+                if clip.source_sha256 != info["sha256"]:
+                    raise HTTPException(409, "Clip media changed; re-import it")
+                if clip.kind != "image" and clip.source_end > info["duration"] + .05:
+                    raise HTTPException(400, "Clip trim exceeds source duration")
+            if not dry_run:
+                payload.revision += 1
+                write_json(job / "sequence.json", payload.model_dump())
+            return {"ok": True, "dry_run": dry_run, "sequence": payload.model_dump()}
 
     @app.get("/api/summary")
     def summary() -> dict[str, Any]:
@@ -318,8 +515,38 @@ def create_app(config_path: str | Path = DEFAULT_CONFIG) -> FastAPI:
         for path in sorted(folder.iterdir(), key=lambda p: p.stat().st_mtime, reverse=True):
             if path.is_file() and path.suffix.lower() in MEDIA_EXTENSIONS:
                 stat = path.stat()
-                items.append({"path": str(path), "name": path.name, "size": stat.st_size, "modified_at": datetime.fromtimestamp(stat.st_mtime, tz=timezone.utc).isoformat()})
+                suffix = path.suffix.lower()
+                kind = "video" if suffix in VIDEO_EXTENSIONS else ("audio" if suffix in AUDIO_EXTENSIONS else "image")
+                items.append({"path": str(path), "name": path.name, "kind": kind, "size": stat.st_size, "modified_at": datetime.fromtimestamp(stat.st_mtime, tz=timezone.utc).isoformat()})
         return items
+
+    @app.post("/api/inbox/upload")
+    def inbox_upload(files: list[UploadFile] = File(...)) -> list[dict[str, Any]]:
+        folder = input_dir()
+        if not folder:
+            raise HTTPException(status_code=400, detail="input_dir is not configured")
+        folder.mkdir(parents=True, exist_ok=True)
+        saved = []
+        for upload in files:
+            name = Path(upload.filename or "upload").name
+            suffix = Path(name).suffix.lower()
+            if suffix not in MEDIA_EXTENSIONS:
+                raise HTTPException(status_code=400, detail=f"unsupported media type: {name}")
+            dest = folder / name
+            stem, i = dest.stem, 1
+            while dest.exists():
+                i += 1
+                dest = folder / f"{stem} ({i}){suffix}"
+            with dest.open("wb") as fh:
+                while True:
+                    chunk = upload.file.read(1024 * 1024)
+                    if not chunk:
+                        break
+                    fh.write(chunk)
+            stat = dest.stat()
+            kind = "video" if suffix in VIDEO_EXTENSIONS else ("audio" if suffix in AUDIO_EXTENSIONS else "image")
+            saved.append({"path": str(dest), "name": dest.name, "kind": kind, "size": stat.st_size, "modified_at": datetime.fromtimestamp(stat.st_mtime, tz=timezone.utc).isoformat()})
+        return saved
 
     @app.get("/api/tasks")
     def task_list() -> list[dict[str, Any]]:
@@ -337,28 +564,90 @@ def create_app(config_path: str | Path = DEFAULT_CONFIG) -> FastAPI:
     def action_analyze(request: ActionRequest) -> dict[str, Any]:
         if not request.source:
             raise HTTPException(status_code=400, detail="source is required")
-        source = Path(request.source)
-        return start_task(f"Analyze {source.name}", lambda: brain().analyze(source, refresh=request.refresh))
+        source = allowed_file(Path(request.source))
+        if not source.is_file() or source.suffix.lower() not in VIDEO_EXTENSIONS:
+            raise HTTPException(400, "Analyze requires a video source; use Transcribe for audio")
+        if request.stages is not None and (not request.stages or set(request.stages) - {"ear", "eye", "voice"}):
+            raise HTTPException(400, "Select one or more valid analysis stages")
+        if request.dry_run:
+            return {"ok": True, "dry_run": True, "source": str(source), "stages": request.stages}
+        engine = brain()
+        return start_task(f"Analyze {source.name}", lambda progress: engine.analyze(source, refresh=request.refresh, stages=request.stages, progress=progress), with_progress=True)
 
     @app.post("/api/jobs/{job_id}/render")
     def action_render(job_id: str, request: ActionRequest | None = None) -> dict[str, Any]:
-        source = Path(request.source) if request and request.source else source_for_job(job_id)
+        source = source_for_job(job_id)
         auto_plan = bool(request.auto_plan) if request else False
-        return start_task(f"Render {source.name}", lambda: brain().render(source, auto_plan=auto_plan))
+        if request and request.dry_run:
+            return {"ok": True, "dry_run": True, "source": str(source)}
+        engine = brain()
+        if (job_path(job_id) / "sequence.json").exists():
+            sequence = get_sequence(job_id)
+            return start_task(f"Render {source.name}", lambda progress: engine.render_edit(source, sequence, progress=progress), with_progress=True)
+        return start_task(f"Render {source.name}", lambda: engine.render(source, auto_plan=auto_plan))
+
+    @app.post("/api/jobs/{job_id}/export")
+    def action_export(job_id: str, request: dict[str, Any]) -> dict[str, Any]:
+        """Cut-list export: edl (CMX3600 for Resolve/Premiere), csv (spreadsheet), or mp4 (rendered video)."""
+        fmt = str(request.get("format", "edl")).lower()
+        if fmt not in {"edl", "csv", "mp4", "otio"}:
+            raise HTTPException(400, "Choose edl, csv, otio, or mp4")
+        if request.get("dry_run"):
+            job_path(job_id)
+            return {"ok": True, "dry_run": True, "format": fmt}
+        if fmt == "mp4":
+            return action_render(job_id)
+        sequence = get_sequence(job_id)
+        out = job_path(job_id) / f"timeline.{fmt}"
+        warnings = export_sequence(sequence, out, fmt)
+        return {"ok": True, "format": fmt, "path": str(out), "warnings": warnings}
+
+    @app.post("/api/actions/reel")
+    def action_reel(request: ReelRequest):
+        sources = [source_for_job(job_id) for job_id in request.job_ids]
+        if len(set(sources)) != len(sources):
+            raise HTTPException(400, "Select distinct sources")
+        if request.dry_run:
+            return {"ok": True, "dry_run": True, "sources": [str(s) for s in sources]}
+        engine = brain()
+        return start_task("Build best-of reel", lambda: engine.reel(sources, target_seconds=request.target_seconds))
+
+    @app.post("/api/actions/transcribe")
+    def action_transcribe(request: ActionRequest):
+        if not request.source:
+            raise HTTPException(400, "source is required")
+        source = allowed_file(Path(request.source))
+        if not source.is_file() or source.suffix.lower() not in VIDEO_EXTENSIONS | AUDIO_EXTENSIONS:
+            raise HTTPException(400, "Transcription requires video or audio")
+        if request.dry_run:
+            return {"ok": True, "dry_run": True, "source": str(source)}
+        engine = brain()
+        return start_task(f"Transcribe {source.name}", lambda: engine.transcribe_srt(source, refresh=request.refresh))
+
+    @app.post("/api/jobs/{job_id}/transcribe")
+    def job_transcribe(job_id: str, request: ActionRequest | None = None):
+        return action_transcribe(ActionRequest(source=str(source_for_job(job_id)), refresh=True, dry_run=bool(request and request.dry_run)))
 
     @app.post("/api/jobs/{job_id}/preview")
     def action_preview(job_id: str, request: ActionRequest | None = None) -> dict[str, Any]:
-        source = Path(request.source) if request and request.source else source_for_job(job_id)
+        source = source_for_job(job_id)
         target = request.target_seconds if request else None
         auto_plan = bool(request.auto_plan) if request else False
-        return start_task(f"Preview {source.name}", lambda: brain().preview(source, auto_plan=auto_plan, target_seconds=target))
+        if request and request.dry_run:
+            return {"ok": True, "dry_run": True, "target_seconds": target}
+        engine = brain()
+        return start_task(f"Preview {source.name}", lambda: engine.preview(source, auto_plan=auto_plan, target_seconds=target))
 
     @app.post("/api/jobs/{job_id}/export-otio")
-    def action_export_otio(job_id: str):
+    def action_export_otio(job_id: str, dry_run: bool = False):
         """Write the approved plan clips as an .otio timeline for Resolve/Premiere."""
         from .otio_export import export_otio_timeline
 
         job = job_path(job_id)
+        if dry_run:
+            return {"ok": True, "dry_run": True}
+        if (job / "sequence.json").exists():
+            return action_export(job_id, {"format": "otio"})
         source = source_for_job(job_id)
         plan = safe_read_json(job / "edit_plan.json")
         if not plan or not plan.get("clips"):
@@ -379,13 +668,23 @@ def create_app(config_path: str | Path = DEFAULT_CONFIG) -> FastAPI:
         data = payload.model_dump()
         if data["timebase"] != "source":
             raise HTTPException(status_code=400, detail="timebase must be source")
-        (job / "editor_review.json").write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
+        plan = safe_read_json(job / "edit_plan.json") or {}
+        if data["source_sha256"] != plan.get("source_sha256") or data["source_sha256"] != fingerprint(source_for_job(job_id))["sha256"]:
+            raise HTTPException(409, "Review source hash does not match current source")
+        for interval in data["cut_intervals"] + data["keep_intervals"]:
+            start, end = interval.get("start"), interval.get("end")
+            if type(start) not in (float, int) or type(end) not in (float, int) or not math.isfinite(start) or not math.isfinite(end) or not 0 <= start < end <= float(plan.get("duration", 0)):
+                raise HTTPException(400, "Review ranges must be finite and within the source duration")
+        write_json(job / "editor_review.json", data)
         return {"ok": True, "path": str(job / "editor_review.json"), "job": summarize_job(job)}
 
     @app.post("/api/jobs/{job_id}/replan")
-    def action_replan(job_id: str) -> dict[str, Any]:
+    def action_replan(job_id: str, dry_run: bool = False) -> dict[str, Any]:
         source = source_for_job(job_id)
-        return start_task(f"Re-plan {source.name}", lambda: brain().plan(source, refresh=False))
+        if dry_run:
+            return {"ok": True, "dry_run": True}
+        engine = brain()
+        return start_task(f"Re-plan {source.name}", lambda progress: engine.replan_review(source, progress=progress), with_progress=True)
 
     @app.get("/api/file")
     def file(path: str = Query(...)) -> FileResponse:
@@ -395,9 +694,11 @@ def create_app(config_path: str | Path = DEFAULT_CONFIG) -> FastAPI:
         return FileResponse(resolved)
 
     @app.post("/api/open-folder")
-    def open_folder(path: str) -> dict[str, Any]:
+    def open_folder(path: str, dry_run: bool = False) -> dict[str, Any]:
         resolved = allowed_file(Path(path))
         folder = resolved if resolved.is_dir() else resolved.parent
+        if dry_run:
+            return {"ok": True, "dry_run": True, "folder": str(folder)}
         if os.name == "nt":
             subprocess.Popen(["explorer", str(folder)])
         else:
