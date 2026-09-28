@@ -5,6 +5,16 @@ All notable changes to this project are documented here. The project follows
 
 ## [Unreleased]
 
+## [0.6.1] - 2026-09-28
+
+### Fixed
+
+- AI heat on the timeline, the source evidence strip and the playhead verdict overlay now centre
+  each frame verdict on its sample, the same way Eye proposes cuts. Previously the heat was drawn
+  one sample-half late, so proposed cuts looked about a second early next to the red heat.
+- Dragging or trimming a clip while an autosave finished no longer fails the next save with
+  "Sequence changed in another window"; the finished edit keeps the newest saved revision.
+
 ## [0.6.0] - 2026-09-28
 
 ### Added

@@ -8,6 +8,13 @@ export const pixelsPerSecond = (viewportWidth, seconds, zoom=1) =>
   Math.max(1, viewportWidth-64)/Math.max(10, seconds)*zoom;
 export const uid = () => crypto.randomUUID().slice(0, 12);
 export const locked = (sequence, track) => sequence.tracks.find(t => t.id === track)?.locked;
+// An edit built from an earlier snapshot (e.g. a drag begun before an autosave finished) must save
+// against the newest server revision, or the server rejects it as a change from another window.
+export function keepSaveState(next, current) {
+  next.revision = current.revision;
+  next.source_sha256 = current.source_sha256;
+  return next;
+}
 export function linkedClips(sequence, id, linked = true) {
   const ids = new Set(Array.isArray(id) ? id : [id]);
   const selected = sequence.clips.filter(c => ids.has(c.id));
