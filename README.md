@@ -27,6 +27,8 @@ that opens in DaVinci Resolve or Premiere for finishing.
 - **Defensible.** Every cut carries its reason and confidence; every human decision is hash-bound to the exact source.
 - **Flexible export.** Render MP4, or export OTIO/EDL/CSV timelines and captions timed to your edit.
 - **Configurable.** Every setting is editable in the app, including toggleable audio evidence for music-only footage.
+- **Project-based editing.** Create or reopen a project, import media into its asset list, then edit and render without running analysis first.
+- **Precise timeline editing.** Full-duration snapped drag previews and live box selection across tracks, with grouped clip edits.
 - **Desktop app.** One double-click opens SmartCut in its own window, and closing it stops everything it started.
 
 ## Quick start (Windows)
@@ -51,12 +53,19 @@ From the project folder:
 Double-click **SmartCut** on the desktop. The first launch writes `config.json` from
 `config.example.json`, with the `inbox`, `vault` and `work` folders inside the project. Then:
 
-1. Open **Project settings** (gear icon) → **Connection** and set the gateway URL and vision model.
-   Click **Test connection** in the header to check it.
-2. **Import** video (or drop files on the Project panel). Imported files land in `inbox/`.
-3. **Analyze** runs Ear, Eye and Voice. No render happens during analysis.
-4. Review the proposals in the **Review** tab, adjust the sequence, and optionally run **Auto-edit**.
+1. Click **New project** in the left panel, name it, and click **Create project**.
+   Use **Open…** to resume a saved project or copy an existing edit into a project.
+2. **Import media** (or drop files on the Project panel). Files land in `inbox/` and
+   become assets of this project. **Add existing media…** reuses files already imported.
+3. Drag an asset onto V1/V2 (video or images) or A1/A2 (audio). The dark preview
+   shows its full duration and snapped placement. Select an asset to mark a shorter In/Out range.
+4. Optionally configure **Pipeline settings** → **Connection**, test the connection, and **Analyze**.
+   Review proposals, then use **Auto-edit** or **Sequence → Load approved plan** to apply them.
 5. **Render approved cut**, or use **Export** for an OTIO/EDL/CSV timeline or captions.
+
+Projects save their assets and timeline independently under `work/projects/<id>/`; selecting another
+asset only changes the Source monitor. Removing an unused asset from a project keeps its original
+file. Pipeline settings are shared across projects; resolution and frame rate belong to each sequence.
 
 `install-desktop.ps1 -StartMenu` also adds a Start menu entry. If PowerShell blocks the scripts, run
 them as `powershell -ExecutionPolicy Bypass -File .\setup.ps1`.
@@ -160,15 +169,18 @@ exporting.
 
 ## The Cutroom
 
-The Cutroom is a compact multitrack editor over the real job API, working on a persisted
-`sequence.json`:
+The Cutroom is a compact multitrack editor with persisted project and sequence APIs.
+Analysis jobs and source-time review decisions remain separate from each project’s `sequence.json`:
 
-- **Project panel**: media bins, search, list and icon views, and reel selection.
+- **Project panel**: New/Open project, project-scoped import and assets, type filters, search,
+  list/icon views, and reel selection. Analysis is optional for importing, editing and rendering.
 - **Source and Program monitors**: frame-accurate transport, J/K/L shuttle, a source-time evidence
   minimap, live captions from the transcript, and the AI verdict for the frame under the playhead.
 - **Timeline**: V2/V1/A1/A2 tracks with filmstrips and waveforms; AI score/flag and transcript lanes
   that follow the material through your edit; trim, split, ripple, overwrite, linked and snapped moves,
-  track mute/lock, markers, and undo/redo with autosave.
+  track mute/lock, markers, and undo/redo with autosave. Drag empty track space to box-select
+  intersecting clips across tracks; Shift/Ctrl-click toggles selection. Selected clips move/delete
+  together. Drag the ruler to scrub; Escape cancels a drag or selection rectangle.
 - **Inspector**: per-clip effects (speed, gain, opacity, scale, position, rotation, fit/fill frame);
   **Review** with the AI summary, the proposal queue, your decisions, nearby evidence and the transcript;
   **Pipeline** with per-stage settings and background tasks.
@@ -193,20 +205,21 @@ The UI follows the OpenEval visual system with Dark, Light and Auto (system) the
 | Captions (`.srt`) | Export → Captions for this edit | Transcript re-timed to your sequence |
 | Transcript (`.srt`) | File → Re-transcribe source | Source-timed transcript |
 
-Timeline exports read the current sequence, so re-plan after resolving review items if you want the
-plan's cuts reflected.
+Timeline exports read the current project sequence. Re-plan updates analysis without replacing your
+edit; use Auto-edit to apply its cuts, or Load approved plan to replace the timeline (undoable).
+Project renders live in `vault/projects/<id>/` and do not overwrite another project’s output.
 
 ## Configuration
 
 `config.json` is local state (git-ignored). The first launch creates it from `config.example.json`,
-which documents every supported key; everything is also editable under **Project settings**. Keys are
+which documents every supported key; everything is also editable under **Pipeline settings**. Keys are
 validated on save, and the CLI warns about unknown keys instead of silently ignoring them.
 
-- **Folders**: `input_dir` (import inbox), `output_dir` (renders), `work_dir` (jobs), `analysis_dir`
+- **Folders**: `input_dir` (import inbox), `output_dir` (renders), `work_dir` (jobs and projects), `analysis_dir`
   (caches). Relative paths are resolved from the working directory; the first-run config writes them as
   absolute paths inside the project.
 - **Connection**: `lm_studio_url` (any OpenAI-compatible base URL) and `vision_model`. If the gateway
-  needs a key, set it in Project settings or leave it blank to use `NEXUS_LLM_API_KEY` (or
+  needs a key, set it in Pipeline settings or leave it blank to use `NEXUS_LLM_API_KEY` (or
   `NINEROUTER_API_KEY`) from the environment. Keys are sent as a Bearer token and are never returned by
   the API. An empty or missing `/models` endpoint is not treated as a failed connection.
 - **`audio_evidence_enabled`** (default `true`): whether speech audio informs edit decisions. When on,
@@ -296,7 +309,17 @@ install-desktop.ps1  SmartCut.exe + desktop shortcut
   dependency means `setup.ps1` hasn't run; "address already in use" means another program owns port
   8787 (launch with `SmartCut.exe --port 8795`).
 - **"SmartCut is not set up yet"**: run `setup.ps1`, then `install-desktop.ps1`.
-- **Connection failed**: check the gateway URL and model in Project settings; LM Studio must have the
+- **Speech analysis unavailable / missing faster-whisper**: use the desktop shortcut or the
+  project’s `.venv` Python. Web/desktop startup detects a Python without Whisper and uses an existing
+  working project environment when available; it never installs packages automatically. Restart an
+  already-running server that was launched with the wrong Python. Manual editing remains available.
+- **CUDA DLL not found**: Windows CUDA transcription needs cuBLAS for CUDA 12 and cuDNN 9
+  ([upstream requirements](https://github.com/SYSTRAN/faster-whisper#gpu)). CUDA 13 DLLs do not
+  replace those versions. SmartCut loads existing compatible DLLs from `.smartcut/cuda/` or
+  `SMARTCUT_CUDA_DLL_DIR`, adding that folder only to its process's DLL search path and `PATH`.
+  It does not download libraries or modify the system environment; CPU/int8 remains available
+  in Pipeline settings → Ear.
+- **Connection failed**: check the gateway URL and model in Pipeline settings; LM Studio must have the
   server started and the vision model loaded.
 - **Analyze or render fails with "required executable is missing: ffmpeg"**: install FFmpeg and add it
   to `PATH`.

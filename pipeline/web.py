@@ -88,6 +88,15 @@ class ReviewPayload(BaseModel):
     keep_intervals: list[dict[str, Any]] = Field(default_factory=list)
 
 
+class ProjectRequest(BaseModel):
+    name: str = Field(min_length=1, max_length=100)
+    job_id: str | None = None
+
+
+class AssetRequest(BaseModel):
+    paths: list[str] = Field(min_length=1, max_length=500)
+
+
 def load_config(path: Path) -> dict[str, Any]:
     if not path.exists():
         raise PipelineError(f"config does not exist: {path}")
@@ -499,6 +508,140 @@ def create_app(config_path: str | Path = DEFAULT_CONFIG) -> FastAPI:
                 write_json(job / "sequence.json", payload.model_dump())
             return {"ok": True, "dry_run": dry_run, "sequence": payload.model_dump()}
 
+    def project_path(project_id: str) -> Path:
+        root = (work_dir() / "projects").resolve()
+        path = (root / project_id).resolve()
+        if path.parent != root:
+            raise HTTPException(403, "Invalid project id")
+        if not (path / "project.json").is_file():
+            raise HTTPException(404, "Project not found")
+        return path
+
+    def project_view(project_id: str) -> dict[str, Any]:
+        path = project_path(project_id)
+        data = read_json(path / "project.json")
+        data["sequence"] = read_json(path / "sequence.json")
+        data["final_output"] = (safe_read_json(path / "render_manifest.json") or {}).get("final_output")
+        for asset in data["assets"]:
+            asset["source_available"] = Path(asset["path"]).is_file()
+        return data
+
+    def validate_media(sequence: Sequence, assets: list[dict[str, Any]]) -> None:
+        allowed = {str(Path(a["path"]).resolve()) for a in assets}
+        checked = {}
+        for clip in sequence.clips:
+            if str(Path(clip.source).resolve()) not in allowed:
+                raise HTTPException(400, "Import this media into the project first")
+            if clip.source not in checked:
+                checked[clip.source] = media_info(clip.source)
+            info = checked[clip.source]
+            if clip.source_sha256 != info["sha256"]:
+                raise HTTPException(409, "Clip media changed; re-import it")
+            if clip.kind != "image" and clip.source_end > info["duration"] + .05:
+                raise HTTPException(400, "Clip trim exceeds source duration")
+
+    @app.get("/api/projects")
+    def projects():
+        root = work_dir() / "projects"
+        items = [project_view(p.parent.name) for p in root.glob("*/project.json")]
+        return sorted(items, key=lambda p: p["updated_at"], reverse=True)
+
+    @app.post("/api/projects")
+    def project_create(payload: ProjectRequest, dry_run: bool = False):
+        name = payload.name.strip()
+        if not name:
+            raise HTTPException(400, "Enter a project name")
+        sequence = get_sequence(payload.job_id) if payload.job_id else Sequence(
+            source_sha256=hashlib.sha256(uuid.uuid4().bytes).hexdigest())
+        # For a blank project this field is its stable sequence identity. Every
+        # individual clip still carries and validates the real source hash.
+        sequence.revision = 0
+        paths = dict.fromkeys(c.source for c in sequence.clips)
+        assets = [media_info(p) for p in paths]
+        if dry_run:
+            return {"ok": True, "dry_run": True}
+        project_id = uuid.uuid4().hex[:16]
+        folder = work_dir() / "projects" / project_id
+        data = {"id": project_id, "name": name, "assets": assets, "updated_at": utc_now()}
+        write_json(folder / "sequence.json", sequence.model_dump())
+        write_json(folder / "project.json", data)
+        return project_view(project_id)
+
+    @app.get("/api/projects/{project_id}")
+    def project_get(project_id: str):
+        return project_view(project_id)
+
+    @app.post("/api/projects/{project_id}/assets")
+    def project_assets(project_id: str, payload: AssetRequest, dry_run: bool = False):
+        with sequence_lock:
+            folder = project_path(project_id)
+            data = read_json(folder / "project.json")
+            assets = {str(Path(a["path"]).resolve()): a for a in data["assets"]}
+            for path in payload.paths:
+                info = media_info(path)
+                assets[info["path"]] = info
+            if not dry_run:
+                data.update(assets=list(assets.values()), updated_at=utc_now())
+                write_json(folder / "project.json", data)
+            return project_view(project_id)
+
+    @app.delete("/api/projects/{project_id}/assets")
+    def project_remove_asset(project_id: str, path: str, dry_run: bool = False):
+        with sequence_lock:
+            folder = project_path(project_id)
+            data = read_json(folder / "project.json")
+            sequence = Sequence.model_validate(read_json(folder / "sequence.json"))
+            target = Path(path).resolve()
+            if any(Path(c.source).resolve() == target for c in sequence.clips):
+                raise HTTPException(409, "Remove this asset's timeline clips before removing it from the project")
+            if not dry_run:
+                data.update(assets=[a for a in data["assets"] if Path(a["path"]).resolve() != target], updated_at=utc_now())
+                write_json(folder / "project.json", data)
+            return project_view(project_id)
+
+    @app.put("/api/projects/{project_id}/sequence")
+    def project_save_sequence(project_id: str, payload: Sequence, dry_run: bool = False):
+        with sequence_lock:
+            folder = project_path(project_id)
+            data = read_json(folder / "project.json")
+            current = read_json(folder / "sequence.json")
+            if payload.revision != current["revision"] or payload.source_sha256 != current["source_sha256"]:
+                raise HTTPException(409, "Sequence changed in another window. Reopen the project before saving.")
+            validate_media(payload, data["assets"])
+            if not dry_run:
+                payload.revision += 1
+                write_json(folder / "sequence.json", payload.model_dump())
+                data["updated_at"] = utc_now()
+                write_json(folder / "project.json", data)
+            return {"ok": True, "dry_run": dry_run, "sequence": payload.model_dump()}
+
+    @app.post("/api/projects/{project_id}/render")
+    def project_render(project_id: str, request: ActionRequest | None = None):
+        data = project_view(project_id)
+        sequence = Sequence.model_validate(data["sequence"])
+        if not sequence.clips:
+            raise HTTPException(400, "Add media to the timeline before rendering")
+        validate_media(sequence, data["assets"])
+        if request and request.dry_run:
+            return {"ok": True, "dry_run": True}
+        engine, folder = brain(), project_path(project_id)
+        return start_task(f"Render {data['name']}", lambda progress: engine.render_edit(
+            Path(sequence.clips[0].source), sequence, project_dir=folder, progress=progress), with_progress=True)
+
+    @app.post("/api/projects/{project_id}/export")
+    def project_export(project_id: str, request: dict[str, Any]):
+        data = project_view(project_id)
+        fmt = request.get("format", "edl")
+        if fmt not in {"edl", "csv", "otio"}:
+            raise HTTPException(400, "Choose edl, csv or otio")
+        sequence = Sequence.model_validate(data["sequence"])
+        validate_media(sequence, data["assets"])
+        if request.get("dry_run"):
+            return {"ok": True, "dry_run": True}
+        out = project_path(project_id) / f"timeline.{fmt}"
+        warnings = export_sequence(sequence, out, fmt)
+        return {"ok": True, "path": str(out), "warnings": warnings}
+
     @app.get("/api/summary")
     def summary() -> dict[str, Any]:
         jobs = all_jobs()
@@ -738,7 +881,10 @@ def __getattr__(name: str) -> Any:
 
 def main() -> int:
     import argparse
+    import subprocess
+    import sys
     import uvicorn
+    from .runtime import server_python
 
     parser = argparse.ArgumentParser(description="SmartCut Cutroom web UI")
     parser.add_argument("--config", type=Path, default=DEFAULT_CONFIG)
@@ -748,6 +894,10 @@ def main() -> int:
 
     ensure_config(args.config)
     contain_children()
+    python = server_python()
+    if python.resolve() != Path(sys.executable).resolve():
+        return subprocess.call([str(python), "-m", "pipeline.web", "--config", str(args.config.resolve()),
+                                "--host", args.host, "--port", str(args.port)])
     uvicorn.run(create_app(args.config), host=args.host, port=args.port, reload=False)
     return 0
 
