@@ -7,7 +7,7 @@ import re
 import sys
 from dataclasses import replace
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 import cv2
 import requests
@@ -32,6 +32,9 @@ class TruncatedBatchError(PipelineError):
 class UnusableSectionSummary(PipelineError):
     """A completed model request did not provide a usable story-map decision."""
 
+
+# Receives (done, total) as a long model pass advances, so the UI can show live counts.
+CountProgress = Callable[[int, int], None]
 
 VISION_PROMPT_VERSION = 8
 TEMPORAL_PROMPT_VERSION = 2
@@ -278,6 +281,7 @@ class VisionEye:
         frame_hints: dict[float, str] | None = None,
         transcript_segments: list | None = None,
         audio_enabled: bool = True,
+        progress: CountProgress | None = None,
     ) -> list[Observation]:
         cache = self._cache_path(source, audio_enabled=audio_enabled)
         if not refresh:
@@ -308,6 +312,9 @@ class VisionEye:
             # frame and keeping every Nth -- the old loop paid a full decode per
             # frame of the whole file just to throw most of them away.
             sample_count = max(1, int(round(duration / self.interval)) + 1)
+            total = sum(1 for sample in range(sample_count) if round(sample * self.interval, 3) <= duration)
+            report = progress or (lambda done, total: None)
+            report(min(len(observations), total), total)
             for sample in range(sample_count):
                 requested = round(sample * self.interval, 3)
                 if requested > duration or requested in completed_timestamps:
@@ -319,8 +326,10 @@ class VisionEye:
                 pending.append((timestamp, frame))
                 if len(pending) >= self.batch_size:
                     self._flush_batch(cache, observations, pending, prompt, frame_hints, transcript_segments)
+                    report(min(len(observations), total), total)
             if pending:
                 self._flush_batch(cache, observations, pending, prompt, frame_hints, transcript_segments)
+                report(min(len(observations), total), total)
         finally:
             cap.release()
         if not observations:
@@ -516,6 +525,7 @@ class VisionEye:
         editorial_policy: str = DEFAULT_SECTION_EDITORIAL_POLICY,
         refresh: bool = False,
         frames_per_section: int = 6,
+        progress: CountProgress | None = None,
     ) -> list[dict[str, Any]]:
         """Build a semantic storyboard map before the exact-boundary critic runs."""
         transcript_payload = [
@@ -538,8 +548,10 @@ class VisionEye:
         if not cap.isOpened():
             raise PipelineError(f"OpenCV could not open video: {source}")
         summaries: list[dict[str, Any]] = []
+        report = progress or (lambda done, total: None)
         try:
             for index, section in enumerate(sections):
+                report(index, len(sections))
                 start = max(0.0, float(section.get("start_seconds", section.get("start", 0.0))))
                 end = min(duration, float(section.get("end_seconds", section.get("end", duration))))
                 if end - start < 0.25:
@@ -575,6 +587,7 @@ class VisionEye:
                     "summary": str(decision.get("summary", "")).strip(),
                     "sample_timestamps": timestamps,
                 })
+            report(len(sections), len(sections))
         finally:
             cap.release()
         write_json(cache_path, {"model": self.model, "source": str(source.resolve()),
