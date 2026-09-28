@@ -5,6 +5,14 @@ All notable changes to this project are documented here. The project follows
 
 ## [Unreleased]
 
+### Added
+
+- "Analyze all" queues Ear/Eye/Voice analysis for every unanalyzed video in the open project with one
+  click, alongside the existing single-source Analyze. Offline sources are skipped; an "Include
+  already-analyzed sources" toggle re-queues sources that already have a plan, with refresh. Each
+  source queues through the existing analyze endpoint and runs on the same one-at-a-time task worker,
+  so one failed source doesn't stop the rest.
+
 ### Fixed
 
 - Pipeline settings now show the defaults analysis actually uses when a key is missing from

@@ -137,3 +137,33 @@ test('the verdict at a moment is the nearest sampled frame, not the last one bef
   assert.equal(A.sampleAt(obs, 0).timestamp, 68);
   assert.equal(A.sampleAt([], 5), null);
 });
+
+// Project assets in the shape the frontend's assets() produces: path/name/kind/source_available plus a matched job.
+test('Analyze all queues unanalyzed video sources and skips offline or non-video assets', () => {
+  const unanalyzed = {path:'a.mp4', name:'a.mp4', kind:'video', source_available:true, job:null};
+  const discovered = {path:'b.mp4', name:'b.mp4', kind:'video', source_available:true, job:{status:'discovered', source_available:true}};
+  const analyzed = {path:'c.mp4', name:'c.mp4', kind:'video', source_available:true, job:{status:'planned', source_available:true}};
+  const rendered = {path:'d.mp4', name:'d.mp4', kind:'video', source_available:true, job:{status:'rendered', source_available:true}};
+  const offlineAsset = {path:'e.mp4', name:'e.mp4', kind:'video', source_available:false, job:null};
+  const offlineJob = {path:'f.mp4', name:'f.mp4', kind:'video', source_available:true, job:{status:'planned', source_available:false}};
+  const audio = {path:'g.mp3', name:'g.mp3', kind:'audio', source_available:true, job:null};
+  const assetsList = [unanalyzed, discovered, analyzed, rendered, offlineAsset, offlineJob, audio];
+
+  const withoutAnalyzed = A.analyzableAssets(assetsList);
+  assert.equal(withoutAnalyzed.length, 6, 'non-video assets are excluded entirely');
+  const byPath = (list, p) => list.find(e => e.path === p);
+  assert.deepEqual([byPath(withoutAnalyzed,'a.mp4').queue, byPath(withoutAnalyzed,'a.mp4').analyzed, byPath(withoutAnalyzed,'a.mp4').refresh], [true, false, false]);
+  assert.deepEqual([byPath(withoutAnalyzed,'b.mp4').queue, byPath(withoutAnalyzed,'b.mp4').analyzed], [true, false], 'a discovered/fingerprinted job has no plan yet');
+  assert.deepEqual([byPath(withoutAnalyzed,'c.mp4').queue, byPath(withoutAnalyzed,'c.mp4').analyzed], [false, true]);
+  assert.deepEqual([byPath(withoutAnalyzed,'d.mp4').queue, byPath(withoutAnalyzed,'d.mp4').analyzed], [false, true]);
+  assert.equal(byPath(withoutAnalyzed,'e.mp4').offline, true);
+  assert.equal(byPath(withoutAnalyzed,'e.mp4').queue, false);
+  assert.equal(byPath(withoutAnalyzed,'f.mp4').offline, true, 'the matched job going offline also excludes the asset');
+  assert.equal(byPath(withoutAnalyzed,'f.mp4').queue, false);
+
+  const withAnalyzed = A.analyzableAssets(assetsList, {includeAnalyzed:true});
+  assert.deepEqual([byPath(withAnalyzed,'c.mp4').queue, byPath(withAnalyzed,'c.mp4').refresh], [true, true]);
+  assert.deepEqual([byPath(withAnalyzed,'d.mp4').queue, byPath(withAnalyzed,'d.mp4').refresh], [true, true]);
+  assert.equal(byPath(withAnalyzed,'a.mp4').refresh, false, 'a first-time analysis never needs a refresh flag');
+  assert.equal(byPath(withAnalyzed,'e.mp4').queue, false, 'offline sources stay excluded even with the toggle on');
+});
