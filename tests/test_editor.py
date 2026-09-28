@@ -47,6 +47,17 @@ def test_settings_complete_and_redacted(tmp_path):
             validate_settings(original, updates)
 
 
+def test_settings_defaults_match_what_analysis_uses():
+    # A missing key is shown with its catalog default; saving then writes it, so it must equal the runtime fallback.
+    from pipeline.eye import SECTION_SETUP_CLAUSE
+
+    example = json.loads(Path("config.example.json").read_text())
+    shown = public_settings({})
+    assert shown["multi_pass_editorial_policy"] == SECTION_SETUP_CLAUSE
+    assert shown["lm_studio_url"] == example["lm_studio_url"]
+    assert shown["vision_model"] == example["vision_model"]
+
+
 def test_sequence_contract_and_exports(tmp_path):
     source = media(tmp_path)
     sequence = from_plan(plan(source), width=64, height=64, fps=10, has_audio=False)
@@ -54,7 +65,9 @@ def test_sequence_contract_and_exports(tmp_path):
     assert [c.start for c in sequence.clips] == [0, 1]
     assert timecode(59.999, 30) == "00:01:00:00"
     export_sequence(sequence, tmp_path / "timeline.edl", "edl")
-    assert "00:00:02:00 00:00:03:00 00:00:01:00 00:00:02:00" in (tmp_path / "timeline.edl").read_text()
+    edl = (tmp_path / "timeline.edl").read_text()
+    assert edl.startswith("TITLE: SMARTCUT\n")
+    assert "00:00:02:00 00:00:03:00 00:00:01:00 00:00:02:00" in edl
     sequence.clips[1].track = "V2"
     with pytest.raises(PipelineError, match="single video track"):
         export_sequence(sequence, tmp_path / "timeline.edl", "edl")
