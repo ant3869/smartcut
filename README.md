@@ -58,11 +58,13 @@ Double-click **SmartCut** on the desktop. The first launch writes `config.json` 
    Use **Open…** to resume a saved project or copy an existing edit into a project.
 2. **Import media** (or drop files on the Project panel). Files land in `inbox/` and
    become assets of this project. **Add existing media…** reuses files already imported.
-3. Drag an asset onto V1/V2 (video or images) or A1/A2 (audio). The dark preview
-   shows its full duration and snapped placement. Select an asset to mark a shorter In/Out range.
+3. Drag footage to V1 and a PNG/JPG/WebP to V2. The drop preview shows the full duration and
+   snapped placement. Sequence → Add video track adds V3 through V8 for more layers.
 4. Optionally configure **Pipeline settings** → **Connection**, test the connection, and **Analyze**.
    Review proposals, then use **Auto-edit** or **Sequence → Load approved plan** to apply them.
-5. **Render approved cut**, or use **Export** for an OTIO/EDL/CSV timeline or captions.
+5. Select an overlay to move, scale or rotate it in the Program monitor. Add diamonds beside
+   position, scale, rotation or opacity in the Inspector, then change values at another playhead
+   position to animate them. Use **Export / Render** to choose the format, quality and output path.
 
 Projects save their assets and timeline independently under `work/projects/<id>/`; selecting another
 asset only changes the Source monitor. Removing an unused asset from a project keeps its original
@@ -183,13 +185,14 @@ Analysis jobs and source-time review decisions remain separate from each project
   and rendering; the Analyze dialog only offers available project videos.
 - **Source and Program monitors**: frame-accurate transport, J/K/L shuttle, a source-time evidence
   minimap, live captions from the transcript, and the AI verdict for the frame under the playhead.
-- **Timeline**: V2/V1/A1/A2 tracks with filmstrips and waveforms; AI score/flag and transcript lanes
+- **Timeline**: V1/V2 with optional V3–V8 and A1/A2 tracks, filmstrips and waveforms; AI score/flag and transcript lanes
   that follow the material through your edit; trim, split, ripple, overwrite, linked and snapped moves,
   track mute/lock, markers, and undo/redo with autosave. Drag empty track space to box-select
   intersecting clips across tracks; Shift/Ctrl-click toggles selection. Selected clips move/delete
   together. Drag the ruler to scrub; Escape cancels a drag or selection rectangle. The logarithmic
   zoom slider fits the whole sequence at its default setting and reaches 1/32× to 64×.
-- **Inspector**: per-clip effects (speed, gain, opacity, scale, position, rotation, fit/fill frame);
+- **Inspector**: per-clip effects (speed, gain, opacity, scale, position, rotation, fit/fill/original sizing),
+  image duration, and hold/linear/eased keyframes with time and interpolation controls;
   **Review** with the AI summary, the proposal queue, your decisions, nearby evidence and the transcript;
   **Pipeline** with per-stage settings and background tasks. Each task shows its live stage (with
   frame and story-section counts during Eye), elapsed time and how long since it last reported
@@ -208,12 +211,18 @@ The UI follows the OpenEval visual system with Dark, Light and Auto (system) the
 
 | Format | Where | Notes |
 | --- | --- | --- |
-| MP4 | **Render approved cut** / Export → Rendered MP4 | Rendered by Blade into the output folder |
+| MP4/H.264 | **Export / Render** | Presets, resolution, frame rate, quality, AAC audio and output folder |
+| MP4/H.265 and WebM/VP9 | **Export / Render** | Shown only when the installed FFmpeg has the encoder |
 | OpenTimelineIO (`.otio`) | Export → OpenTimelineIO | References the original media with frame-accurate ranges; opens in Resolve and Premiere |
 | EDL (CMX3600) | Export → EDL cut list | Single video track only |
 | CSV | Export → CSV edit list | For spreadsheets and logs |
 | Captions (`.srt`) | Export → Captions for this edit | Transcript re-timed to your sequence |
 | Transcript (`.srt`) | File → Re-transcribe source | Source-timed transcript |
+
+The sequence canvas determines the Program monitor aspect ratio. The export dialog flags aspect
+ratio changes and offers **Apply size to sequence** so the live preview and render agree. Render
+tasks show progress and can be canceled from the Pipeline task list. An output filename that
+already exists must be changed before rendering.
 
 Timeline exports read the current project sequence. Re-plan updates analysis without replacing your
 edit; use Auto-edit to apply its cuts, or Load approved plan to replace the timeline (undoable).

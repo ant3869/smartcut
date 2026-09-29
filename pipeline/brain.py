@@ -6,6 +6,7 @@ import os
 from dataclasses import asdict
 from datetime import datetime, timezone
 from pathlib import Path
+from uuid import uuid4
 
 from .contracts import Clip, EditPlan, Observation, Transcript
 from .ear import WhisperEar, merge_intervals
@@ -250,28 +251,41 @@ class PipelineBrain:
         write_json(job / "source_fingerprint.json", fingerprint)
         return {"path": str(path), "segments": len(transcript.segments), "source": str(source)}
 
-    def render_edit(self, source: Path, sequence, *, progress=None, project_dir: Path | None = None) -> dict:
+    def render_edit(self, source: Path, sequence, *, progress=None, project_dir: Path | None = None, settings=None) -> dict:
         report = progress or (lambda stage, percent: None)
         report("Verifying source media", 10)
         for media in {c.source: c.source_sha256 for c in sequence.clips}.items():
             if source_fingerprint(Path(media[0]))["sha256"] != media[1]:
                 raise PipelineError("Sequence media changed; re-import before rendering")
         job = project_dir or self.job_dir(source)
-        root = self.output_dir / ("projects" if project_dir else "") / job.name
+        root = Path(settings.output_folder).expanduser().resolve() if settings and settings.output_folder else self.output_dir / ("projects" if project_dir else "") / job.name
         stem = "timeline" if project_dir else source.stem
-        final = root / f"{stem}_sequence.mp4"
+        final = root / (settings.filename if settings else f"{stem}_sequence.mp4")
+        if settings and final.exists():
+            raise PipelineError(f"Output already exists: {final}; choose a different name")
         bumper = Path(self.config["bumper_path"]) if self.config.get("bumper_path") else None
-        content = root / f"{stem}_sequence_content.mp4" if bumper else final
-        report("Blade · compositing sequence", 30)
-        self.blade.render_sequence(sequence, content, watermark=self._watermark())
-        if bumper:
-            report("Blade · adding bumper", 85)
-            self.blade.prepend_bumper(bumper, content, final)
-        report("Verifying output", 95)
-        manifest = {"source": str(source), "mode": "sequence", "sequence_revision": sequence.revision,
-                    "final_output": self.blade.verify(final), "completed_at": datetime.now(timezone.utc).isoformat()}
-        write_json(job / "render_manifest.json", manifest)
-        return manifest
+        if bumper and settings and settings.video_codec != "libx264":
+            raise PipelineError("Configured bumper currently requires H.264 MP4 export")
+        token = uuid4().hex
+        staged = root / f".{final.stem}.{token}{final.suffix}"
+        content = root / f".{final.stem}.{token}.content.mp4" if bumper else staged
+        try:
+            report("Blade · compositing sequence", 30)
+            self.blade.render_sequence(sequence, content, watermark=self._watermark(), settings=settings,
+                                       progress=lambda percent: report("Blade · rendering", round(percent)))
+            if bumper:
+                report("Blade · adding bumper", 85)
+                self.blade.prepend_bumper(bumper, content, staged)
+            report("Verifying output", 95)
+            self.blade.verify(staged)
+            staged.replace(final)
+            manifest = {"source": str(source), "mode": "sequence", "sequence_revision": sequence.revision,
+                        "final_output": self.blade.verify(final), "completed_at": datetime.now(timezone.utc).isoformat()}
+            write_json(job / "render_manifest.json", manifest)
+            return manifest
+        finally:
+            content.unlink(missing_ok=True)
+            staged.unlink(missing_ok=True)
 
     def plan(self, source: Path, *, refresh: bool = False) -> dict:
         return self.analyze(source, refresh=refresh)

@@ -12,6 +12,7 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 from .util import PipelineError
 
 TRACKS = ("V2", "V1", "A1", "A2")
+INTERPOLATIONS = ("hold", "linear", "ease-in", "ease-out", "ease-in-out")
 
 
 class StrictModel(BaseModel):
@@ -19,9 +20,15 @@ class StrictModel(BaseModel):
 
 
 class Track(StrictModel):
-    id: Literal["V1", "V2", "A1", "A2"]
+    id: str = Field(pattern=r"^(V[1-8]|A[1-2])$")
     muted: bool = False
     locked: bool = False
+
+
+class Keyframe(StrictModel):
+    time: float = Field(ge=-86400, le=86400)
+    value: float
+    interpolation: Literal["hold", "linear", "ease-in", "ease-out", "ease-in-out"] = "linear"
 
 
 class SequenceClip(StrictModel):
@@ -29,7 +36,7 @@ class SequenceClip(StrictModel):
     source: str
     source_sha256: str = Field(pattern=r"^[a-fA-F0-9]{64}$")
     kind: Literal["video", "audio", "image"] = "video"
-    track: Literal["V1", "V2", "A1", "A2"] = "V1"
+    track: str = Field(default="V1", pattern=r"^(V[1-8]|A[1-2])$")
     start: float = Field(ge=0, le=86400)
     source_start: float = Field(ge=0, le=86400)
     source_end: float = Field(gt=0, le=86400)
@@ -39,6 +46,8 @@ class SequenceClip(StrictModel):
     x: float = Field(default=0, ge=-8192, le=8192)
     y: float = Field(default=0, ge=-8192, le=8192)
     rotation: float = Field(default=0, ge=-360, le=360)
+    fit: Literal["fit", "fill", "original"] = "fit"
+    keyframes: dict[Literal["x", "y", "scale", "rotation", "opacity"], list[Keyframe]] = Field(default_factory=dict)
     volume: float = Field(default=1, ge=0, le=4)
     enabled: bool = True
     link_id: str | None = None
@@ -55,7 +64,15 @@ class SequenceClip(StrictModel):
         if self.track.startswith("V") and self.kind == "audio":
             raise ValueError("Audio clips belong on A1 or A2")
         if self.track.startswith("A") and self.kind == "image":
-            raise ValueError("Images belong on V1 or V2")
+            raise ValueError("Images belong on a video track")
+        bounds = {"x": (-8192, 8192), "y": (-8192, 8192), "scale": (.1, 4),
+                  "rotation": (-360, 360), "opacity": (0, 1)}
+        for prop, frames in self.keyframes.items():
+            for index, frame in enumerate(frames):
+                if not bounds[prop][0] <= frame.value <= bounds[prop][1]:
+                    raise ValueError(f"Keyframe {prop} is outside its allowed range")
+                if index and frames[index - 1].time >= frame.time:
+                    raise ValueError(f"Keyframes for {prop} must be ordered")
         return self
 
 
@@ -65,6 +82,32 @@ class Marker(StrictModel):
     label: str = Field(default="Marker", max_length=200)
 
 
+class RenderSettings(StrictModel):
+    filename: str = Field(default="timeline_sequence.mp4", pattern=r"^[^/\\]+$")
+    output_folder: str | None = None
+    container: Literal["mp4", "webm"] = "mp4"
+    video_codec: Literal["libx264", "libx265", "libvpx-vp9"] = "libx264"
+    quality: Literal["draft", "standard", "high", "very-high", "custom"] = "high"
+    crf: int | None = Field(default=None, ge=0, le=51)
+    preset: Literal["ultrafast", "superfast", "veryfast", "faster", "fast", "medium", "slow", "slower"] | None = None
+    audio_bitrate: int = Field(default=320, ge=64, le=320)
+    width: int | None = Field(default=None, ge=64, le=4096, multiple_of=2)
+    height: int | None = Field(default=None, ge=64, le=4096, multiple_of=2)
+    fps: float | None = Field(default=None, ge=1, le=120)
+
+    @model_validator(mode="after")
+    def compatible(self):
+        if self.filename in {".", ".."} or self.filename.startswith(".") or self.filename.endswith("."):
+            raise ValueError("Choose a valid output filename")
+        if Path(self.filename).suffix.lower() != f".{self.container}":
+            raise ValueError("Filename extension must match the container")
+        if (self.video_codec == "libvpx-vp9") != (self.container == "webm"):
+            raise ValueError("VP9 requires WebM; H.264 and H.265 require MP4")
+        if self.quality == "custom" and self.crf is None:
+            raise ValueError("Custom quality requires a CRF value")
+        return self
+
+
 class Sequence(StrictModel):
     version: Literal[1] = 1
     revision: int = Field(default=0, ge=0)
@@ -72,7 +115,7 @@ class Sequence(StrictModel):
     timebase: Literal["sequence"] = "sequence"
     width: int = Field(default=1280, ge=64, le=4096, multiple_of=2)
     height: int = Field(default=720, ge=64, le=4096, multiple_of=2)
-    fps: int = Field(default=30, ge=1, le=120)
+    fps: float = Field(default=30, ge=1, le=120)
     tracks: list[Track] = Field(default_factory=lambda: [Track(id=t) for t in TRACKS])
     clips: list[SequenceClip] = Field(default_factory=list, max_length=500)
     markers: list[Marker] = Field(default_factory=list, max_length=500)
@@ -83,8 +126,11 @@ class Sequence(StrictModel):
 
     @model_validator(mode="after")
     def coherent(self):
-        if sorted(t.id for t in self.tracks) != sorted(TRACKS):
-            raise ValueError("Sequence must contain V1, V2, A1 and A2 exactly once")
+        ids = [t.id for t in self.tracks]
+        if len(set(ids)) != len(ids) or not set(TRACKS).issubset(ids) or set(ids) != set(TRACKS) | {f"V{i}" for i in range(3, max([2] + [int(t[1:]) for t in ids if t.startswith('V')]) + 1)}:
+            raise ValueError("Sequence needs V1, V2, A1, A2 and contiguous additional video tracks")
+        if any(c.track not in ids for c in self.clips):
+            raise ValueError("Every clip must reference a sequence track")
         if len({c.id for c in self.clips}) != len(self.clips):
             raise ValueError("Clip IDs must be unique")
         for track in self.tracks:
@@ -111,8 +157,9 @@ def from_plan(plan: dict, *, width=1280, height=720, fps=30, has_audio=True) -> 
 
 
 def timecode(seconds: float, fps: int) -> str:
+    nominal = round(fps)
     frames = max(0, round(seconds * fps))
-    total, frame = divmod(frames, fps)
+    total, frame = divmod(frames, nominal)
     minutes, second = divmod(total, 60)
     hour, minute = divmod(minutes, 60)
     return f"{hour:02}:{minute:02}:{second:02}:{frame:02}"
@@ -133,7 +180,7 @@ def export_sequence(sequence: Sequence, path: Path, fmt: str) -> list[str]:
         return warnings
     if fmt == "edl":
         video = [c for c in active if c.track.startswith("V")]
-        if len({c.track for c in video}) > 1 or any(c.speed != 1 or c.kind == "image" or c.opacity != 1 or c.scale != 1 or c.rotation or c.x or c.y for c in video):
+        if len({c.track for c in video}) > 1 or any(c.speed != 1 or c.kind == "image" or c.opacity != 1 or c.scale != 1 or c.rotation or c.x or c.y or c.keyframes for c in video):
             raise PipelineError("CMX EDL supports a single video track with cuts only. Use OTIO for layered edits or MP4 for baked effects.")
         lines = ["TITLE: SMARTCUT", "FCM: NON-DROP FRAME", ""]
         for index, clip in enumerate(sorted(video, key=lambda c: c.start), 1):
@@ -150,7 +197,7 @@ def export_sequence(sequence: Sequence, path: Path, fmt: str) -> list[str]:
         raise PipelineError("OpenTimelineIO is not installed in this runtime") from exc
     timeline = otio.schema.Timeline(name="SmartCut")
     rt = lambda seconds: otio.opentime.RationalTime(seconds * sequence.fps, sequence.fps)
-    for track_id in ("V1", "V2", "A1", "A2"):
+    for track_id in sorted((t.id for t in sequence.tracks), key=lambda t: (t[0] == "A", int(t[1:]))):
         track = otio.schema.Track(name=track_id, kind=otio.schema.TrackKind.Video if track_id.startswith("V") else otio.schema.TrackKind.Audio)
         cursor = 0.0
         for clip in sorted((c for c in active if c.track == track_id), key=lambda c: c.start):
