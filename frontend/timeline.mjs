@@ -8,6 +8,52 @@ export const pixelsPerSecond = (viewportWidth, seconds, zoom=1) =>
   Math.max(1, viewportWidth-64)/Math.max(10, seconds)*zoom;
 export const uid = () => crypto.randomUUID().slice(0, 12);
 export const locked = (sequence, track) => sequence.tracks.find(t => t.id === track)?.locked;
+export const visualTracks = sequence => sequence.tracks.map(t=>t.id).filter(id=>id.startsWith('V')).sort((a,b)=>Number(b.slice(1))-Number(a.slice(1)));
+export function visualGeometry(sourceWidth,sourceHeight,canvasWidth,canvasHeight,fit='fit'){
+  const ratio=fit==='original'?1:fit==='fill'?Math.max(canvasWidth/sourceWidth,canvasHeight/sourceHeight):Math.min(canvasWidth/sourceWidth,canvasHeight/sourceHeight);
+  const mediaWidth=sourceWidth*ratio,mediaHeight=sourceHeight*ratio;
+  return {mediaWidth,mediaHeight,boxWidth:fit==='fill'?canvasWidth:mediaWidth,boxHeight:fit==='fill'?canvasHeight:mediaHeight};
+}
+export function placementTracks(kind,hasAudio,track){
+  if(kind==='audio'&&track[0]!=='A'||kind==='image'&&track[0]!=='V')throw new Error('Drop images on video tracks and audio on audio tracks');
+  return [track,...(kind==='video'&&hasAudio&&track==='V1'?['A1']:[])];
+}
+export const ANIMATED = ['x','y','scale','rotation','opacity'];
+export function clipValue(clip, property, time) {
+  const frames=clip.keyframes?.[property]||[];
+  if(!frames.length)return clip[property];
+  if(time<=frames[0].time)return frames[0].value;
+  for(let i=1;i<frames.length;i++)if(time<frames[i].time){
+    const left=frames[i-1],right=frames[i],p=(time-left.time)/(right.time-left.time);
+    const eased=left.interpolation==='hold'?0:left.interpolation==='ease-in'?p*p:
+      left.interpolation==='ease-out'?1-(1-p)**2:left.interpolation==='ease-in-out'?p*p*(3-2*p):p;
+    return left.value+(right.value-left.value)*eased;
+  }
+  return frames.at(-1).value;
+}
+export function setKeyframe(clip,property,time,value,interpolation) {
+  if(!ANIMATED.includes(property))throw new Error('This property cannot be animated');
+  if(time<0||time>duration(clip)+.001)throw new Error('Keyframe is outside the clip');
+  clip.keyframes??={};const frames=clip.keyframes[property]??=[];
+  const existing=frames.find(k=>Math.abs(k.time-time)<.0001);
+  if(existing)Object.assign(existing,{value,...(interpolation?{interpolation}:{})});else frames.push({time,value,interpolation:interpolation||'linear'});
+  frames.sort((a,b)=>a.time-b.time);
+  return clip;
+}
+export function deleteKeyframe(clip,property,time){
+  if(clip.keyframes?.[property])clip.keyframes[property]=clip.keyframes[property].filter(k=>Math.abs(k.time-time)>.0001);
+  return clip;
+}
+export function moveKeyframe(clip,property,from,to){
+  const frame=clip.keyframes?.[property]?.find(k=>Math.abs(k.time-from)<.0001);
+  if(!frame)throw new Error('Keyframe not found');
+  if(to<0||to>duration(clip)+.001)throw new Error('Keyframe is outside the clip');
+  if(clip.keyframes[property].some(k=>k!==frame&&Math.abs(k.time-to)<.0001))throw new Error('Keyframe already exists there');
+  frame.time=to;clip.keyframes[property].sort((a,b)=>a.time-b.time);return clip;
+}
+function shiftKeyframes(clip,offset){
+  for(const frames of Object.values(clip.keyframes||{}))frames.forEach(k=>k.time-=offset);
+}
 // An edit built from an earlier snapshot (e.g. a drag begun before an autosave finished) must save
 // against the newest server revision, or the server rejects it as a change from another window.
 export function keepSaveState(next, current) {
@@ -26,10 +72,14 @@ function editable(sequence, clips) {
   if (clips.some(c => locked(sequence, c.track))) throw new Error('Unlock the affected track first');
 }
 export function validate(sequence) {
+  if(!Number.isFinite(sequence.fps??30)||!Number.isFinite(sequence.width??1280)||!Number.isFinite(sequence.height??720))throw new Error('Sequence dimensions and frame rate must be finite');
+  const tracks=new Set(sequence.tracks.map(t=>t.id));
+  if(sequence.clips.some(c=>!tracks.has(c.track)))throw new Error('Clip track is missing');
   for (const track of sequence.tracks) {
     const clips = sequence.clips.filter(c => c.enabled && c.track === track.id).sort((a,b) => a.start-b.start);
     for (let i=0;i<clips.length;i++) {
       if (duration(clips[i]) < .02 || clips[i].source_start < 0 || clips[i].start < 0) throw new Error('Clip is too short or outside the timeline');
+      for(const frames of Object.values(clips[i].keyframes||{}))if(frames.some((k,n)=>!Number.isFinite(k.time)||n>0&&frames[n-1].time>=k.time))throw new Error('Keyframes must be ordered');
       if (i && end(clips[i-1]) > clips[i].start + .001) throw new Error('Clips overlap. Use another track or Overwrite.');
     }
   }
@@ -42,7 +92,8 @@ export function split(sequence, id, time, linked = true) {
   const rightLink = uid();
   for (const clip of targets) {
     const boundary = clip.source_start + (time-clip.start)*clip.speed;
-    sequence.clips.push({...clip, id:uid(), start:time, source_start:boundary, link_id:linked ? rightLink : null});
+    const right=clone(clip);shiftKeyframes(right,time-clip.start);
+    sequence.clips.push({...right, id:uid(), start:time, source_start:boundary, link_id:linked ? rightLink : null});
     clip.source_end = boundary;
     if (!linked) clip.link_id = null;
   }
@@ -84,7 +135,7 @@ export function duplicate(sequence, id, linked = true) {
   const base = Math.min(...targets.map(c => c.start));
   targets.forEach(c => {
     if(linked&&c.link_id&&!links.has(c.link_id))links.set(c.link_id,uid());
-    sequence.clips.push({...c,id:uid(),link_id:linked ? links.get(c.link_id)||null : null,start:finish+c.start-base});
+    sequence.clips.push({...clone(c),id:uid(),link_id:linked ? links.get(c.link_id)||null : null,start:finish+c.start-base});
   });
   return validate(sequence);
 }
@@ -94,6 +145,7 @@ export function trim(sequence, id, edge, time, linked = true) {
   for (const clip of targets) {
     if (edge === 'start') {
       const delta = time-clip.start;
+      shiftKeyframes(clip,delta);
       clip.source_start += delta*clip.speed;
       clip.start = time;
     } else clip.source_end = clip.source_start + (time-clip.start)*clip.speed;

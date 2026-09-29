@@ -7,6 +7,11 @@ All notable changes to this project are documented here. The project follows
 
 ### Added
 
+- Visual clips now stack across V1–V8 with PNG alpha, image duration and trimming, fit/fill/original
+  sizing, Program monitor transform handles, and clip-local position/scale/rotation/opacity keyframes.
+- Sequence frame rates include fractional values. The render dialog offers creator presets, detected
+  H.264/H.265/VP9 encoders, quality/audio settings, custom paths, live progress and cancellation.
+
 - "Analyze all" queues Ear/Eye/Voice analysis for every unanalyzed video in the open project with one
   click, alongside the existing single-source Analyze. Offline sources are skipped; an "Include
   already-analyzed sources" toggle re-queues sources that already have a plan, with refresh. Each
