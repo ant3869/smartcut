@@ -58,3 +58,48 @@ test('an edit started before a save finished keeps the newest saved revision', (
   assert.equal(next, draft);
   assert.deepEqual([next.revision, next.source_sha256], [6, 'abc']);
 });
+
+test('keyframes interpolate and remain aligned after moving and trimming a clip', () => {
+  const s=sequence(),clip=s.clips[0];clip.x=5;
+  T.setKeyframe(clip,'x',2,10);T.setKeyframe(clip,'x',6,50);
+  assert.equal(T.clipValue(clip,'x',4),30);
+  T.move(s,'c0',3,'V2');assert.equal(T.clipValue(clip,'x',4),30);
+  T.trim(s,'c0','start',5);assert.equal(T.clipValue(clip,'x',2),30);
+  assert.deepEqual(clip.keyframes.x.map(k=>k.time),[0,4]);
+  T.moveKeyframe(clip,'x',4,3);assert.equal(T.clipValue(clip,'x',3),50);
+  T.deleteKeyframe(clip,'x',3);assert.equal(clip.keyframes.x.length,1);
+});
+
+test('hold and ease interpolation and overlay track ordering',()=>{
+  const s=sequence(),clip=s.clips[0];
+  T.setKeyframe(clip,'opacity',0,0,'hold');T.setKeyframe(clip,'opacity',4,1);
+  assert.equal(T.clipValue(clip,'opacity',2),0);
+  T.setKeyframe(clip,'opacity',0,0,'ease-in');
+  assert.equal(T.clipValue(clip,'opacity',2),.25);
+  T.setKeyframe(clip,'opacity',0,.2);
+  assert.equal(clip.keyframes.opacity[0].interpolation,'ease-in');
+  s.tracks.unshift({id:'V3',locked:false,muted:false});
+  s.clips.push({...clip,id:'top',track:'V3',link_id:null,keyframes:{}});
+  assert.deepEqual(T.visualTracks(s),['V3','V2','V1']);
+  assert.equal(T.validate(s),s);
+});
+
+test('trimming through a hold or easing segment preserves the animation curve',()=>{
+  for(const interpolation of ['hold','ease-in-out']){
+    const s=sequence(),clip=s.clips[0];
+    T.setKeyframe(clip,'x',0,0,interpolation);T.setKeyframe(clip,'x',4,40);
+    const before=[2,3,4].map(t=>T.clipValue(clip,'x',t));
+    T.trim(s,'c0','start',2,false);
+    assert.deepEqual([0,1,2].map(t=>T.clipValue(clip,'x',t)),before);
+    assert.equal(clip.keyframes.x[0].time,-2);
+  }
+});
+
+test('Fill crops the source before the clip transform, and overlay videos can stack independently',()=>{
+  const geometry=T.visualGeometry(64,64,128,72,'fill');
+  assert.deepEqual(geometry,{mediaWidth:128,mediaHeight:128,boxWidth:128,boxHeight:72});
+  assert.deepEqual(T.placementTracks('video',true,'V1'),['V1','A1']);
+  assert.deepEqual(T.placementTracks('video',true,'V3'),['V3']);
+  assert.deepEqual(T.placementTracks('video',true,'A2'),['A2']);
+  assert.deepEqual(T.placementTracks('image',false,'V2'),['V2']);
+});

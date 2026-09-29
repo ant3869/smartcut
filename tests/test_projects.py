@@ -85,6 +85,66 @@ def test_project_validation_asset_membership_identity_and_bounds(workspace):
     assert client.get("/api/projects/..%5Coutside").status_code in {403, 404}
 
 
+def test_render_options_preflight_and_capabilities(workspace, tmp_path):
+    client, _, _, source = workspace
+    project = create(client)
+    add_sequence(client, project, source)
+    url = f"/api/projects/{project['id']}/render"
+    capabilities = client.get("/api/render/capabilities").json()["video_codecs"]
+    assert "libx264" in capabilities
+    folder = str(tmp_path / "exports")
+    settings = {"filename": "test.mp4", "output_folder": folder, "width": 64, "height": 64,
+                "fps": 10, "quality": "custom", "crf": 22, "preset": "ultrafast"}
+    assert client.post(url, json={"settings": settings, "dry_run": True}).status_code == 200
+    assert not (tmp_path / "exports").exists()
+    mismatched = {**settings, "width": 96}
+    assert client.post(url, json={"settings": mismatched, "dry_run": True}).status_code == 400
+    assert client.post(url, json={"settings": {**settings, "video_codec": "libvpx-vp9"}, "dry_run": True}).status_code == 422
+
+
+def test_render_preflight_rejects_incompatible_bumper_codec(workspace):
+    client, _, cfg, source = workspace
+    cfg["bumper_path"] = str(source)
+    client.put("/api/config", json={"values": {"bumper_path": str(source)}})
+    project = create(client)
+    add_sequence(client, project, source)
+    response = client.post(f"/api/projects/{project['id']}/render", json={
+        "settings": {"filename": "test.webm", "container": "webm", "video_codec": "libvpx-vp9"},
+        "dry_run": True,
+    })
+    assert response.status_code == 400
+    assert "bumper" in response.text.lower()
+
+
+def test_queued_render_can_be_canceled_without_creating_output(workspace, monkeypatch):
+    from pipeline import web
+    client, _, cfg, source = workspace
+    project = create(client)
+    add_sequence(client, project, source)
+    queued = []
+    monkeypatch.setattr(web, "submit_task", queued.append)
+    task = client.post(f"/api/projects/{project['id']}/render", json={}).json()
+    assert task["status"] == "queued"
+    assert client.post(f"/api/tasks/{task['id']}/cancel").status_code == 200
+    queued.pop()()
+    assert client.get(f"/api/tasks/{task['id']}").json()["status"] == "canceled"
+    assert not (Path(cfg["output_dir"]) / "projects" / project["id"] / "timeline_sequence.mp4").exists()
+
+
+def test_rendered_output_in_custom_folder_is_available_to_program_monitor(workspace, tmp_path, monkeypatch):
+    from pipeline import web
+    client, _, _, source = workspace
+    project = create(client)
+    add_sequence(client, project, source)
+    monkeypatch.setattr(web, "submit_task", lambda fn: fn())
+    path = tmp_path / "custom" / "final.mp4"
+    task = client.post(f"/api/projects/{project['id']}/render", json={"settings": {
+        "filename": path.name, "output_folder": str(path.parent), "width": 64, "height": 64,
+        "fps": 10, "quality": "draft", "preset": "ultrafast"}}).json()
+    assert task["status"] == "succeeded", task
+    assert client.get("/api/file", params={"path": str(path)}).status_code == 200
+
+
 def test_existing_edit_copies_without_changing_original(workspace):
     client, path, cfg, source = workspace
     job = Path(cfg["work_dir"]) / "jobs" / "legacy"
