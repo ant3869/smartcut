@@ -16,9 +16,30 @@ class PipelineError(RuntimeError):
     pass
 
 
-def run_checked(cmd: Sequence[str], *, timeout: float = 1800.0, text: bool = True) -> subprocess.CompletedProcess:
+def run_checked(cmd: Sequence[str], *, timeout: float = 1800.0, text: bool = True, progress=None) -> subprocess.CompletedProcess:
     try:
-        result = subprocess.run(list(cmd), text=text, capture_output=True, timeout=timeout, creationflags=NO_WINDOW)
+        if progress is None:
+            result = subprocess.run(list(cmd), text=text, capture_output=True, timeout=timeout, creationflags=NO_WINDOW)
+        else:
+            import time
+            started = time.monotonic()
+            process = subprocess.Popen(list(cmd), text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, creationflags=NO_WINDOW)
+            lines = []
+            try:
+                for line in process.stdout:
+                    lines.append(line)
+                    if line.startswith("out_time_us="):
+                        value = line.split("=", 1)[1].strip()
+                        if value.isdigit():
+                            progress(int(value) / 1_000_000)
+                    if time.monotonic() - started > timeout:
+                        raise subprocess.TimeoutExpired(cmd, timeout)
+                _, errors = process.communicate(timeout=max(1, timeout - (time.monotonic() - started)))
+                result = subprocess.CompletedProcess(cmd, process.returncode, "".join(lines), errors)
+            finally:
+                if process.poll() is None:
+                    process.kill()
+                    process.communicate()
     except FileNotFoundError as exc:
         raise PipelineError(f"required executable is missing: {cmd[0]}") from exc
     except subprocess.TimeoutExpired as exc:
@@ -139,4 +160,3 @@ def require_distinct(output: Path, *inputs: Path) -> None:
     resolved = output.expanduser().resolve()
     if any(resolved == item.expanduser().resolve() for item in inputs):
         raise PipelineError(f"input and output paths must be distinct: {resolved}")
-

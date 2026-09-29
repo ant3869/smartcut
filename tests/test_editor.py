@@ -7,7 +7,8 @@ import pytest
 from pydantic import ValidationError
 
 from pipeline.blade import FfmpegBlade
-from pipeline.sequence import Sequence, SequenceClip, from_plan, export_sequence, timecode
+from pipeline.brain import PipelineBrain
+from pipeline.sequence import Keyframe, RenderSettings, Sequence, SequenceClip, Track, from_plan, export_sequence, timecode
 from pipeline.settings import SETTINGS, public_settings, validate_settings
 from pipeline.util import PipelineError, source_fingerprint
 
@@ -77,6 +78,19 @@ def test_sequence_contract_and_exports(tmp_path):
         Sequence.model_validate(sequence.model_dump())
 
 
+def test_keyframes_and_extra_visual_tracks_round_trip(tmp_path):
+    source = media(tmp_path)
+    sequence = from_plan(plan(source), width=64, height=64, fps=29.97, has_audio=False)
+    clip = sequence.clips[0]
+    clip.keyframes = {"x": [Keyframe(time=0, value=0), Keyframe(time=1, value=20, interpolation="ease-in-out")]}
+    sequence.tracks.insert(0, Track(id="V3"))
+    sequence.clips.append(SequenceClip(**{**clip.model_dump(), "id": "overlay", "track": "V3"}))
+    loaded = Sequence.model_validate_json(sequence.model_dump_json())
+    assert loaded.fps == 29.97
+    assert loaded.clips[-1].keyframes["x"][1].value == 20
+    assert Sequence.model_validate(from_plan(plan(source)).model_dump()).clips[0].keyframes == {}
+
+
 def test_real_sequence_render_speed_opacity_gap_and_mute(tmp_path):
     source = media(tmp_path)
     original_hash = source_fingerprint(source)["sha256"]
@@ -100,6 +114,137 @@ def test_real_sequence_render_speed_opacity_gap_and_mute(tmp_path):
     sequence.tracks[1].muted = True
     with pytest.raises(PipelineError, match="No enabled"):
         blade.render_sequence(sequence, output)
+
+
+def test_animated_transparent_png_overlay_and_vertical_output(tmp_path):
+    source = media(tmp_path)
+    png = tmp_path / "logo.png"
+    pixels = np.zeros((16, 16, 4), dtype=np.uint8)
+    pixels[4:12, 4:12] = (0, 255, 0, 255)
+    assert cv2.imwrite(str(png), pixels)
+    sequence = from_plan(plan(source), width=64, height=96, fps=10, has_audio=False)
+    sequence.clips = [sequence.clips[0]]
+    sequence.clips[0].source_end = 2
+    image = SequenceClip(id="logo", source=str(png), source_sha256=source_fingerprint(png)["sha256"],
+                         kind="image", track="V2", start=0, source_start=0, source_end=2,
+                         fit="original", keyframes={
+                             "x": [{"time": 0, "value": -16}, {"time": 1.5, "value": 16}],
+                             "scale": [{"time": 0, "value": 1}, {"time": 1.5, "value": 2}],
+                             "rotation": [{"time": 0, "value": 0}, {"time": 1.5, "value": 45}],
+                             "opacity": [{"time": 0, "value": 1}, {"time": 1.5, "value": .3}],
+                         })
+    sequence.clips.append(image)
+    out = FfmpegBlade(preset="ultrafast").render_sequence(sequence, tmp_path / "overlay.mp4")
+    capture = cv2.VideoCapture(str(out))
+    assert (capture.get(cv2.CAP_PROP_FRAME_WIDTH), capture.get(cv2.CAP_PROP_FRAME_HEIGHT)) == (64, 96)
+    capture.set(cv2.CAP_PROP_POS_MSEC, 100)
+    ok, first = capture.read()
+    assert ok and first[:, :32, 1].max() > 175
+    assert first[48, 32, 2] > 100 and first[48, 32, 1] < 30
+    capture.set(cv2.CAP_PROP_POS_MSEC, 1600)
+    ok, last = capture.read()
+    capture.release()
+    assert ok and last[:, 32:, 1].max() > 25
+
+
+@pytest.mark.parametrize("width,height,fps", [(128, 72, 24), (64, 64, 30), (80, 100, 29.97), (72, 128, 23.976)])
+def test_canvas_shape_and_export_frame_rate(tmp_path, width, height, fps):
+    from pipeline.util import ffprobe_json
+    source = media(tmp_path)
+    sequence = from_plan(plan(source), width=width, height=height, fps=fps, has_audio=False)
+    sequence.clips = [sequence.clips[0]]
+    settings = RenderSettings(filename="shape.mp4", width=width, height=height, fps=fps,
+                              quality="draft", preset="ultrafast")
+    out = FfmpegBlade(preset="ultrafast").render_sequence(sequence, tmp_path / "shape.mp4", settings=settings)
+    stream = next(s for s in ffprobe_json(out)["streams"] if s["codec_type"] == "video")
+    assert (stream["width"], stream["height"]) == (width, height)
+    rate = [int(x) for x in stream["avg_frame_rate"].split("/")]
+    assert abs(rate[0] / rate[1] - fps) < .01
+
+
+def test_export_settings_reject_incompatible_format():
+    with pytest.raises(ValidationError, match="VP9 requires"):
+        RenderSettings(filename="bad.mp4", video_codec="libvpx-vp9")
+    with pytest.raises(ValidationError, match="extension"):
+        RenderSettings(filename="bad.webm")
+
+
+def test_webm_export_uses_detected_vp9_encoder(tmp_path):
+    from pipeline.util import ffprobe_json
+    if "libvpx-vp9" not in FfmpegBlade.available_video_codecs():
+        pytest.skip("VP9 encoder is unavailable")
+    source = media(tmp_path)
+    sequence = from_plan(plan(source), width=64, height=64, fps=10, has_audio=False)
+    sequence.clips = sequence.clips[:1]
+    settings = RenderSettings(filename="test.webm", container="webm", video_codec="libvpx-vp9",
+                              quality="custom", crf=35, preset="ultrafast")
+    out = FfmpegBlade(preset="ultrafast").render_sequence(sequence, tmp_path / "test.webm", settings=settings)
+    assert next(s for s in ffprobe_json(out)["streams"] if s["codec_type"] == "video")["codec_name"] == "vp9"
+
+
+def test_render_cancel_removes_partial_output(tmp_path):
+    source = media(tmp_path)
+    sequence = from_plan(plan(source), width=64, height=64, fps=10, has_audio=False)
+    sequence.clips = sequence.clips[:1]
+    target = tmp_path / "canceled.mp4"
+
+    def cancel(_percent):
+        raise PipelineError("Render canceled")
+
+    with pytest.raises(PipelineError, match="Render canceled"):
+        FfmpegBlade(preset="ultrafast").render_sequence(sequence, target, progress=cancel)
+    assert not target.exists() and not (tmp_path / "canceled.rendering.mp4").exists()
+
+
+def test_cancel_after_composite_does_not_publish_output(tmp_path):
+    source = media(tmp_path)
+    sequence = from_plan(plan(source), width=64, height=64, fps=10, has_audio=False)
+    sequence.clips = sequence.clips[:1]
+    engine = PipelineBrain({**config(tmp_path), "blade_preset": "ultrafast"})
+    project = tmp_path / "project"
+
+    def cancel(stage, _percent):
+        if stage == "Verifying output":
+            raise PipelineError("Render canceled")
+
+    with pytest.raises(PipelineError, match="Render canceled"):
+        engine.render_edit(source, sequence, project_dir=project, progress=cancel)
+    assert not (tmp_path / "vault" / "projects" / "project" / "timeline_sequence.mp4").exists()
+    assert not (project / "render_manifest.json").exists()
+
+
+def test_visual_track_order_and_fit_fill_pixels(tmp_path):
+    source = media(tmp_path)
+    sequence = from_plan(plan(source), width=128, height=72, fps=10, has_audio=False)
+    sequence.clips = [sequence.clips[0]]
+    sequence.clips[0].fit = "fit"
+    blade = FfmpegBlade(preset="ultrafast")
+    fitted = blade.render_sequence(sequence, tmp_path / "fit.mp4")
+    capture = cv2.VideoCapture(str(fitted))
+    ok, fit_frame = capture.read()
+    capture.release()
+    assert ok and fit_frame[36, 0].max() < 10
+    sequence.clips[0].fit = "fill"
+    filled = blade.render_sequence(sequence, tmp_path / "fill.mp4")
+    capture = cv2.VideoCapture(str(filled))
+    ok, fill_frame = capture.read()
+    capture.release()
+    assert ok and fill_frame[36, 0, 2] > 100
+
+    sequence.tracks.insert(0, Track(id="V3"))
+    for track, color in [("V2", (255, 0, 0, 255)), ("V3", (0, 255, 0, 255))]:
+        path = tmp_path / f"{track}.png"
+        pixels = np.zeros((16, 16, 4), dtype=np.uint8)
+        pixels[:, :] = color
+        cv2.imwrite(str(path), pixels)
+        sequence.clips.append(SequenceClip(id=track, source=str(path), source_sha256=source_fingerprint(path)["sha256"],
+                                           kind="image", track=track, start=0, source_start=0, source_end=1,
+                                           fit="original"))
+    ordered = blade.render_sequence(sequence, tmp_path / "ordered.mp4")
+    capture = cv2.VideoCapture(str(ordered))
+    ok, frame = capture.read()
+    capture.release()
+    assert ok and frame[36, 64, 1] > 170 and frame[36, 64, 0] < 100
 
 
 def test_settings_sequence_review_api(tmp_path, monkeypatch):
