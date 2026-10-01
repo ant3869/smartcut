@@ -20,7 +20,7 @@ class StrictModel(BaseModel):
 
 
 class Track(StrictModel):
-    id: str = Field(pattern=r"^(V[1-8]|A[1-2])$")
+    id: str = Field(pattern=r"^(V[1-8]|A[1-8])$")
     muted: bool = False
     locked: bool = False
 
@@ -36,7 +36,7 @@ class SequenceClip(StrictModel):
     source: str
     source_sha256: str = Field(pattern=r"^[a-fA-F0-9]{64}$")
     kind: Literal["video", "audio", "image"] = "video"
-    track: str = Field(default="V1", pattern=r"^(V[1-8]|A[1-2])$")
+    track: str = Field(default="V1", pattern=r"^(V[1-8]|A[1-8])$")
     start: float = Field(ge=0, le=86400)
     source_start: float = Field(ge=0, le=86400)
     source_end: float = Field(gt=0, le=86400)
@@ -62,7 +62,7 @@ class SequenceClip(StrictModel):
         if self.duration < .02:
             raise ValueError("A clip must last at least 0.02 seconds")
         if self.track.startswith("V") and self.kind == "audio":
-            raise ValueError("Audio clips belong on A1 or A2")
+            raise ValueError("Audio clips belong on an audio track")
         if self.track.startswith("A") and self.kind == "image":
             raise ValueError("Images belong on a video track")
         bounds = {"x": (-8192, 8192), "y": (-8192, 8192), "scale": (.1, 4),
@@ -146,8 +146,12 @@ class Sequence(StrictModel):
     @model_validator(mode="after")
     def coherent(self):
         ids = [t.id for t in self.tracks]
-        if len(set(ids)) != len(ids) or not set(TRACKS).issubset(ids) or set(ids) != set(TRACKS) | {f"V{i}" for i in range(3, max([2] + [int(t[1:]) for t in ids if t.startswith('V')]) + 1)}:
-            raise ValueError("Sequence needs V1, V2, A1, A2 and contiguous additional video tracks")
+        extra_v = max([2] + [int(t[1:]) for t in ids if t.startswith('V')])
+        extra_a = max([2] + [int(t[1:]) for t in ids if t.startswith('A')])
+        need = (set(TRACKS) | {f"V{i}" for i in range(3, extra_v + 1)}
+                | {f"A{i}" for i in range(3, extra_a + 1)})
+        if len(set(ids)) != len(ids) or set(ids) != need:
+            raise ValueError("Sequence needs V1, V2, A1, A2 and contiguous additional tracks")
         if any(c.track not in ids for c in self.clips):
             raise ValueError("Every clip must reference a sequence track")
         if len({c.id for c in self.clips}) != len(self.clips):
