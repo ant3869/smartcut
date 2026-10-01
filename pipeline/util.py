@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import subprocess
 import time
 from pathlib import Path
@@ -123,10 +124,19 @@ def post_json_with_retry(
     timeout: float = 180.0,
     backoff: float = 2.0,
     headers: dict[str, str] | None = None,
+    on_attempt: Any | None = None,
 ) -> requests.Response:
-    """POST JSON with exponential-backoff retries for transient failures."""
+    """POST JSON with exponential-backoff retries for transient failures.
+
+    on_attempt(attempt_number_1_based) is an OPTIONAL hook called once per
+    real HTTP attempt (including retries) so callers can count attempts
+    truthfully. It defaults to None: every existing caller behaves exactly
+    as before.
+    """
     last: Exception | None = None
     for attempt in range(max(1, tries)):
+        if on_attempt is not None:
+            on_attempt(attempt + 1)
         try:
             response = requests.post(url, json=payload, timeout=timeout, headers=headers or {})
             response.raise_for_status()
@@ -160,3 +170,29 @@ def require_distinct(output: Path, *inputs: Path) -> None:
     resolved = output.expanduser().resolve()
     if any(resolved == item.expanduser().resolve() for item in inputs):
         raise PipelineError(f"input and output paths must be distinct: {resolved}")
+
+
+# Maximum timestamp mismatch attributable to float representation or decode
+# rounding (e.g. OpenCV reporting 111.00000000000001 for a 111.0 sample).
+# Only for matching a cited time to an actually-sampled time; never for
+# inventing evidence or widening intervals.
+TIMESTAMP_MATCH_TOLERANCE = 0.001
+
+
+def match_sampled_timestamp(cited: Any, sampled: list[float],
+                            *, tolerance: float = TIMESTAMP_MATCH_TOLERANCE) -> float | None:
+    """Resolve a cited timestamp to the nearest actually-sampled timestamp.
+
+    Returns the REAL sampled value (canonicalized) when exactly one sample
+    lies within tolerance; None when the citation is non-numeric, non-finite,
+    too far from every sample, or ambiguously close to two samples.
+    """
+    if type(cited) not in (int, float) or not math.isfinite(cited):
+        return None
+    if not math.isfinite(tolerance) or tolerance < 0:
+        raise PipelineError("timestamp tolerance must be finite and nonnegative")
+    actuals = [t for t in sampled
+               if type(t) in (int, float) and math.isfinite(t) and abs(t - cited) <= tolerance]
+    if len(actuals) != 1:
+        return None
+    return actuals[0]

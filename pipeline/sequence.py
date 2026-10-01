@@ -75,6 +75,25 @@ class SequenceClip(StrictModel):
                     raise ValueError(f"Keyframes for {prop} must be ordered")
         return self
 
+    def value_at(self, property_name: Literal["x", "y", "scale", "rotation", "opacity"], time: float) -> float:
+        """Preview-independent keyframe evaluation, shared by tests and export planning."""
+        base = float(getattr(self, property_name))
+        frames = self.keyframes.get(property_name, [])
+        if not frames or time < frames[0].time:
+            return base
+        left = frames[0]
+        for right in frames[1:]:
+            if time < right.time:
+                if left.interpolation == "hold":
+                    return left.value
+                progress = (time - left.time) / (right.time - left.time)
+                if left.interpolation == "ease-in": progress = progress * progress
+                elif left.interpolation == "ease-out": progress = 1 - (1 - progress) ** 2
+                elif left.interpolation == "ease-in-out": progress = 3 * progress ** 2 - 2 * progress ** 3
+                return left.value + (right.value - left.value) * progress
+            left = right
+        return left.value
+
 
 class Marker(StrictModel):
     id: str
