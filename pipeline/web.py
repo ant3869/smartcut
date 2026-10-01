@@ -69,6 +69,33 @@ class ActionRequest(BaseModel):
     dry_run: bool = False
 
 
+class RenderRequest(BaseModel):
+    filename: str = Field(default="smartcut-final", min_length=1, max_length=180)
+    folder: str | None = None
+    container: str = "mp4"
+    video_codec: str = "h264"
+    width: int | None = Field(default=None, ge=64, le=4096, multiple_of=2)
+    height: int | None = Field(default=None, ge=64, le=4096, multiple_of=2)
+    fps: float | None = Field(default=None, ge=1, le=120)
+    quality: str = "high"
+    crf: int | None = Field(default=None, ge=0, le=51)
+    preset: str | None = None
+    audio_bitrate: str = "320k"
+    dry_run: bool = False
+
+    def blade_settings(self, sequence: Sequence) -> dict[str, Any]:
+        quality = {"draft": 30, "standard": 24, "high": 20, "very_high": 17, "custom": self.crf}.get(self.quality)
+        if quality is None:
+            raise PipelineError("Choose Draft, Standard, High, Very High, or Custom quality")
+        if self.container not in {"mp4", "webm"} or self.video_codec not in {"h264", "h265", "vp9"}:
+            raise PipelineError("Unsupported render format")
+        if (self.container == "webm") != (self.video_codec == "vp9"):
+            raise PipelineError("WebM requires VP9; MP4 requires H.264 or H.265")
+        return {"width": self.width or sequence.width, "height": self.height or sequence.height,
+                "fps": self.fps or sequence.fps, "container": self.container, "video_codec": self.video_codec,
+                "crf": quality, "preset": self.preset or "fast", "audio_bitrate": self.audio_bitrate}
+
+
 class ConfigUpdate(BaseModel):
     values: dict[str, Any] = Field(default_factory=dict)
     revision: str | None = None
@@ -650,17 +677,22 @@ def create_app(config_path: str | Path = DEFAULT_CONFIG) -> FastAPI:
             return {"ok": True, "dry_run": dry_run, "sequence": payload.model_dump()}
 
     @app.post("/api/projects/{project_id}/render")
-    def project_render(project_id: str, request: ActionRequest | None = None):
+    def project_render(project_id: str, request: RenderRequest | None = None):
         data = project_view(project_id)
         sequence = Sequence.model_validate(data["sequence"])
         if not sequence.clips:
             raise HTTPException(400, "Add media to the timeline before rendering")
         validate_media(sequence, data["assets"])
-        if request and request.dry_run:
+        request = request or RenderRequest()
+        render = request.blade_settings(sequence)
+        if request.dry_run:
             return {"ok": True, "dry_run": True}
         engine, folder = brain(), project_path(project_id)
+        name = Path(request.filename).stem or "smartcut-final"
+        destination = Path(request.folder) / f"{name}.{request.container}" if request.folder else None
         return start_task(f"Render {data['name']}", lambda progress: engine.render_edit(
-            Path(sequence.clips[0].source), sequence, project_dir=folder, progress=progress), with_progress=True)
+            Path(sequence.clips[0].source), sequence, project_dir=folder, progress=progress,
+            render=render, output=destination), with_progress=True)
 
     @app.post("/api/projects/{project_id}/export")
     def project_export(project_id: str, request: dict[str, Any]):

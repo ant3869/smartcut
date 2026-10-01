@@ -103,6 +103,42 @@ def build_story_map(
                         "mode": "semantic_map_then_targeted_review"}}
 
 
+def build_temporal_context(
+    story_map: dict[str, Any], start: float, end: float, *,
+    context_seconds: float = 4.0, audio_enabled: bool = True,
+) -> dict[str, Any]:
+    """Bound a close-pass critic's evidence to the actual neighboring action.
+
+    Summaries are hypotheses, not votes. Retain timestamps so nearby dialogue
+    cannot silently become evidence that speech occurred inside the target.
+    """
+    left, right = start - context_seconds, end + context_seconds
+    sections = [s for s in story_map.get("sections", [])
+                if float(s["end"]) > left and float(s["start"]) < right]
+    center = (start + end) / 2
+    # Rank actual overlap first; a long containing scene can have a distant midpoint.
+    sections = sorted(sections, key=lambda s: (
+        not (s["start"] < end and s["end"] > start),
+        max(s["start"] - end, start - s["end"], 0),
+        abs((s["start"] + s["end"]) / 2 - center),
+    ))[:3]
+    observations = {float(o["timestamp"]): o for s in sections for o in s.get("observations", [])
+                    if left <= float(o["timestamp"]) <= right}
+    nearby = sorted(observations, key=lambda t: abs(t - center))[:12]
+    speech = {(float(s["start"]), float(s["end"]), str(s.get("text", ""))): s
+              for section in sections for s in section.get("transcript", [])
+              if audio_enabled and float(s["end"]) > left and float(s["start"]) < right}
+    return {
+        "sections": [{"start": s["start"], "end": s["end"],
+                      "summary": str(s.get("semantic_summary", {}).get("summary", ""))[:600]}
+                     for s in sorted(sections, key=lambda s: s["start"])],
+        "observations": [{**observations[t], "description": str(observations[t].get("description", ""))[:300]}
+                         for t in sorted(nearby)],
+        "transcript": [{"start": a, "end": b, "text": text[:300]}
+                       for a, b, text in sorted(speech)[:12]],
+    }
+
+
 def learned_editorial_focus(work_dir: Path, *, limit: int = 8) -> list[str]:
     """Return prior human-cut reason labels as soft prompt hints only."""
     counts: Counter[str] = Counter()
