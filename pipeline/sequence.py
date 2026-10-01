@@ -12,6 +12,8 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 from .util import PipelineError
 
 TRACKS = ("V2", "V1", "A1", "A2")
+VIDEO_TRACK_RE = r"^V[1-9][0-9]*$"
+AUDIO_TRACK_RE = r"^A[1-9][0-9]*$"
 
 
 class StrictModel(BaseModel):
@@ -19,9 +21,16 @@ class StrictModel(BaseModel):
 
 
 class Track(StrictModel):
-    id: Literal["V1", "V2", "A1", "A2"]
+    id: str = Field(pattern=r"^(V|A)[1-9][0-9]*$")
     muted: bool = False
     locked: bool = False
+
+
+class Keyframe(StrictModel):
+    """A clip-relative visual-property value. Old sequences simply have none."""
+    time: float = Field(ge=0, le=86400)
+    value: float = Field(ge=-8192, le=8192)
+    interpolation: Literal["hold", "linear", "ease_in", "ease_out", "ease_in_out"] = "linear"
 
 
 class SequenceClip(StrictModel):
@@ -29,7 +38,7 @@ class SequenceClip(StrictModel):
     source: str
     source_sha256: str = Field(pattern=r"^[a-fA-F0-9]{64}$")
     kind: Literal["video", "audio", "image"] = "video"
-    track: Literal["V1", "V2", "A1", "A2"] = "V1"
+    track: str = Field(default="V1", pattern=r"^(V|A)[1-9][0-9]*$")
     start: float = Field(ge=0, le=86400)
     source_start: float = Field(ge=0, le=86400)
     source_end: float = Field(gt=0, le=86400)
@@ -39,6 +48,8 @@ class SequenceClip(StrictModel):
     x: float = Field(default=0, ge=-8192, le=8192)
     y: float = Field(default=0, ge=-8192, le=8192)
     rotation: float = Field(default=0, ge=-360, le=360)
+    fit: Literal["fit", "fill", "original"] = "fit"
+    keyframes: dict[Literal["x", "y", "scale", "rotation", "opacity"], list[Keyframe]] = Field(default_factory=dict)
     volume: float = Field(default=1, ge=0, le=4)
     enabled: bool = True
     link_id: str | None = None
@@ -56,7 +67,29 @@ class SequenceClip(StrictModel):
             raise ValueError("Audio clips belong on A1 or A2")
         if self.track.startswith("A") and self.kind == "image":
             raise ValueError("Images belong on V1 or V2")
+        for property_name, frames in self.keyframes.items():
+            if any(right.time <= left.time for left, right in zip(frames, frames[1:])):
+                raise ValueError(f"{property_name} keyframes must be ordered and unique")
         return self
+
+    def value_at(self, property_name: Literal["x", "y", "scale", "rotation", "opacity"], time: float) -> float:
+        """Preview-independent keyframe evaluation, shared by tests and export planning."""
+        base = float(getattr(self, property_name))
+        frames = self.keyframes.get(property_name, [])
+        if not frames or time < frames[0].time:
+            return base
+        left = frames[0]
+        for right in frames[1:]:
+            if time < right.time:
+                if left.interpolation == "hold":
+                    return left.value
+                progress = (time - left.time) / (right.time - left.time)
+                if left.interpolation == "ease_in": progress = progress * progress
+                elif left.interpolation == "ease_out": progress = 1 - (1 - progress) ** 2
+                elif left.interpolation == "ease_in_out": progress = 3 * progress ** 2 - 2 * progress ** 3
+                return left.value + (right.value - left.value) * progress
+            left = right
+        return left.value
 
 
 class Marker(StrictModel):
@@ -72,7 +105,7 @@ class Sequence(StrictModel):
     timebase: Literal["sequence"] = "sequence"
     width: int = Field(default=1280, ge=64, le=4096, multiple_of=2)
     height: int = Field(default=720, ge=64, le=4096, multiple_of=2)
-    fps: int = Field(default=30, ge=1, le=120)
+    fps: float = Field(default=30, ge=1, le=120)
     tracks: list[Track] = Field(default_factory=lambda: [Track(id=t) for t in TRACKS])
     clips: list[SequenceClip] = Field(default_factory=list, max_length=500)
     markers: list[Marker] = Field(default_factory=list, max_length=500)
@@ -83,8 +116,8 @@ class Sequence(StrictModel):
 
     @model_validator(mode="after")
     def coherent(self):
-        if sorted(t.id for t in self.tracks) != sorted(TRACKS):
-            raise ValueError("Sequence must contain V1, V2, A1 and A2 exactly once")
+        if len({t.id for t in self.tracks}) != len(self.tracks) or not {"V1", "A1", "A2"}.issubset({t.id for t in self.tracks}):
+            raise ValueError("Sequence must contain unique V1, A1 and A2 tracks")
         if len({c.id for c in self.clips}) != len(self.clips):
             raise ValueError("Clip IDs must be unique")
         for track in self.tracks:
@@ -111,8 +144,10 @@ def from_plan(plan: dict, *, width=1280, height=720, fps=30, has_audio=True) -> 
 
 
 def timecode(seconds: float, fps: int) -> str:
-    frames = max(0, round(seconds * fps))
-    total, frame = divmod(frames, fps)
+    # EDL timecode uses an integral frame base even when the sequence stores 23.976/29.97.
+    frame_rate = max(1, round(float(fps)))
+    frames = max(0, round(seconds * frame_rate))
+    total, frame = divmod(frames, frame_rate)
     minutes, second = divmod(total, 60)
     hour, minute = divmod(minutes, 60)
     return f"{hour:02}:{minute:02}:{second:02}:{frame:02}"

@@ -53,7 +53,16 @@ def evaluate_proposals(
     expected_cuts: list[EditorialInterval],
     protected_keeps: list[EditorialInterval],
 ) -> dict[str, Any]:
-    """Score a set of waste proposals (frame-level or plan-level) against ground truth."""
+    """Score proposals against potentially partial editorial labels.
+
+    Legacy interval-count metrics retain their thresholds. Duration metrics use
+    unions and exact positive overlaps, rounded to milliseconds (ratios to three
+    decimals); empty precision/recall denominators score 1.0. Precision measures
+    support by expected labels, not proof that all remaining time is wrong.
+    Protected overlap is measured independently, including conflicting labels.
+    ``unexpected_proposals`` contains per-proposal unlabeled fragments, not
+    whole cuts; its count can increase when a proposal has several fragments.
+    """
     found: list[dict[str, Any]] = []
     missed: list[dict[str, Any]] = []
     for target in expected_cuts:
@@ -67,29 +76,60 @@ def evaluate_proposals(
         (found if item["coverage_ratio"] >= 0.25 else missed).append(item)
 
     protected_violations = [
-        {"protected": asdict(target), "proposal": asdict(proposal), "reason": proposal.reasons[0]}
+        {
+            "protected": asdict(target), "proposal": asdict(proposal),
+            "reason": proposal.reasons[0] if proposal.reasons else "quality",
+        }
         for target in protected_keeps
         for proposal in proposals
         if _meaningful_overlap(proposal, target)
     ]
     expected_matches = [item for item in found]
-    # A proposal is only excused from the unexpected list when it overlaps a
-    # target the system actually matched. The old rule excused any proposal
-    # grazing a target by 0.25s, which hid a 98-second "section:setup" false
-    # positive behind a 0.27s graze of the 123-130 gold span.
-    matched_spans = [(item["start"], item["end"]) for item in found]
-    expected_proposals = {
-        (proposal.start, proposal.end)
-        for proposal in proposals
-        for (mstart, mend) in matched_spans
-        if min(proposal.end, mend) - max(proposal.start, mstart) >= 0.25
+
+    # Duration metrics use unions so duplicate/overlapping labels and proposals
+    # never inflate time. Off-target means outside expected labels, not wrong:
+    # gold can be partial. Unlabeled time excludes explicit protected keeps too.
+    proposed_spans = _union([(item.start, item.end) for item in proposals])
+    expected_spans = _union([(item.start, item.end) for item in expected_cuts])
+    protected_spans = _union([(item.start, item.end) for item in protected_keeps])
+    # Keep the legacy report key, but report only the unlabeled fragments.
+    # Even a matched target cannot excuse the rest of an overbroad proposal.
+    labeled_spans = _union(expected_spans + protected_spans)
+    unexpected = []
+    for proposal in proposals:
+        cursor = proposal.start
+        for start, end in labeled_spans:
+            if end <= cursor:
+                continue
+            if start >= proposal.end:
+                break
+            if start > cursor:
+                unexpected.append({
+                    **asdict(proposal), "start": cursor, "end": start,
+                    "classification": "unlabeled",
+                })
+            cursor = max(cursor, end)
+        if cursor < proposal.end:
+            unexpected.append({
+                **asdict(proposal), "start": cursor, "end": proposal.end,
+                "classification": "unlabeled",
+            })
+    proposed_seconds = _seconds(proposed_spans)
+    expected_seconds = _seconds(expected_spans)
+    correctly_cut_seconds = _intersection_seconds(proposed_spans, expected_spans)
+    duration_metrics = {
+        "proposed_seconds": proposed_seconds,
+        "expected_seconds": expected_seconds,
+        "correctly_cut_seconds": correctly_cut_seconds,
+        "off_target_seconds": proposed_seconds - correctly_cut_seconds,
+        "unlabeled_seconds": proposed_seconds - _intersection_seconds(
+            proposed_spans, _union(expected_spans + protected_spans),
+        ),
+        "missed_expected_seconds": expected_seconds - correctly_cut_seconds,
+        "protected_seconds_cut": _intersection_seconds(proposed_spans, protected_spans),
+        "duration_precision": correctly_cut_seconds / proposed_seconds if proposed_seconds else 1.0,
+        "duration_recall": correctly_cut_seconds / expected_seconds if expected_seconds else 1.0,
     }
-    unexpected = [
-        asdict(proposal)
-        for proposal in proposals
-        if (proposal.start, proposal.end) not in expected_proposals
-        and not any(_meaningful_overlap(proposal, keep) for keep in protected_keeps)
-    ]
     total = len(expected_cuts)
     return {
         "proposed_waste": [asdict(item) for item in proposals],
@@ -98,6 +138,7 @@ def evaluate_proposals(
         "protected_keep_violations": protected_violations,
         "unexpected_proposals": unexpected,
         "metrics": {
+            **{name: round(max(0.0, value), 3) for name, value in duration_metrics.items()},
             "expected_cuts": total,
             "matched_cuts": len(expected_matches),
             "missed_cuts": len(missed),
@@ -106,6 +147,33 @@ def evaluate_proposals(
             "unexpected_proposals": len(unexpected),
         },
     }
+
+
+def _union(spans: list[tuple[float, float]]) -> list[tuple[float, float]]:
+    merged: list[tuple[float, float]] = []
+    for start, end in sorted(spans):
+        if end <= start:
+            continue
+        if merged and start <= merged[-1][1]:
+            merged[-1] = (merged[-1][0], max(merged[-1][1], end))
+        else:
+            merged.append((start, end))
+    return merged
+
+
+def _seconds(spans: list[tuple[float, float]]) -> float:
+    return sum(end - start for start, end in spans)
+
+
+def _intersection_seconds(
+    left: list[tuple[float, float]], right: list[tuple[float, float]],
+) -> float:
+    """Measure intersection of two already-unioned interval lists."""
+    return sum(
+        max(0.0, min(end, other_end) - max(start, other_start))
+        for start, end in left
+        for other_start, other_end in right
+    )
 
 
 def _meaningful_overlap(proposal: Clip, target: EditorialInterval) -> bool:

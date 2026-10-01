@@ -102,6 +102,30 @@ def test_real_sequence_render_speed_opacity_gap_and_mute(tmp_path):
         blade.render_sequence(sequence, output)
 
 
+def test_png_overlay_keyframes_and_vertical_render(tmp_path):
+    source = media(tmp_path)
+    logo = tmp_path / "inbox" / "logo.png"
+    # BGRA: a half-transparent green square proves alpha composition rather than a watermark shortcut.
+    image = np.zeros((20, 20, 4), dtype=np.uint8)
+    image[:, :, 1] = 255
+    image[:, :, 3] = 128
+    assert cv2.imwrite(str(logo), image)
+    source_hash, logo_hash = source_fingerprint(source)["sha256"], source_fingerprint(logo)["sha256"]
+    sequence = Sequence(source_sha256=source_hash, width=64, height=96, fps=10, clips=[
+        SequenceClip(id="base", source=str(source), source_sha256=source_hash, track="V1", start=0, source_start=0, source_end=2),
+        SequenceClip(id="logo", source=str(logo), source_sha256=logo_hash, kind="image", track="V2", start=0,
+                     source_start=0, source_end=2, opacity=1, scale=.5, fit="original",
+                     keyframes={"x": [{"time": 0, "value": -10}, {"time": 1, "value": 10, "interpolation": "ease_in_out"}],
+                                "opacity": [{"time": 0, "value": 0}, {"time": .5, "value": 1}]})])
+    assert sequence.clips[1].value_at("x", .5) == pytest.approx(0)
+    blade = FfmpegBlade(preset="ultrafast", output_fps=10)
+    output = blade.render_sequence(sequence, tmp_path / "vertical.mp4", render={"container": "mp4", "video_codec": "h264", "crf": 28, "preset": "ultrafast"})
+    from pipeline.util import ffprobe_json
+    info = ffprobe_json(output)
+    video = next(stream for stream in info["streams"] if stream["codec_type"] == "video")
+    assert (video["width"], video["height"]) == (64, 96)
+
+
 def test_settings_sequence_review_api(tmp_path, monkeypatch):
     from fastapi.testclient import TestClient
     cfg = config(tmp_path)
