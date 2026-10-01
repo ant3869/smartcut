@@ -229,6 +229,7 @@ function renderProgram(){
   }).join('')}<div id="transform-box" hidden><span class="transform-handle" data-transform="scale" title="Drag to scale"></span><span class="transform-rotate" data-transform="rotation" title="Drag to rotate"></span></div></div><div class="program-overlay"><div id="ai-hud" class="ai-hud" hidden></div><p id="live-caption" class="live-caption" hidden></p></div>`;
   $$('[data-program-clip]',stage).forEach(media=>media.addEventListener(media.tagName==='IMG'?'load':'loadedmetadata',syncProgram,{once:true}));
   overlayKey='';syncProgram();bindProgramManipulation();syncTransport();
+}
 function bindProgramManipulation(){
   const canvas=$('#program-canvas');if(!canvas)return;
   canvas.addEventListener('pointerdown',event=>{const media=event.target.closest('[data-program-clip]'),id=media?.dataset.programClip,clip=state.sequence?.clips.find(c=>c.id===id);if(!clip||!clip.track.startsWith('V')||event.button!==0)return;event.preventDefault();chooseClip(id);const before=T.clone(state.sequence),startX=event.clientX,startY=event.clientY,scale=canvas.getBoundingClientRect().width/state.sequence.width;canvas.setPointerCapture?.(event.pointerId);let moved=false;
