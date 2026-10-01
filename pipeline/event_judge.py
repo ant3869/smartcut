@@ -147,8 +147,27 @@ def review_event_card(card, ask, *, enabled=False, reinspect=None, max_reinspect
     return result
 
 
+def _tally_native(result: dict, card: dict) -> None:
+    """Fold one card's native request counts into the adaptive-review totals.
+
+    calls_used keeps its existing meaning (judge/model-role attempts);
+    this only aggregates the separate native HTTP-attempt counters.
+    """
+    native = (card.get("native_video") or {}) if isinstance(card, dict) else {}
+    counts = native.get("request_counts") or {}
+    uploads = int(counts.get("upload_attempts", 0) or 0)
+    inferences = int(counts.get("inference_attempts", 0) or 0)
+    agg = result["request_counts"]
+    agg["native_upload_attempts"] += uploads
+    agg["native_inference_attempts"] += inferences
+    agg["native_retry_attempts"] += max(0, uploads - 1) + max(0, inferences - 1)
+    agg["total_external_attempts"] = (agg["judge_attempts"] + agg["native_upload_attempts"]
+                                      + agg["native_inference_attempts"])
+
+
 def review_adaptive_events(eye, source, duration, *, enabled=False, max_calls=12,
                            max_windows=3, protected_spans=None, confidence_threshold=.8,
+                           transcript_words=None, audio_events=None, shots=None,
                            native_video_enabled=False, native_video_model=None,
                            native_video_context_seconds=2.0, native_api_key=None):
     """Actual cheap-scan -> EventCard -> contextual judge integration, advisory only.
@@ -157,18 +176,26 @@ def review_adaptive_events(eye, source, duration, *, enabled=False, max_calls=12
     BEFORE review_event_card, and both proposer and critic see the evidence block
     through event_prompt_for. Disabled (default) keeps the existing path
     functionally identical. Provider failure degrades to unavailable and the
-    existing path continues.
+    existing path continues. transcript_words/audio_events/shots forward real
+    caller-supplied context into inspect_events; None stays unknown (audio
+    events are never fabricated).
     """
     from .adaptive_inspection import inspect_events
     from .util import write_json
-    result = {'enabled':enabled,'advisory_only':True,'calls_used':0,'decisions':[],'events':[]}
+    result = {'enabled':enabled,'advisory_only':True,'calls_used':0,
+              'request_counts':{'judge_attempts':0,'native_upload_attempts':0,
+                                'native_inference_attempts':0,'native_retry_attempts':0,
+                                'total_external_attempts':0},
+              'decisions':[],'events':[]}
     if not enabled:
         return result
     if not math.isfinite(confidence_threshold) or not 0 <= confidence_threshold <= 1:
         raise ValueError('invalid confidence threshold')
     folder = Path(eye.cache_dir)/'adaptive-events'
     inspection = inspect_events(source,duration,evidence_dir=folder/'frames',
-                                max_windows=max_windows,protected_spans=protected_spans)
+                                max_windows=max_windows,protected_spans=protected_spans,
+                                transcript_words=transcript_words,
+                                audio_events=audio_events, shots=shots)
     result['inspection'] = inspection
     for card in inspection['event_cards']:
         if result['calls_used']+3 > max_calls:
@@ -187,6 +214,7 @@ def review_adaptive_events(eye, source, duration, *, enabled=False, max_calls=12
         def ask(current,role):
             path = folder/f"call-{result['calls_used']+1:04d}.json"
             result['calls_used'] += 1
+            result['request_counts']['judge_attempts'] += 1
             prompt = event_prompt_for(current)
             receipt = {'status':'started','role':role,'event_card':current,'prompt':prompt}
             write_json(path,receipt)
@@ -216,6 +244,7 @@ def review_adaptive_events(eye, source, duration, *, enabled=False, max_calls=12
             return frames
         reviewed=review_event_card(card,ask,enabled=True,reinspect=reinspect,
                                    confidence_threshold=confidence_threshold)
+        _tally_native(result, card)
         result['events'].append(reviewed)
         result['decisions'].extend(reviewed['decisions'])
         write_json(folder/'report.json',result)

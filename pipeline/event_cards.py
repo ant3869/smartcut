@@ -7,6 +7,8 @@ import json
 import math
 import re
 
+from .util import match_sampled_timestamp
+
 SCHEMA_VERSION = 1
 FEATURES = ('subject_movement', 'camera_motion', 'handling', 'orientation',
             'visibility', 'clothing_interaction')
@@ -87,9 +89,14 @@ def build_event_card(source_sha256, target, frames, *, observations=None,
         stage = item.get('stage')
         if stage in STAGES:
             t = item.get('timestamp')
-            if t not in [refs[r] for r in cited] or not (
-                    (stage == 'BEFORE' and t < a) or (stage == 'AFTER' and t >= b)
-                    or (stage in ('ACTION_START', 'ACTION', 'ACTION_END') and a <= t <= b)):
+            # Same representation-drift rule as the judge parser: a cited time
+            # must resolve to one actually-sampled frame time within 1ms.
+            # Evidence-ref keys stay exact; this only affects numeric matching.
+            sampled = [refs[r] for r in cited]
+            resolved = match_sampled_timestamp(t, sampled)
+            if resolved is None or not (
+                    (stage == 'BEFORE' and resolved < a) or (stage == 'AFTER' and resolved >= b)
+                    or (stage in ('ACTION_START', 'ACTION', 'ACTION_END') and a <= resolved <= b)):
                 raise ValueError('stage timestamp must cite appropriate sampled evidence')
             stages[stage] = copy.deepcopy(item)
     for name, values in [('transcript_words', transcript_words), ('audio_events', audio_events),

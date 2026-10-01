@@ -123,14 +123,20 @@ def attach_native_evidence(card: dict[str, Any], decision: dict[str, Any],
     return enriched
 
 
-def mark_native_unavailable(card: dict[str, Any], reason: str) -> dict[str, Any]:
-    """Return a copy of card with a failed native lane recorded, never KEEP."""
+def mark_native_unavailable(card: dict[str, Any], reason: str,
+                            request_counts: dict[str, int] | None = None) -> dict[str, Any]:
+    """Return a copy of card with a failed native lane recorded, never KEEP.
+
+    Whatever HTTP attempts actually occurred stay attached under
+    native_video.request_counts so failures remain auditable.
+    """
     enriched = copy.deepcopy(card)
     enriched["native_video"] = {
         "status": "unavailable",
         "transport": "native_video",
         "reason": reason,
         "advisory_only": True,
+        "request_counts": dict(request_counts or {"upload_attempts": 0, "inference_attempts": 0}),
     }
     return enriched
 
@@ -158,6 +164,11 @@ def inspect_card_native(
     """
     if not enabled:
         return card
+    counts = {"upload_attempts": 0, "inference_attempts": 0}
+
+    def _observe(kind: str, _attempt: int) -> None:
+        counts["upload_attempts" if kind == "upload" else "inference_attempts"] += 1
+
     try:
         clip_start, clip_end = native_clip_interval(
             card["target"], duration, context_seconds=context_seconds)
@@ -165,10 +176,16 @@ def inspect_card_native(
         clip_path = scratch / f"native-{card.get('id', 'card')[:16]}-{clip_start:.3f}-{clip_end:.3f}.mp4"
         trim_native_clip(Path(source), clip_start, clip_end, clip_path)
         factory = adapter_factory or MetaVideoAdapter
-        adapter = factory(api_key=api_key, model=model)
+        try:
+            adapter = factory(api_key=api_key, model=model, on_attempt=_observe)
+        except TypeError:
+            adapter = factory(api_key=api_key, model=model)
         file_id = adapter.upload_video(clip_path)
         decision = adapter.analyze_video(file_id, prompt, fps=None)
-        return attach_native_evidence(card, decision, clip_start=clip_start,
-                                      clip_end=clip_end, model=adapter.model)
+        enriched = attach_native_evidence(card, decision, clip_start=clip_start,
+                                          clip_end=clip_end, model=adapter.model)
+        enriched["native_video"]["request_counts"] = dict(counts)
+        return enriched
     except Exception as exc:
-        return mark_native_unavailable(card, f"{type(exc).__name__}: {exc}")
+        return mark_native_unavailable(card, f"{type(exc).__name__}: {exc}",
+                                       request_counts=counts)

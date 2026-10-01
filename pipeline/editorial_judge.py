@@ -15,7 +15,7 @@ from typing import Any
 
 import cv2
 
-from .util import PipelineError, read_json_or_none, source_fingerprint, write_json
+from .util import PipelineError, match_sampled_timestamp, read_json_or_none, source_fingerprint, write_json
 
 PROMPT_VERSION = 3
 CATEGORIES = {
@@ -81,19 +81,27 @@ def _parse(raw: Any, target: dict, frame_times: list[float]) -> dict | None:
         ):
             return None
         citations = value["evidence"]
-        if not isinstance(citations, list) or not citations or not all(
-            isinstance(item, dict) and type(item.get("frame_time")) in (int, float)
-            and item["frame_time"] in frame_times
-            and isinstance(item.get("observation"), str) and item["observation"].strip()
-            for item in citations
-        ):
+        if not isinstance(citations, list) or not citations:
             return None
+        resolved_times = []
+        for item in citations:
+            if (not isinstance(item, dict)
+                    or not isinstance(item.get("observation"), str) or not item["observation"].strip()):
+                return None
+            # Representation drift (111.0 vs 111.00000000000001) resolves to the
+            # REAL sampled timestamp; anything else still fails. Provenance is
+            # preserved, not loosened: the citation must name a sampled frame.
+            actual = match_sampled_timestamp(item.get("frame_time"), frame_times)
+            if actual is None:
+                return None
+            item["frame_time"] = actual
+            resolved_times.append(actual)
         if (not isinstance(value.get("uncertainty"), list)
                 or not all(isinstance(item, str) for item in value["uncertainty"])
                 or not isinstance(value.get("reason"), str) or not value["reason"].strip()):
             return None
         if value["decision"] == "CUT":
-            cited = {item["frame_time"] for item in citations}
+            cited = set(resolved_times)
             if (len(cited) < 2 or not any(a <= t < b for t in cited)
                     or (any(t < target["start"] for t in frame_times)
                         and not any(t < target["start"] for t in cited))
@@ -123,6 +131,9 @@ def review_editorial(
     story_map: dict | None = None, audio_enabled: bool = True,
     rotation_degrees: float | None = None, refresh: bool = False,
     adaptive_events: bool = False, protected_spans: list[dict] | None = None,
+    transcript_words: list[dict] | None = None, audio_events: list[dict] | None = None,
+    native_video_enabled: bool = False, native_video_model: str | None = None,
+    native_video_context_seconds: float = 2.0, native_api_key: str | None = None,
 ) -> dict:
     """Return advisory decisions, coverage and evidence paths, without applying edits.
 
@@ -146,7 +157,13 @@ def review_editorial(
         from .event_judge import review_adaptive_events
         return review_adaptive_events(eye, source, duration, enabled=True,
                                       max_calls=max_calls, protected_spans=protected_spans,
-                                      confidence_threshold=confidence_threshold)
+                                      confidence_threshold=confidence_threshold,
+                                      transcript_words=transcript_words,
+                                      audio_events=audio_events,
+                                      native_video_enabled=native_video_enabled,
+                                      native_video_model=native_video_model,
+                                      native_video_context_seconds=native_video_context_seconds,
+                                      native_api_key=native_api_key)
     if (not isinstance(max_calls, int) or isinstance(max_calls, bool) or max_calls < 0
             or not math.isfinite(target_seconds) or target_seconds <= 0
             or not math.isfinite(context_seconds) or context_seconds < 0
