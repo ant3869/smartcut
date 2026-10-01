@@ -1,9 +1,14 @@
-"""Meta native-video transport adapter (transport only).
+"""Meta native-video transport adapter (transport only, optionally consumed).
 
 Completely optional path for sending a short MP4 clip to Meta's Muse model
-via the Meta Model API. NOT wired into EventCards, Brain, candidate
-generation, boundary refinement, or automatic editing -- this module only
-uploads a clip and returns a validated structured decision dict.
+via the Meta Model API. This module only uploads a clip and returns
+a validated structured decision dict; it never edits, cuts, or renders.
+
+The evidence it returns MAY be consumed by adaptive EventCard review
+(``review_adaptive_events`` enriches a card before the real proposer/critic
+see it), and ``PipelineBrain.review_editorial`` forwards the native settings
+when adaptive review is explicitly requested. Default remains OFF, evidence
+remains advisory-only, and no native result can authorize an edit.
 
 Auth: explicit ``api_key=`` or the SmartCut credential chain. For direct
 Meta base URLs (api.meta.ai) ONLY ``META_API_KEY`` is selected (gateway
@@ -29,6 +34,8 @@ from pathlib import Path
 from typing import Any
 
 import requests
+
+from urllib.parse import urlsplit
 
 from .util import PipelineError, post_json_with_retry
 
@@ -58,7 +65,11 @@ API_KEY_ENV_CHAIN = GATEWAY_API_KEY_ENV_CHAIN  # backwards-compat alias
 
 
 def _is_direct_meta_url(base_url: str) -> bool:
-    return "api.meta.ai" in (base_url or "").lower()
+    """True only when the parsed hostname is exactly api.meta.ai."""
+    try:
+        return urlsplit(base_url or "").hostname == "api.meta.ai"
+    except (ValueError, AttributeError, TypeError):
+        return False
 
 
 def resolve_api_key(explicit: str | None = None, base_url: str | None = None) -> str:
