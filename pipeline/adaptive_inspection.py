@@ -112,9 +112,68 @@ def scan_video(source: Path, duration: float, *, source_sha256=None,
     return result
 
 
+# Max silence bridged when coalescing transcript words into speech spans.
+SPEECH_MERGE_GAP_SECONDS = 1.0
+
+
+def speech_spans_from_words(words, duration):
+    """Coalesce timed word dicts into speech spans; invalid words are skipped."""
+    _duration(duration)
+    spans = []
+    for word in words or []:
+        if not isinstance(word, dict):
+            continue
+        start, end = word.get('start'), word.get('end')
+        if (type(start) not in (int, float) or type(end) not in (int, float)
+                or not math.isfinite(start) or not math.isfinite(end)):
+            continue
+        a, b = max(0., start), min(float(duration), end)
+        if a < b:
+            spans.append((a, b))
+    spans.sort()
+    merged = []
+    for a, b in spans:
+        if merged and a - merged[-1][1] <= SPEECH_MERGE_GAP_SECONDS:
+            merged[-1][1] = max(merged[-1][1], b)
+        else:
+            merged.append([a, b])
+    return [{'start': a, 'end': b} for a, b in merged]
+
+
+def valid_word_spans(words):
+    """Timed word dicts with a positive, finite span; zero-length/invalid skipped.
+
+    Start is clamped at zero without mutating the caller's dicts. Timed
+    words alone never prove actor dialogue; this only keeps evidence
+    construction from crashing on them.
+    """
+    out = []
+    for word in words or []:
+        if not isinstance(word, dict):
+            continue
+        start, end = word.get('start'), word.get('end')
+        if (type(start) not in (int, float) or type(end) not in (int, float)
+                or not math.isfinite(start) or not math.isfinite(end)):
+            continue
+        if start < end:
+            item = dict(word)
+            item['start'] = max(0., start)
+            out.append(item)
+    return out
+
+
 def propose_inspection_windows(signals, duration, *, max_windows=12, window_seconds=8.0,
-                               coverage_fraction=.5, protected_spans=None):
-    """Change clusters plus stratified interiors; never bridge protected gaps."""
+                               coverage_fraction=.5, protected_spans=None, speech_spans=None):
+    """Change clusters plus stratified interiors; never bridge protected gaps.
+
+    Speech spans seed onset-anchored INSPECT windows: a seed never begins
+    before its speech onset (transcript timing is the evidence), with the
+    standard broad forward breadth. The 'transcript' reason marks timed
+    words present, never proven actor dialogue. Transcript seeds take only
+    a small share of the budget so motion/change and coverage candidates
+    survive. Seeds are inspection targets, never
+    cuts; continuous footage is never a reason to suppress one.
+    """
     _duration(duration)
     _duration(window_seconds)
     _budget(max_windows, 'max_windows')
@@ -151,18 +210,28 @@ def propose_inspection_windows(signals, duration, *, max_windows=12, window_seco
     def add(items, limit):
         for score, center, reasons in items:
             start = max(0., min(center - window_seconds / 2, duration - window_seconds))
-            pieces = [(start, min(duration, start + window_seconds))]
-            for p, q in protected:
-                pieces = [(x, y) for a, b in pieces for x, y in
-                          ([(a, b)] if q <= a or p >= b else [(a, min(b, p)), (max(a, q), b)]) if x < y]
-            for a, b in pieces:
-                old = next((w for w in selected if w['start'] == a and w['end'] == b), None)
-                if old is not None:
-                    old['reasons'] = sorted(set(old['reasons'] + reasons))
-                elif len(selected) < limit:
-                    selected.append({'start': a, 'end': b, 'priority_score': score,
-                                     'reasons': list(reasons), 'decision': 'INSPECT', 'advisory_only': True})
+            _add_span(start, min(duration, start + window_seconds), score, reasons, limit)
+
+    def _add_span(a, b, score, reasons, limit):
+        pieces = [(a, b)]
+        for p, q in protected:
+            pieces = [(x, y) for aa, bb in pieces for x, y in
+                      ([(aa, bb)] if q <= aa or p >= bb else [(aa, min(bb, p)), (max(aa, q), bb)]) if x < y]
+        for x, y in pieces:
+            old = next((w for w in selected if w['start'] == x and w['end'] == y), None)
+            if old is not None:
+                old['reasons'] = sorted(set(old['reasons'] + reasons))
+            elif len(selected) < limit:
+                selected.append({'start': x, 'end': y, 'priority_score': score,
+                                 'reasons': list(reasons), 'decision': 'INSPECT', 'advisory_only': True})
+
     add(ranked, max_windows - coverage_count)
+    spans = []
+    for span in speech_spans or []:
+        spans.append(_span(span))
+    share = max(1, max_windows // 3)
+    for a, b in spans[:share]:
+        _add_span(a, min(duration, max(b, a + window_seconds)), 0., ['transcript'], max_windows)
     add(coverage, max_windows)
     add(ranked, max_windows)
     return sorted(selected, key=lambda w: (w['start'], w['end']))
@@ -185,7 +254,8 @@ def inspect_events(source: Path, duration: float, *, evidence_dir: Path,
     _duration(window_seconds)
     scan = scan_video(source, duration, source_sha256=source_sha256, max_frames=max_coarse_frames)
     windows = propose_inspection_windows(scan['signals'], duration, max_windows=max_windows,
-                 window_seconds=window_seconds, protected_spans=protected_spans)
+                 window_seconds=window_seconds, protected_spans=protected_spans,
+                 speech_spans=speech_spans_from_words(transcript_words, duration))
     result = {'schema_version': 1, 'source_sha256': scan['source_sha256'], 'scan': scan,
               'windows': windows, 'event_cards': [], 'candidates': [], 'advisory_only': True,
               'decode_attempts': scan['decode_attempts'], 'dense_decode_failures': [],
@@ -239,7 +309,7 @@ def inspect_events(source: Path, duration: float, *, evidence_dir: Path,
                     frames.append(cache[requested])
             frames = sorted({f['timestamp']: f for f in frames}.values(), key=lambda f: f['timestamp'])
             card = build_event_card(scan['source_sha256'], target, frames,
-                      transcript_words=transcript_words, audio_events=audio_events, shots=shots)
+                      transcript_words=valid_word_spans(transcript_words), audio_events=audio_events, shots=shots)
             card['inspection_reasons'] = target['reasons']
             card['limitations'].append('no semantic model extraction performed')
             result['event_cards'].append(card)
