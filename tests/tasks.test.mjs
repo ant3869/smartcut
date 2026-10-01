@@ -32,3 +32,8 @@ test('missing or invalid timestamps produce no timing text', () => {
   assert.equal(Tasks.timingText({status: 'running'}, now), '');
   assert.equal(Tasks.timingText({status: 'succeeded', completed_at: 'nope'}, now), '');
 });
+
+test('render progress gives an approximate time remaining after progress starts',()=>{
+  const task={status:'running',created_at:at(0),started_at:at(0),updated_at:at(100),stage:'Blade · rendering',progress:65};
+  assert.match(Tasks.timingText(task,Date.parse(at(110))),/about \d+m \d+s remaining/);
+});

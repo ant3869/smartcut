@@ -8,7 +8,7 @@ import queue
 import threading
 import uuid
 from datetime import datetime, timezone
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 from typing import Any, Callable
 
 from fastapi import FastAPI, File, HTTPException, Query, UploadFile
@@ -24,7 +24,7 @@ from .contracts import Clip
 from .util import PipelineError, read_json, source_fingerprint, write_json, ffprobe_json
 from .lifecycle import contain_children, spawn_detached
 from .settings import SETTINGS, ensure_config, public_settings, validate_settings, revision
-from .sequence import Sequence, from_plan, export_sequence
+from .sequence import Sequence, RenderSettings, from_plan, export_sequence
 
 MEDIA_EXTENSIONS = {".mp4", ".mov", ".mkv", ".avi", ".webm", ".mp3", ".wav", ".m4a", ".aac", ".flac", ".ogg", ".png", ".jpg", ".jpeg", ".webp", ".bmp"}
 VIDEO_EXTENSIONS = {".mp4", ".mov", ".mkv", ".avi", ".webm"}
@@ -36,6 +36,7 @@ DEFAULT_CONFIG = ROOT / "config.json"
 
 tasks_lock = threading.Lock()
 tasks: dict[str, dict[str, Any]] = {}
+task_cancels: dict[str, threading.Event] = {}
 task_queue: queue.Queue[Callable[[], None]] = queue.Queue()
 _worker: threading.Thread | None = None
 
@@ -69,33 +70,6 @@ class ActionRequest(BaseModel):
     dry_run: bool = False
 
 
-class RenderRequest(BaseModel):
-    filename: str = Field(default="smartcut-final", min_length=1, max_length=180)
-    folder: str | None = None
-    container: str = "mp4"
-    video_codec: str = "h264"
-    width: int | None = Field(default=None, ge=64, le=4096, multiple_of=2)
-    height: int | None = Field(default=None, ge=64, le=4096, multiple_of=2)
-    fps: float | None = Field(default=None, ge=1, le=120)
-    quality: str = "high"
-    crf: int | None = Field(default=None, ge=0, le=51)
-    preset: str | None = None
-    audio_bitrate: str = "320k"
-    dry_run: bool = False
-
-    def blade_settings(self, sequence: Sequence) -> dict[str, Any]:
-        quality = {"draft": 30, "standard": 24, "high": 20, "very_high": 17, "custom": self.crf}.get(self.quality)
-        if quality is None:
-            raise PipelineError("Choose Draft, Standard, High, Very High, or Custom quality")
-        if self.container not in {"mp4", "webm"} or self.video_codec not in {"h264", "h265", "vp9"}:
-            raise PipelineError("Unsupported render format")
-        if (self.container == "webm") != (self.video_codec == "vp9"):
-            raise PipelineError("WebM requires VP9; MP4 requires H.264 or H.265")
-        return {"width": self.width or sequence.width, "height": self.height or sequence.height,
-                "fps": self.fps or sequence.fps, "container": self.container, "video_codec": self.video_codec,
-                "crf": quality, "preset": self.preset or "fast", "audio_bitrate": self.audio_bitrate}
-
-
 class ConfigUpdate(BaseModel):
     values: dict[str, Any] = Field(default_factory=dict)
     revision: str | None = None
@@ -122,6 +96,11 @@ class ProjectRequest(BaseModel):
 
 class AssetRequest(BaseModel):
     paths: list[str] = Field(min_length=1, max_length=500)
+
+
+class RenderRequest(BaseModel):
+    settings: RenderSettings | None = None
+    dry_run: bool = False
 
 
 def load_config(path: Path) -> dict[str, Any]:
@@ -382,6 +361,8 @@ def create_app(config_path: str | Path = DEFAULT_CONFIG) -> FastAPI:
         return path
 
     def allowed_file(path: Path) -> Path:
+        if os.name != "nt" and PureWindowsPath(str(path)).is_absolute():
+            raise HTTPException(403, "Media is outside the project workspace")
         resolved = path.resolve()
         roots = [work_dir(), output_dir(), analysis_dir(), ROOT]
         maybe_input = input_dir()
@@ -405,6 +386,10 @@ def create_app(config_path: str | Path = DEFAULT_CONFIG) -> FastAPI:
             if folder.parent != projects_root or manifest.resolve().parent != folder:
                 continue
             project = safe_read_json(manifest)
+            rendered = (safe_read_json(folder / "render_manifest.json") or {}).get("final_output") or {}
+            output_path = rendered.get("path") if isinstance(rendered, dict) else None
+            if isinstance(output_path, str) and Path(output_path).is_absolute() and Path(output_path).resolve() == resolved:
+                return resolved
             assets = project.get("assets") if isinstance(project, dict) else None
             if not isinstance(assets, list):
                 continue
@@ -414,20 +399,27 @@ def create_app(config_path: str | Path = DEFAULT_CONFIG) -> FastAPI:
                     return resolved
         raise HTTPException(status_code=403, detail="file is outside configured pipeline directories")
 
-    def start_task(label: str, fn, *, with_progress=False) -> dict[str, Any]:
+    def start_task(label: str, fn, *, with_progress=False, output_path: str | None = None, cancelable=False) -> dict[str, Any]:
         task_id = uuid.uuid4().hex[:12]
+        cancelled = threading.Event() if cancelable else None
         created = utc_now()
         # updated_at moves on every progress report so the UI can tell a slow step from a stuck one.
-        record = {"id": task_id, "label": label, "status": "queued", "stage": "Queued", "progress": 0, "created_at": created, "updated_at": created, "result": None, "error": None}
+        record = {"id": task_id, "label": label, "status": "queued", "stage": "Queued", "progress": 0, "created_at": created, "updated_at": created, "result": None, "error": None, "output_path": output_path}
         with tasks_lock:
             tasks[task_id] = record
+            if cancelled:
+                task_cancels[task_id] = cancelled
 
         def progress(stage, percent):
+            if cancelled and cancelled.is_set():
+                raise PipelineError("Render canceled")
             with tasks_lock:
                 tasks[task_id].update(stage=stage, progress=percent, updated_at=utc_now())
 
         def run() -> None:
             try:
+                if cancelled and cancelled.is_set():
+                    raise PipelineError("Render canceled")
                 started = utc_now()
                 with tasks_lock:
                     tasks[task_id].update(status="running", stage="Starting", progress=1, started_at=started, updated_at=started)
@@ -438,7 +430,10 @@ def create_app(config_path: str | Path = DEFAULT_CONFIG) -> FastAPI:
             except Exception as exc:  # surfaced via /api/tasks; keeps web process alive
                 finished = utc_now()
                 with tasks_lock:
-                    tasks[task_id].update({"status": "failed", "completed_at": finished, "updated_at": finished, "error": str(exc)})
+                    tasks[task_id].update({"status": "canceled" if cancelled and cancelled.is_set() else "failed", "completed_at": finished, "updated_at": finished, "error": str(exc)})
+            finally:
+                with tasks_lock:
+                    task_cancels.pop(task_id, None)
 
         submit_task(run)
         return record
@@ -676,6 +671,10 @@ def create_app(config_path: str | Path = DEFAULT_CONFIG) -> FastAPI:
                 write_json(folder / "project.json", data)
             return {"ok": True, "dry_run": dry_run, "sequence": payload.model_dump()}
 
+    @app.get("/api/render/capabilities")
+    def render_capabilities():
+        return {"video_codecs": FfmpegBlade.available_video_codecs()}
+
     @app.post("/api/projects/{project_id}/render")
     def project_render(project_id: str, request: RenderRequest | None = None):
         data = project_view(project_id)
@@ -683,16 +682,23 @@ def create_app(config_path: str | Path = DEFAULT_CONFIG) -> FastAPI:
         if not sequence.clips:
             raise HTTPException(400, "Add media to the timeline before rendering")
         validate_media(sequence, data["assets"])
-        request = request or RenderRequest()
-        render = request.blade_settings(sequence)
-        if request.dry_run:
+        settings = request.settings if request else None
+        if settings:
+            if cfg().get("bumper_path") and settings.video_codec != "libx264":
+                raise HTTPException(400, "Configured bumper currently requires H.264 MP4 export")
+            if settings.video_codec not in FfmpegBlade.available_video_codecs():
+                raise HTTPException(400, f"FFmpeg does not provide {settings.video_codec}")
+            if (settings.width or sequence.width) * sequence.height != (settings.height or sequence.height) * sequence.width:
+                raise HTTPException(400, "Export aspect ratio differs from the sequence. Change Sequence settings first so the preview matches.")
+            root = Path(settings.output_folder).expanduser().resolve() if settings.output_folder else Path(cfg()["output_dir"]).resolve() / "projects" / project_id
+            if (root / settings.filename).exists():
+                raise HTTPException(409, "Output already exists. Choose another filename.")
+        if request and request.dry_run:
             return {"ok": True, "dry_run": True}
         engine, folder = brain(), project_path(project_id)
-        name = Path(request.filename).stem or "smartcut-final"
-        destination = Path(request.folder) / f"{name}.{request.container}" if request.folder else None
         return start_task(f"Render {data['name']}", lambda progress: engine.render_edit(
-            Path(sequence.clips[0].source), sequence, project_dir=folder, progress=progress,
-            render=render, output=destination), with_progress=True)
+            Path(sequence.clips[0].source), sequence, project_dir=folder, progress=progress, settings=settings), with_progress=True,
+            output_path=str((Path(settings.output_folder).expanduser().resolve() if settings and settings.output_folder else Path(cfg()["output_dir"]).resolve() / "projects" / project_id) / (settings.filename if settings else "timeline_sequence.mp4")), cancelable=True)
 
     @app.post("/api/projects/{project_id}/export")
     def project_export(project_id: str, request: dict[str, Any]):
@@ -788,6 +794,16 @@ def create_app(config_path: str | Path = DEFAULT_CONFIG) -> FastAPI:
         with tasks_lock:
             if task_id not in tasks:
                 raise HTTPException(status_code=404, detail="unknown task")
+            return tasks[task_id]
+
+    @app.post("/api/tasks/{task_id}/cancel")
+    def cancel_task(task_id: str):
+        with tasks_lock:
+            event = task_cancels.get(task_id)
+            if event is None or tasks[task_id]["status"] not in {"queued", "running"}:
+                raise HTTPException(400, "Only queued or running renders can be canceled")
+            event.set()
+            tasks[task_id].update(stage="Cancelling", updated_at=utc_now())
             return tasks[task_id]
 
     @app.post("/api/actions/analyze")

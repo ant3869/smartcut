@@ -8,6 +8,7 @@ import numpy as np
 
 from .contracts import Clip
 from .util import PipelineError, ffprobe_json, media_duration, require_distinct, run_checked
+from .sequence import RenderSettings
 
 
 class FfmpegBlade:
@@ -55,52 +56,32 @@ class FfmpegBlade:
         return output
 
     @staticmethod
-    def _track_number(track: str) -> int:
-        return int(track[1:])
-
-    @staticmethod
-    def _keyframe_expression(clip, property_name: str, time_variable: str = "t") -> str:
-        """FFmpeg expression over clip-relative t, matching SequenceClip.value_at."""
-        frames = clip.keyframes.get(property_name, [])
-        base = float(getattr(clip, property_name))
+    def _animated(clip, property: str, *, clock: str = "t") -> str:
+        frames = clip.keyframes.get(property, [])
         if not frames:
-            return f"{base:g}"
-        # Build from the tail, keeping the expression compact and safe for filtergraph parsing.
-        result = f"{frames[-1].value:g}"
-        for index in range(len(frames) - 2, -1, -1):
-            left, right = frames[index], frames[index + 1]
-            span = right.time - left.time
-            p = f"(({time_variable}-{left.time:.6f})/{span:.6f})"
-            if left.interpolation == "hold":
-                value = f"{left.value:g}"
-            elif left.interpolation == "ease_in":
-                value = f"({left.value:g}+({right.value:g}-{left.value:g})*{p}*{p})"
-            elif left.interpolation == "ease_out":
-                value = f"({left.value:g}+({right.value:g}-{left.value:g})*(1-(1-{p})*(1-{p})))"
-            elif left.interpolation == "ease_in_out":
-                value = f"({left.value:g}+({right.value:g}-{left.value:g})*(3*{p}*{p}-2*{p}*{p}*{p}))"
-            else:
-                value = f"({left.value:g}+({right.value:g}-{left.value:g})*{p})"
-            result = f"if(lt({time_variable}\\,{left.time:.6f})\\,{result}\\,if(lt({time_variable}\\,{right.time:.6f})\\,{value}\\,{result}))"
-        first = frames[0]
-        return f"if(lt({time_variable}\\,{first.time:.6f})\\,{base:g}\\,{result})"
+            return f"{getattr(clip, property):g}"
+        expression = f"{frames[-1].value:g}"
+        for left, right in reversed(list(zip(frames, frames[1:]))):
+            fraction = f"(({clock}-{left.time:g})/{(right.time-left.time):g})"
+            easing = {"hold": "0", "linear": fraction, "ease-in": f"pow({fraction},2)",
+                      "ease-out": f"(1-pow(1-{fraction},2))",
+                      "ease-in-out": f"({fraction}*{fraction}*(3-2*{fraction}))"}[left.interpolation]
+            value = f"({left.value:g}+({right.value-left.value:g})*{easing})"
+            expression = f"if(lt({clock},{right.time:g}),{value},{expression})"
+        return f"if(lt({clock},{frames[0].time:g}),{frames[0].value:g},{expression})" if len(frames)>1 else f"{frames[0].value:g}"
 
     @staticmethod
-    def _scale_filter(clip, width: int, height: int, scale: str) -> str:
-        # The selected fit mode picks the containing or covering dimension; transforms apply after it.
-        if clip.fit == "original":
-            return f"scale=w='trunc(iw*({scale})/2)*2':h=-2:eval=frame"
-        source_wide = "gte(iw/ih\\," + f"{width}/{height})"
-        if clip.fit == "fill":
-            w = f"if({source_wide}\\,-2\\,{width}*({scale}))"
-            h = f"if({source_wide}\\,{height}*({scale})\\,-2)"
-        else:
-            w = f"if({source_wide}\\,{width}*({scale})\\,-2)"
-            h = f"if({source_wide}\\,-2\\,{height}*({scale}))"
-        return f"scale=w='{w}':h='{h}':eval=frame"
+    def _escape_expression(expression: str) -> str:
+        return expression.replace(",", r"\,")
 
-    def render_sequence(self, sequence, output: Path, *, watermark: Path | None = None, render: dict | None = None) -> Path:
-        """Composite arbitrary visual layers; all transforms/keyframes are rendered here."""
+    @staticmethod
+    def available_video_codecs() -> list[str]:
+        encoders = run_checked(["ffmpeg", "-hide_banner", "-encoders"]).stdout
+        return [name for name in ("libx264", "libx265", "libvpx-vp9") if any(line.split()[1:2] == [name] for line in encoders.splitlines())]
+
+    def render_sequence(self, sequence, output: Path, *, watermark: Path | None = None,
+                        settings: RenderSettings | None = None, progress=None) -> Path:
+        """Composite visual tracks bottom to top; gaps remain black and clip alpha is retained."""
         duration = sequence.duration
         if duration <= 0:
             raise PipelineError("Cannot render an empty sequence")
@@ -108,25 +89,21 @@ class FfmpegBlade:
         clips = [c for c in sequence.clips if c.enabled and c.track not in muted]
         if not clips:
             raise PipelineError("No enabled clips on unmuted tracks")
-        render = render or {}
-        width, height, fps = int(render.get("width") or sequence.width), int(render.get("height") or sequence.height), float(render.get("fps") or sequence.fps)
-        codec = render.get("video_codec", "h264")
-        video_codec = {"h264": "libx264", "h265": "libx265", "vp9": "libvpx-vp9"}.get(codec)
-        if not video_codec:
-            raise PipelineError("Unsupported video codec")
-        container = render.get("container", "mp4")
-        if container not in {"mp4", "webm"} or (container == "webm") != (codec == "vp9"):
-            raise PipelineError("Choose MP4 for H.264/H.265 or WebM for VP9")
-        crf = int(render.get("crf", self.crf))
-        preset = str(render.get("preset", self.preset))
-        cmd = ["ffmpeg", "-hide_banner", "-y", "-filter_complex_threads", "1", "-f", "lavfi", "-i",
+        width, height, fps = sequence.width, sequence.height, sequence.fps
+        if settings:
+            width, height, fps = settings.width or width, settings.height or height, settings.fps or fps
+            if settings.video_codec not in self.available_video_codecs():
+                raise PipelineError(f"FFmpeg does not provide {settings.video_codec}")
+            if output.suffix.lower() != f".{settings.container}":
+                raise PipelineError("Output format does not match the selected container")
+        cmd = ["ffmpeg", "-hide_banner", "-loglevel", "error", "-y", "-filter_complex_threads", "1", "-f", "lavfi", "-i",
                f"color=c=black:s={width}x{height}:r={fps}:d={duration:.6f}"]
         filters = ["[0:v]format=yuv420p[base0]"]
         audio_labels = []
         video_label = "base0"
         probes = {}
         input_index = 0
-        ordered = sorted(clips, key=lambda c: (0 if c.track.startswith("V") else 1, self._track_number(c.track), c.start))
+        ordered = sorted(clips, key=lambda c: (int(c.track[1:]) if c.track.startswith("V") else -1, c.start))
         for clip in ordered:
             source = Path(clip.source)
             require_distinct(output, source)
@@ -139,7 +116,7 @@ class FfmpegBlade:
             input_index += 1
             index = input_index
             if clip.kind == "image":
-                cmd += ["-loop", "1", "-framerate", str(fps), "-t", str(clip.source_end - clip.source_start), "-i", str(source)]
+                cmd += ["-loop", "1", "-framerate", str(fps), "-t", str(clip.duration * clip.speed), "-i", str(source)]
             else:
                 cmd += ["-ss", str(clip.source_start), "-t", str(clip.source_end - clip.source_start), "-i", str(source)]
             if audio:
@@ -157,16 +134,22 @@ class FfmpegBlade:
                                f"adelay={round(clip.start * 1000)}:all=1[a{index}]")
                 audio_labels.append(f"[a{index}]")
             else:
-                scale = self._keyframe_expression(clip, "scale")
-                x, y = self._keyframe_expression(clip, "x"), self._keyframe_expression(clip, "y")
-                opacity = self._keyframe_expression(clip, "opacity", "T")
-                rotation_value = self._keyframe_expression(clip, "rotation")
-                rotation = f",rotate='({rotation_value})*PI/180':ow=rotw('({rotation_value})*PI/180'):oh=roth('({rotation_value})*PI/180'):c=none" if clip.rotation or clip.keyframes.get("rotation") else ""
+                fit = (f"scale={width}:{height}:force_original_aspect_ratio=decrease" if clip.fit == "fit" else
+                       f"scale={width}:{height}:force_original_aspect_ratio=increase,crop={width}:{height}" if clip.fit == "fill" else "null")
+                scale = self._escape_expression(self._animated(clip, "scale"))
+                rotation = self._escape_expression(self._animated(clip, "rotation") + "*PI/180")
+                opacity = self._escape_expression(self._animated(clip, "opacity", clock="T"))
+                rotate = f",rotate=a='{rotation}':ow=hypot(iw\\,ih):oh=ow:c=none" if clip.rotation or clip.keyframes.get("rotation") else ""
+                alpha = (f",format=yuva444p,geq=lum='lum(X,Y)':cb='cb(X,Y)':cr='cr(X,Y)':a='alpha(X,Y)*{opacity}'"
+                         if clip.keyframes.get("opacity") else f",colorchannelmixer=aa={clip.opacity:g}")
                 filters.append(f"[{index}:v]setpts=(PTS-STARTPTS)/{clip.speed},fps={fps},"
-                               f"{self._scale_filter(clip, width, height, scale)},setsar=1,format=rgba"
-                               f"{rotation},geq=r='r(X,Y)':g='g(X,Y)':b='b(X,Y)':a='alpha(X,Y)*({opacity})',"
+                               f"{fit},setsar=1,format=rgba,scale=w='max(2\\,trunc(iw*{scale}/2)*2)':"
+                               f"h='max(2\\,trunc(ih*{scale}/2)*2)':eval=frame"
+                               f"{rotate}{alpha},"
                                f"trim=duration={clip.duration:.6f},setpts=PTS+{clip.start}/TB[v{index}]")
-                filters.append(f"[{video_label}][v{index}]overlay=x=(W-w)/2+({x}):y=(H-h)/2+({y}):"
+                x = self._escape_expression(self._animated(clip, "x", clock=f"(t-{clip.start:g})"))
+                y = self._escape_expression(self._animated(clip, "y", clock=f"(t-{clip.start:g})"))
+                filters.append(f"[{video_label}][v{index}]overlay=x='(W-w)/2+{x}':y='(H-h)/2+{y}':"
                                f"eof_action=pass:repeatlast=0:enable='gte(t,{clip.start})*lt(t,{clip.start + clip.duration})'[base{index}]")
                 video_label = f"base{index}"
         if watermark:
@@ -181,18 +164,26 @@ class FfmpegBlade:
         filters.append(f"anullsrc=r=48000:cl=stereo,atrim=duration={duration:.6f}[silence]")
         filters.append(f"[silence]{''.join(audio_labels)}amix=inputs={len(audio_labels) + 1}:normalize=0:duration=first[aout]")
         output.parent.mkdir(parents=True, exist_ok=True)
-        suffix = ".webm" if container == "webm" else ".mp4"
-        if output.suffix.lower() != suffix:
-            output = output.with_suffix(suffix)
-        temporary = output.with_name(output.stem + ".rendering" + suffix)
+        temporary = output.with_name(output.stem + ".rendering" + output.suffix)
         require_distinct(temporary, *(Path(c.source) for c in clips))
+        codec = settings.video_codec if settings else "libx264"
+        quality = ({"draft": 42, "standard": 36, "high": 31, "very-high": 25} if codec == "libvpx-vp9" else
+                   {"draft": 32, "standard": 28, "high": 24, "very-high": 20} if codec == "libx265" else
+                   {"draft": 28, "standard": 23, "high": 20, "very-high": 17})
+        crf = (settings.crf if settings.quality == "custom" else quality[settings.quality]) if settings else self.crf
+        preset = settings.preset or self.preset if settings else self.preset
         cmd += ["-filter_complex", ";".join(filters), "-map", f"[{video_label}]", "-map", "[aout]",
-                "-t", str(duration), "-r", str(fps), "-c:v", video_codec, "-pix_fmt", "yuv420p",
-                "-crf", str(crf), "-preset", preset, "-c:a", "libopus" if container == "webm" else "aac",
-                *( ["-b:a", str(render.get("audio_bitrate", "320k"))] if container == "mp4" else []),
-                *( ["-movflags", "+faststart"] if container == "mp4" else []), str(temporary)]
+                "-t", str(duration), "-r", str(fps), "-c:v", codec, "-pix_fmt", "yuv420p",
+                "-crf", str(crf)]
+        if codec == "libvpx-vp9":
+            speed = {"ultrafast": 8, "superfast": 7, "veryfast": 6, "faster": 5, "fast": 4,
+                     "medium": 3, "slow": 2, "slower": 1}[preset]
+            cmd += ["-b:v", "0", "-deadline", "good", "-cpu-used", str(speed), "-c:a", "libopus"]
+        else:
+            cmd += ["-preset", preset, "-c:a", "aac", "-movflags", "+faststart"]
+        cmd += ["-b:a", f"{settings.audio_bitrate if settings else 320}k", "-progress", "pipe:1", "-nostats", str(temporary)]
         try:
-            run_checked(cmd)
+            run_checked(cmd, progress=(lambda seconds: progress(min(99, 30 + seconds / duration * 65))) if progress else None)
             self.verify(temporary)
             temporary.replace(output)
         finally:
