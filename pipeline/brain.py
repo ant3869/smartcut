@@ -10,7 +10,7 @@ from uuid import uuid4
 
 from .contracts import Clip, EditPlan, Observation, Transcript
 from .ear import WhisperEar, merge_intervals
-from .eye import VisionEye, SECTION_SETUP_CLAUSE, compose_section_policy
+from .eye import VisionEye, SECTION_SETUP_CLAUSE, compose_section_policy, temporal_decision_intervals
 from .highlights import Highlight, plan_highlights, select_reel_highlights
 from .scenes import detect_content_scenes
 from .settings import DEFAULT_GATEWAY_URL
@@ -81,6 +81,8 @@ class PipelineBrain:
         duration = media_duration(source)
         source_sha256 = fingerprint["sha256"]
         old = read_json(job / "edit_plan.json") if (job / "edit_plan.json").exists() else {}
+        self.eye.interval = float(self.config.get("frame_interval_seconds", 2.0) if "eye" in stages
+                                  else old.get("frame_interval") or self.config.get("frame_interval_seconds", 2.0))
         report("Ear · transcribing" if "ear" in stages else "Ear · reusing evidence", 10)
         transcript = (self.ear.transcribe(source, refresh=refresh) if "ear" in stages else
                       WhisperEar._from_dict(old["transcript"], cached=True) if old.get("transcript") else
@@ -131,7 +133,8 @@ class PipelineBrain:
         editorial_waste, editorial_keep = _load_editorial_policy(
             job, duration=duration, source_sha256=source_sha256,
         )
-        editorial_loop = build_editorial_loop(duration=duration, observations=observations, transcript=transcript)
+        editorial_loop = build_editorial_loop(duration=duration, observations=observations,
+                                               transcript=transcript if audio_evidence else None)
         write_json(job / "editorial_loop.json", editorial_loop)
         sections_for_summary = scenes or [{"index": 0, "start_seconds": 0.0, "end_seconds": duration}]
         section_summaries = (
@@ -147,19 +150,32 @@ class PipelineBrain:
             ) if "eye" in stages and self.config.get("multi_pass_enabled", True) and self.config.get("multi_pass_section_summary_enabled", True) else []
         )
         story_map = build_story_map(
-            duration=duration, observations=observations, scenes=scenes, transcript=transcript,
+            duration=duration, observations=observations, scenes=scenes,
+            transcript=transcript if audio_evidence else None,
             known_waste=transcript_waste + visual_waste,
             boundary_context_seconds=float(self.config.get("multi_pass_boundary_context_seconds", 1.0)),
             max_candidates=int(self.config.get("multi_pass_max_candidates", 32)),
             section_summaries=section_summaries,
             loop_cut_candidates=editorial_loop["cut_candidates"],
         )
+        if not stages and old.get("story_map"):
+            story_map = old["story_map"]
         write_story_map(job / "story_map.json", story_map)
-        # The temporal pass only runs when its cuts will actually be used. The old
+        # The new independent judge is a separate advisory lane. Its decisions
+        # never enter temporal_waste or the plan, even when legacy cuts are enabled.
+        if "eye" in stages and self.config.get("editorial_review_enabled", False) is True:
+            report("Eye · advisory editorial review", 71)
+            context_review = self.review_editorial(source, refresh=refresh, duration=duration, story_map=story_map)
+            if self.config.get("boundary_refinement_enabled", False) is True:
+                report("Eye · advisory boundary refinement", 71)
+                self.refine_boundaries(source, context_review=context_review, duration=duration,
+                                       story_map=story_map, words=transcript.words if transcript.ok else [])
+        # The legacy temporal pass only runs when its cuts will actually be used. The old
         # config ran it as an expensive advisory pass (enabled, apply_cuts off) and
         # then threw the decisions away.
-        run_temporal = ("eye" in stages and self.config.get("multi_pass_enabled", False)
-                        and self.config.get("multi_pass_apply_cuts", False))
+        apply_temporal = bool(self.config.get("multi_pass_enabled", False)
+                              and self.config.get("multi_pass_apply_cuts", False))
+        run_temporal = "eye" in stages and apply_temporal
         if run_temporal:
             report("Eye · reviewing cut boundaries", 72)
         temporal_waste = (
@@ -172,6 +188,7 @@ class PipelineBrain:
                 confidence_threshold=float(self.config.get("temporal_confidence_threshold", 0.8)),
                 candidates=story_map["target_candidates"],
                 editorial_focus=learned_editorial_focus(self.work_dir),
+                story_map=story_map, audio_enabled=audio_evidence,
             )
             if run_temporal
             else []
@@ -179,17 +196,31 @@ class PipelineBrain:
         temporal_path = job / "temporal_waste.json"
         if "eye" in stages:
             write_json(temporal_path, [asdict(c) for c in temporal_waste])
-        elif temporal_path.exists():
+        elif apply_temporal and temporal_path.exists():
             temporal_waste = [_clip_from_dict(c) for c in read_json(temporal_path)]
         report("Brain · applying review decisions", 75)
-        model_waste = _exclude_protected_intervals(visual_waste + temporal_waste, editorial_keep)
-        waste = merge_intervals(transcript_waste + model_waste + editorial_waste)
+        temporal_decisions = (self.eye.last_temporal_decisions if "eye" in stages
+                              else old.get("targeted_review", []))
+        temporal_keeps = []
+        if apply_temporal:
+            threshold = float(self.config.get("temporal_confidence_threshold", 0.8))
+            temporal_keeps = temporal_decision_intervals(temporal_decisions, duration, threshold, keep=True)
+            if temporal_decisions:
+                temporal_waste = temporal_decision_intervals(temporal_decisions, duration, threshold)
+        # A close temporal KEEP is a veto, not just another additive proposal.
+        # Human CUT remains authoritative and is deliberately applied afterwards.
+        model_waste = _exclude_protected_intervals(
+            transcript_waste + visual_waste + temporal_waste, editorial_keep + temporal_keeps,
+        )
+        # Never bridge a human-protected gap while merging automatic proposals.
+        waste = merge_intervals(model_waste + editorial_waste, gap=0.0)
         min_seconds = float(self.config.get("full_edit_min_segment_seconds", 0.5))
         # Conservative like the reference cut: keep the whole timeline and only remove
         # identified waste, instead of picking isolated highlight windows that discard
         # everything in between.
         dropped_slivers: list[Clip] = []
-        clips = subtract_intervals([Clip(0.0, duration)], waste, min_seconds=min_seconds, dropped=dropped_slivers)
+        clips = subtract_intervals([Clip(0.0, duration)], waste, min_seconds=min_seconds,
+                                   dropped=dropped_slivers, protected=editorial_keep + temporal_keeps)
         clips = _tag_dark_overlaps(clips, self.eye.dark_intervals(observations, duration))
         persona = _resolve_persona(self.config)
         report("Voice · captioning" if "voice" in stages else "Voice · skipped", 90)
@@ -209,10 +240,13 @@ class PipelineBrain:
             observations=observations, transcript=transcript,
             created_at=datetime.now(timezone.utc).isoformat(), source_sha256=source_sha256,
             dropped_slivers=dropped_slivers, caption=caption,
-            frame_signals=[asdict(item) for item in signals],
+            frame_signals=([asdict(item) for item in signals] if "eye" in stages
+                           else old.get("frame_signals", [])),
             story_map=story_map,
-            targeted_review=self.eye.last_temporal_decisions,
-            model_disagreements=self.eye.model_disagreements,
+            targeted_review=(self.eye.last_temporal_decisions if "eye" in stages
+                             else old.get("targeted_review", [])),
+            model_disagreements=(self.eye.model_disagreements if "eye" in stages
+                                 else old.get("model_disagreements", [])),
             review_intervals=self.eye.review_intervals(observations, duration),
             frame_interval=self.eye.interval,
         )
@@ -221,6 +255,108 @@ class PipelineBrain:
         result["stages"] = {stage: "ran" if stage in stages else "reused" if old else "skipped" for stage in ("ear", "eye", "voice")}
         write_json(job / "edit_plan.json", result)
         report("Analysis complete", 100)
+        return result
+
+    def review_editorial(
+        self, source: Path, *, enabled: bool | None = None, refresh: bool = False,
+        windows: list[dict] | None = None, duration: float | None = None,
+        story_map: dict | None = None, adaptive_events: bool = False,
+        transcript_words: list[dict] | None = None,
+    ) -> dict:
+        """Run the separate, default-off advisory judge on the configured vision route.
+
+        Writes only editorial_review.json and evidence caches, never edit_plan.json,
+        sequences, config or the legacy temporal decisions consumed by the cutter.
+        Explicit enabled=True is required unless editorial_review_enabled is true.
+        Optional duration/story_map let callers reuse already observed evidence.
+        Adaptive EventCard review must be explicitly requested via
+        adaptive_events=True; native video stays default-off and advisory-only.
+        transcript_words forwards real timed words when the caller has them;
+        audio events are not fabricated (None stays unknown downstream).
+        """
+        from .editorial_judge import review_editorial
+        enabled = (self.config.get("editorial_review_enabled", False) is True
+                   if enabled is None else enabled is True)
+        if not enabled:
+            return review_editorial(self.eye, source, duration or 0.0)
+        source = Path(source).resolve()
+        job = self.job_dir(source)
+        if duration is None:
+            duration = media_duration(source)
+        if story_map is None:
+            path = job / "story_map.json"
+            story_map = read_json(path) if path.exists() else {}
+        result = review_editorial(
+            self.eye, source, duration, enabled=True, refresh=refresh, windows=windows,
+            max_calls=self.config.get("editorial_review_max_calls", 24),
+            target_seconds=float(self.config.get("editorial_review_target_seconds", 2.0)),
+            context_seconds=float(self.config.get("editorial_review_context_seconds", 2.0)),
+            confidence_threshold=float(self.config.get("editorial_review_confidence_threshold", 0.8)),
+            story_map=story_map, audio_enabled=bool(self.config.get("audio_evidence_enabled", True)),
+            adaptive_events=adaptive_events is True,
+            transcript_words=transcript_words,
+            native_video_enabled=bool(self.config.get("native_video_enabled", False)),
+            native_video_model=str(self.config.get(
+                "native_video_model", "muse-spark-1.3-contributor")),
+            native_video_context_seconds=float(self.config.get(
+                "native_video_context_seconds", 2.0)),
+        )
+        write_json(job / "editorial_review.json", result)
+        return result
+
+    def refine_boundaries(
+        self, source: Path, *, enabled: bool | None = None,
+        context_review: dict | None = None, duration: float | None = None,
+        story_map: dict | None = None, words: list[dict] | None = None,
+        audio_features: list[dict] | None = None,
+    ) -> dict:
+        """Default-off boundary/consistency advice; writes a sidecar, never a plan."""
+        from .boundary_refinement import refine_boundaries
+        enabled = (self.config.get("boundary_refinement_enabled", False) is True
+                   if enabled is None else enabled is True)
+        if not enabled:
+            return refine_boundaries(self.eye, source, duration or 0., {}, enabled=False)
+        source = Path(source).resolve()
+        fingerprint = source_fingerprint(source)
+        job = self.job_dir(source, fingerprint)
+        if duration is None:
+            duration = media_duration(source)
+        if context_review is None:
+            path = job / "editorial_review.json"
+            if not path.exists():
+                raise PipelineError("Run advisory context review before boundary refinement")
+            context_review = read_json(path)
+            if context_review.get("provenance", {}).get("source") != fingerprint:
+                raise PipelineError("Boundary context source fingerprint mismatch")
+        if story_map is None:
+            path = job / "story_map.json"
+            story_map = read_json(path) if path.exists() else {}
+        context_source = context_review.get("provenance", {}).get("source")
+        if context_source is not None and context_source != fingerprint:
+            raise PipelineError("Boundary context source fingerprint mismatch")
+        identity_path = job / "source_fingerprint.json"
+        if identity_path.exists() and read_json(identity_path) != fingerprint:
+            raise PipelineError("Boundary saved evidence source fingerprint mismatch")
+        plan_path = job / "edit_plan.json"
+        saved_plan = read_json(plan_path) if plan_path.exists() else {}
+        if (saved_plan.get("source_sha256") is not None
+                and saved_plan["source_sha256"] != fingerprint["sha256"]):
+            raise PipelineError("Boundary transcript source hash mismatch")
+        if words is None:
+            # Legacy plans are scoped to this content-hashed job; conflicting
+            # explicit identities above always fail closed before inference.
+            words = (saved_plan.get("transcript") or {}).get("words", [])
+        _, keeps = _load_editorial_policy(job, duration=duration, source_sha256=fingerprint["sha256"])
+        result = refine_boundaries(
+            self.eye, source, duration, context_review, enabled=True,
+            max_calls=self.config.get("boundary_refinement_max_calls", 12),
+            sample_seconds=float(self.config.get("boundary_refinement_sample_seconds", 0.25)),
+            context_seconds=float(self.config.get("boundary_refinement_context_seconds", 1.0)),
+            story_map=story_map, words=words, audio_features=audio_features,
+            audio_enabled=bool(self.config.get("audio_evidence_enabled", True)),
+            protected_spans=[{"start": s.start, "end": s.end} for s in keeps],
+        )
+        write_json(job / "boundary_refinement.json", result)
         return result
 
     def replan_review(self, source: Path, *, progress=None) -> dict:
@@ -567,6 +703,7 @@ def _tag_dark_overlaps(clips: list[Clip], dark_spans: list[Clip]) -> list[Clip]:
 
 def subtract_intervals(
     clips: list[Clip], waste: list[Clip], *, min_seconds: float, dropped: list[Clip] | None = None,
+    protected: list[Clip] | None = None,
 ) -> list[Clip]:
     """Remove audio- or vision-identified waste from visual highlights.
 
@@ -590,7 +727,8 @@ def subtract_intervals(
                     next_pieces.append((max(dead.end, start), end))
             pieces = next_pieces
         for start, end in pieces:
-            if end - start >= min_seconds:
+            protected_piece = any(keep.start < end and keep.end > start for keep in protected or [])
+            if end - start >= min_seconds or protected_piece:
                 result.append(Clip(round(start, 3), round(end, 3), clip.reasons + ("quality-clean",)))
             elif dropped is not None:
                 dropped.append(Clip(round(start, 3), round(end, 3), clip.reasons + ("below-min-floor",)))
