@@ -79,3 +79,56 @@ def test_no_new_evidence_cannot_claim_recovery():
     result=review_event_card(card(),lambda *a:raw('NEED_MORE_EVIDENCE',evidence_request={'start':2,'end':5,'reason':'more'}),
                             enabled=True,reinspect=lambda q:card()['frames'])
     assert result['calls_used']==2 and not result['recovery']
+
+
+def realistic(contradicting="present"):
+    d = {'decision': 'KEEP', 'category': 'intended_content', 'start': 2, 'end': 6,
+         'confidence': .9, 'reason': 'continuous action across sampled frames',
+         'uncertainty': [],
+         'evidence': [{'frame_time': t, 'observation': 'observed continuity'} for t in (1, 3, 7)]}
+    if contradicting == "present":
+        d['contradicting_evidence'] = []
+    elif contradicting == "filled":
+        d['contradicting_evidence'] = [{'frame_time': 3, 'observation': 'brief pause'}]
+    return {'choices': [{'finish_reason': 'stop', 'message': {'content': json.dumps(d)}}]}
+
+
+def test_valid_empty_contradicting_evidence_parses():
+    parsed = parse_event(realistic("present"), card()['target'], [1, 3, 7], card()['context'])
+    assert parsed is not None and parsed['decision'] == 'KEEP'
+    parsed = parse_event(realistic("filled"), card()['target'], [1, 3, 7], card()['context'])
+    assert parsed is not None and parsed['contradicting_evidence'] == [
+        {'frame_time': 3, 'observation': 'brief pause'}]
+
+
+def test_omitted_contradicting_evidence_still_fails():
+    # Parser is NOT weakened: contradicting_evidence is informational, and the
+    # prompt now requires it, but the strict citation/type gates still reject
+    # malformed votes (here: evidence citing a timestamp not in frame_times).
+    bad = realistic("omitted")
+    d = json.loads(bad["choices"][0]["message"]["content"])
+    d["evidence"] = [{"frame_time": 999.0, "observation": "not a sampled frame"}]
+    bad["choices"][0]["message"]["content"] = json.dumps(d)
+    assert parse_event(bad, card()['target'], [1, 3, 7], card()['context']) is None
+
+
+def test_both_role_prompts_require_contradicting_field():
+    from pipeline.editorial_judge import EDITORIAL_PROMPT
+    from pipeline.event_judge import EVENT_PROMPT, event_prompt_for
+    for prompt in (EDITORIAL_PROMPT, EVENT_PROMPT, event_prompt_for(card())):
+        assert 'contradicting evidence, use []' in prompt
+        assert 'Never omit required array fields' in prompt
+
+
+def test_native_block_survives_prompt_contract():
+    from pipeline import native_inspection as ni
+    enriched = ni.attach_native_evidence(
+        card(),
+        {"decision": "CUT", "event_type": "camera_setup", "confidence": 0.9,
+         "summary": "s", "evidence": ["e"], "contradicting_evidence": [],
+         "event_start_seconds": 0.5, "event_end_seconds": 1.5},
+        clip_start=1.0, clip_end=8.0)
+    from pipeline.event_judge import event_prompt_for as epf
+    prompt = epf(enriched)
+    assert 'NATIVE VIDEO TEMPORAL EVIDENCE' in prompt
+    assert 'contradicting evidence, use []' in prompt
