@@ -5,7 +5,7 @@ import hashlib
 import json
 import math
 import os
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 from urllib.parse import urlsplit
 
 from .util import PipelineError, write_json
@@ -93,7 +93,7 @@ def ensure_config(path: Path, example: Path = EXAMPLE_CONFIG) -> bool:
     data = json.loads(example.read_text(encoding="utf-8"))
     base = path.resolve().parent
     for key in FOLDER_KEYS:
-        if data.get(key) and not Path(data[key]).is_absolute():
+        if data.get(key) and not Path(data[key]).is_absolute() and not PureWindowsPath(data[key]).is_absolute():
             data[key] = (base / data[key]).as_posix()
     write_json(path, data)
     return True

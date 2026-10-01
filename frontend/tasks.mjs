@@ -34,9 +34,11 @@ export function timingText(task, now = Date.now()) {
     if (elapsed === null) return '';
     const running = `Running ${formatDuration(elapsed)}`;
     if (idle === null) return running;
+    const rendered = task.stage === 'Blade · rendering' && task.progress > 35 && task.progress < 99;
+    const remaining = rendered ? ` · about ${formatDuration(elapsed * (99-task.progress)/(task.progress-30))} remaining` : '';
     return stalled
       ? `${running} · no progress for ${formatDuration(idle)} · a model request may be slow or retrying`
-      : `${running} · updated ${formatDuration(idle)} ago`;
+      : `${running} · updated ${formatDuration(idle)} ago${remaining}`;
   }
   const took = secondsBetween(task.started_at, task.completed_at);
   if (took === null) return '';
