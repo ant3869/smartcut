@@ -226,6 +226,17 @@ def test_explicit_key_wins_on_both_routes(monkeypatch):
     assert gw.api_key == "explicit-key"
 
 
+@pytest.mark.parametrize("base_url,is_direct", [
+    ("https://api.meta.ai/v1", True),
+    ("https://api.meta.ai", True),
+    ("https://api.meta.ai.example.com/v1", False),
+    ("https://example-api.meta.ai/v1", False),
+    ("http://127.0.0.1:20128/v1", False),
+])
+def test_direct_meta_hostname_exact_match(base_url, is_direct):
+    assert mv._is_direct_meta_url(base_url) is is_direct
+
+
 def test_direct_meta_default_model_is_not_gateway_alias(monkeypatch):
     _clear_key_env(monkeypatch)
     assert mv.NATIVE_VIDEO_MODEL == "muse-spark-1.3-contributor"
