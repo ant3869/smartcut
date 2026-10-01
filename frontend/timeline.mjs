@@ -128,6 +128,30 @@ export function remove(sequence, id, ripple = false, linked = true) {
   sequence.clips = sequence.clips.filter(c => !ids.has(c.id));
   return validate(sequence);
 }
+export function addTrack(sequence, kind) {
+  const video = kind !== 'audio';
+  const prefix = video ? 'V' : 'A';
+  const top = Math.max(2, ...sequence.tracks.map(t => t.id).filter(id => id[0] === prefix).map(id => Number(id.slice(1))));
+  if (top >= 8) throw new Error('Maximum eight ' + (video ? 'video' : 'audio') + ' tracks');
+  sequence.tracks.push({id: prefix + (top + 1), muted: false, locked: false});
+  return validate(sequence);
+}
+export function removeTrack(sequence, id) {
+  const track = sequence.tracks.find(t => t.id === id);
+  if (!track) throw new Error('Track not found');
+  if (track.locked) throw new Error('Unlock the track first');
+  if (['V1', 'V2', 'A1', 'A2'].includes(id)) throw new Error(id + ' is required and cannot be deleted');
+  const top = Math.max(...sequence.tracks.map(t => t.id).filter(x => x[0] === id[0]).map(x => Number(x.slice(1))));
+  if (Number(id.slice(1)) !== top) throw new Error('Delete track ' + id[0] + top + ' first to keep tracks contiguous');
+  sequence.tracks = sequence.tracks.filter(t => t.id !== id);
+  sequence.clips = sequence.clips.filter(c => c.track !== id);
+  return validate(sequence);
+}
+export function unlink(sequence, id, linked = true) {
+  const targets = linkedClips(sequence, id, linked);
+  targets.forEach(c => { c.link_id = null; });
+  return validate(sequence);
+}
 export function duplicate(sequence, id, linked = true) {
   const targets = linkedClips(sequence,id,linked);
   editable(sequence,targets);

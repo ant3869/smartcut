@@ -77,8 +77,8 @@ function shell(){
       <a class="brand" href="/" aria-label="SmartCut home"><img class="brand-mark" src="/favicon.png" alt="" width="32" height="32"><span class="brand-copy"><span class="brand-name">SmartCut</span><span class="brand-suite">Cutroom</span></span></a>
       <nav class="menus" aria-label="Application menu">
         ${menu('File',[['new-project','New project…'],['open-project','Open project…'],['import','Import media…'],['transcribe','Re-transcribe source (.srt)'],['folder','Open output folder']])}
-        ${menu('Project',[['new-project','New project…'],['open-project','Open project…'],['settings','Pipeline settings…'],['refresh','Refresh media'],['analyze-all','Analyze all…']])}
-        ${menu('Sequence',[['sequence-settings','Sequence settings…'],['add-video-track','Add video track'],['save','Save sequence'],['undo','Undo'],['redo','Redo'],['rebuild','Load approved plan'],['reel','Best-of reel…']])}
+        ${menu('Project',[['save-project','Save project · Ctrl+S'],['new-project','New project…'],['open-project','Open project…'],['settings','Pipeline settings…'],['refresh','Refresh media'],['analyze-all','Analyze all…']])}
+        ${menu('Sequence',[['sequence-settings','Sequence settings…'],['Add track…',[['add-video-track','Video track'],['add-audio-track','Audio track']]],['save','Save sequence'],['undo','Undo'],['redo','Redo'],['rebuild','Load approved plan'],['reel','Best-of reel…']])}
         ${menu('Markers',[['in','Mark In · I'],['out','Mark Out · O'],['marker','Add sequence marker · M'],['auto-scenes','Markers at scene changes'],['auto-highlights','Markers at AI highlights'],['clear-markers','Clear all markers']])}
         ${menu('Auto',[['auto-edit','Auto-edit sequence…'],['auto-waste','Remove AI-flagged waste'],['auto-silence','Remove silences…'],['auto-gaps','Close all gaps'],['auto-fill','Fill frame'],['next-proposal','Next AI proposal · N']])}
         ${menu('Export',[['export-edl','EDL cut list'],['export-csv','CSV edit list'],['export-otio','OpenTimelineIO'],['export-srt','Captions for this edit (.srt)'],['export-mp4','Render video…']])}
@@ -126,7 +126,7 @@ function shell(){
     <dialog id="dialog"></dialog><div id="context-menu" role="menu" hidden></div><div id="toasts" class="toast-region" role="status" aria-live="polite"></div>`;
   renderSource();renderProgram();renderTimeline();renderInspector();
 }
-function menu(label,items){return `<details class="menu"><summary>${label}</summary><div class="menu-content" role="menu">${items.map(([a,l,extra='role="menuitem"'])=>a==='-'?'<hr>':button(a,l,'',extra)).join('')}</div></details>`;}
+function menu(label,items){return `<details class="menu"><summary>${label}</summary><div class="menu-content" role="menu">${items.map(([a,l,extra='role="menuitem"'])=>a==='-'?'<hr>':Array.isArray(l)?`<details class="menu submenu"><summary>${a}</summary><div class="menu-content" role="menu">${l.map(([sa,sl])=>button(sa,sl,'','role="menuitem"')).join('')}</div></details>`:button(a,l,'',extra)).join('')}</div></details>`;}
 function libraryAssets(){
   const map=new Map(state.inbox.map(f=>[f.path.replace(/\\/g,'/').toLowerCase(),{...f,kind:kindOf(f.path)}]));
   state.jobs.forEach(job=>{if(job.source){const key=job.source.replace(/\\/g,'/').toLowerCase();map.set(key,{...map.get(key),path:job.source,name:basename(job.source),kind:kindOf(job.source),duration:job.duration,job});}});
@@ -333,7 +333,7 @@ function renderTimeline(){
   const scale=state.timelineScale=T.pixelsPerSecond(viewport,Math.max(seconds,state.fitDuration||0),state.zoom);
   const width=Math.max(viewport-2,seconds*scale+60);
   const lanes=state.prefs.lanes&&!!seq&&!!state.job?.observations?.length;$('.timeline-body').classList.toggle('lanes',lanes);
-  $('#track-headers').innerHTML=(lanes?'<div class="lane-header" title="AI frame scores, flagged spans and scene changes"><strong>AI</strong><span>score · flags</span></div><div class="lane-header" title="Transcript mapped through your edit"><strong>TX</strong><span>transcript</span></div>':'')+(seq?.tracks||['V2','V1','A1','A2'].map(id=>({id}))).map(t=>`<div class="track-header ${t.id[0]==='A'?'audio':''}"><strong>${t.id}</strong><span>${t.id==='V2'?'Overlay':t.id==='V1'?'Picture':t.id==='A1'?'Source audio':'Music / audio'}</span><button data-track-mute="${t.id}" aria-pressed="${!!t.muted}" aria-label="${t.id[0]==='A'?'Mute':'Hide'} ${t.id}" title="${t.id[0]==='A'?'Mute':'Hide'} ${t.id}" class="${t.muted?'active':''}">${icon(t.id[0]==='A'?(t.muted?'volume-x':'volume-2'):(t.muted?'eye-off':'eye'))}</button><button data-track-lock="${t.id}" aria-pressed="${!!t.locked}" aria-label="Lock ${t.id}" title="Lock ${t.id}" class="${t.locked?'active':''}">${icon(t.locked?'lock':'lock-open')}</button></div>`).join('');
+  $('#track-headers').innerHTML=(lanes?'<div class="lane-header" title="AI frame scores, flagged spans and scene changes"><strong>AI</strong><span>score · flags</span></div><div class="lane-header" title="Transcript mapped through your edit"><strong>TX</strong><span>transcript</span></div>':'')+(seq?.tracks||['V2','V1','A1','A2'].map(id=>({id}))).map(t=>`<div class="track-header ${t.id[0]==='A'?'audio':''}"><strong>${t.id}</strong><span>${t.id==='V2'?'Overlay':t.id==='V1'?'Picture':t.id==='A1'?'Source audio':'Music / audio'}</span><button data-track-mute="${t.id}" aria-pressed="${!!t.muted}" aria-label="${t.id[0]==='A'?'Mute':'Hide'} ${t.id}" title="${t.id[0]==='A'?'Mute':'Hide'} ${t.id}" class="${t.muted?'active':''}">${icon(t.id[0]==='A'?(t.muted?'volume-x':'volume-2'):(t.muted?'eye-off':'eye'))}</button><button data-track-lock="${t.id}" aria-pressed="${!!t.locked}" aria-label="Lock ${t.id}" title="Lock ${t.id}" class="${t.locked?'active':''}">${icon(t.locked?'lock':'lock-open')}</button><button data-track-delete="${t.id}" aria-label="Delete track ${t.id}" title="Delete track ${t.id}">${icon('x')}</button></div>`).join('');
   const step=[1,2,5,10,15,30,60,120,300].find(s=>s*scale>=65)||Math.ceil(65/(600*scale))*600;
   const ticks=Array.from({length:Math.ceil(seconds/step)+1},(_,i)=>`<span class="ruler-tick" style="left:${i*step*scale}px">${short(i*step)}</span>`).join('');
   $('#timeline-canvas').style.width=width+'px';
@@ -522,7 +522,7 @@ function exportCaptions(){
   document.body.append(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(a.href),2000);toast(`${captions.length} captions exported, timed to this edit`,'ok');
 }
 function shortcutsDialog(){
-  const keys=[['Space','Play / pause'],['J K L','Shuttle reverse, stop, forward'],['← / →','Previous / next frame'],['↑ / ↓','Previous / next edit point or marker'],['I / O','Mark In / Out'],['P','Audition the AI proposal or In→Out'],['C','Split at playhead'],['V','Selection tool'],['M','Add marker (double-click a marker to edit)'],['Drag empty track space','Box-select clips across tracks'],['Shift / Ctrl + click','Add or remove a clip from selection'],['Escape','Cancel drag or box selection'],['Delete','Lift selected clips'],['Shift + Delete','Ripple delete'],['= / − / \\','Zoom in / out / fit (Ctrl + wheel zooms at the cursor)'],['Ctrl + Z / Y','Undo / redo'],['Ctrl + S','Save sequence'],['N / Shift + N','Next / previous AI proposal'],['A','Accept proposal as a cut'],['X','Reject proposal and protect it'],['?','This list']];
+  const keys=[['Space','Play / pause'],['J K L','Shuttle reverse, stop, forward'],['← / →','Previous / next frame'],['↑ / ↓','Previous / next edit point or marker'],['I / O','Mark In / Out'],['P','Audition the AI proposal or In→Out'],['C','Split at playhead'],['V','Selection tool'],['M','Add marker (double-click a marker to edit)'],['Drag empty track space','Box-select clips across tracks'],['Shift / Ctrl + click','Add or remove a clip from selection'],['Escape','Cancel drag or box selection'],['Delete','Lift selected clips'],['Shift + Delete','Ripple delete'],['= / − / \\','Zoom in / out / fit (Ctrl + wheel zooms at the cursor)'],['Ctrl + Z / Y','Undo / redo'],['Ctrl + S','Save project'],['N / Shift + N','Next / previous AI proposal'],['A','Accept proposal as a cut'],['X','Reject proposal and protect it'],['?','This list']];
   openDialog(`${dialogHead('HELP','Keyboard shortcuts')}<div class="dialog-body"><dl class="shortcut-list">${keys.map(([k,v])=>`<dt><kbd>${esc(k)}</kbd></dt><dd>${esc(v)}</dd>`).join('')}</dl></div><footer class="dialog-footer">${button('close-dialog','Done','primary')}</footer>`,'help');
 }
 
@@ -707,7 +707,7 @@ const actions={
   'close-dialog':closeDialog,'dismiss-error':clearError,retry:()=>state.retry?.(),'retry-media':()=>{renderSource();renderProgram();},
   'settings-test':()=>testConnection(settingsValues()),'clear-key':()=>{const key=$('[name="vision_api_key"]');key.value='';key.dataset.clear='true';key.placeholder='Saved key will be cleared on Save';},
   'list-view':()=>{state.view='list';renderProject();},'icon-view':()=>{state.view='icons';renderProject();},
-  save:async()=>{await saveSequence(true);toast('Sequence saved','ok');},undo:()=>undo(),redo:()=>undo(true),
+  save:async()=>{await saveSequence(true);toast('Sequence saved','ok');},'save-project':async()=>{await saveSequence(true);toast('Project saved','ok');},undo:()=>undo(),redo:()=>undo(true),
   'select-tool':()=>setTool('select'),'razor-tool':()=>setTool('razor'),
   split:()=>edit('Clip split',s=>T.split(s,state.selected,state.time,state.linked)),
   delete:()=>edit('Clips removed',s=>T.remove(s,selectedIds(),false,state.linked)),
@@ -729,7 +729,10 @@ const actions={
   'cancel-render':t=>post('/api/tasks/'+encodeURIComponent(t.dataset.taskId)+'/cancel').then(pollTasks),
   'sequence-settings':sequenceSettings,
   'apply-output-sequence':()=>{const s=renderSettings($('#render-form'));edit('Sequence format updated',seq=>{seq.width=s.width;seq.height=s.height;seq.fps=s.fps;});updateRenderSummary();},
-  'add-video-track':()=>edit('Video track added',s=>{const n=T.visualTracks(s).length+1;if(n>8)throw new Error('Maximum eight video tracks');s.tracks.unshift({id:'V'+n,muted:false,locked:false});}),
+  'add-video-track':()=>edit('Video track added',s=>T.addTrack(s,'video')),
+  'add-audio-track':()=>edit('Audio track added',s=>T.addTrack(s,'audio')),
+  'delete-track':t=>{const id=t.dataset.trackDelete,seq=state.sequence;if(!seq||!id)return;const n=seq.clips.filter(c=>c.track===id).length;if(n&&!confirm(`Delete track ${id} and ${n} clip${n>1?'s':''}?`))return;edit('Track deleted',s=>T.removeTrack(s,id));},
+  unlink:()=>edit('Clips unlinked',s=>T.unlink(s,state.selected,state.linked)),
   'key-toggle':t=>{const key=t.dataset.property,clip=state.sequence.clips.find(c=>c.id===state.selected),time=Math.max(0,Math.min(T.duration(clip),state.time-clip.start)),at=clip.keyframes?.[key]?.find(k=>Math.abs(k.time-time)<.5/state.sequence.fps);edit(at?'Keyframe removed':'Keyframe added',s=>{const c=s.clips.find(x=>x.id===clip.id);if(at)T.deleteKeyframe(c,key,at.time);else T.setKeyframe(c,key,time,T.clipValue(c,key,time));});},
   'key-delete':t=>edit('Keyframe removed',s=>T.deleteKeyframe(s.clips.find(c=>c.id===state.selected),t.dataset.property,Number(t.dataset.at))),
   'key-prev':t=>jumpKeyframe(t.dataset.property,-1),'key-next':t=>jumpKeyframe(t.dataset.property,1),
@@ -820,7 +823,8 @@ function bindMediaDrag(){
     drag.ready=metadata(path).then(info=>{drag.info=info;if(mediaDrag===drag&&drag.pointer)updateDropPreview(drag.pointer);return info;});drag.ready.catch(error=>{if(mediaDrag===drag){clearDropPreview();fail(error);}});
   });
   document.addEventListener('dragend',()=>{clearDropPreview();mediaDrag=null;});
-  document.addEventListener('keydown',e=>{if(e.key==='Escape'){clearDropPreview();mediaDrag=null;}});
+  document.addEventListener('keydown',e=>{if(e.key==='Escape'){clearDropPreview();mediaDrag=null;$$('.menu[open]').forEach(m=>m.removeAttribute('open'));}});
+  document.addEventListener('pointerout',e=>{const m=e.target.closest?.('.menu');if(!m)return;const to=e.relatedTarget;if(to instanceof Node&&m.contains(to))return;m.querySelectorAll('.menu[open]').forEach(x=>x.removeAttribute('open'));m.removeAttribute('open');});
   const panel=$('.project-panel'),canvas=$('#timeline-canvas');
   for(const target of [panel,canvas]){
     target.addEventListener('dragover',e=>{if(!state.project)return;e.preventDefault();if(target===canvas&&mediaDrag)updateDropPreview(e);else if([...e.dataTransfer.types].includes('Files'))panel.classList.add('drop-active');});
@@ -835,6 +839,7 @@ function bind(){
     const target=event.target.closest('button,[data-source],a[data-settings-nav]');
     if(!event.target.closest('#context-menu'))$('#context-menu').hidden=true;
     if(target?.dataset.action){const action=target.dataset.action;$('#context-menu').hidden=true;$$('.menu[open]').forEach(m=>m.removeAttribute('open'));operation(action,()=>action.startsWith('export-')?exportFile(action.slice(7)):actions[action]?.(target));return;}
+    if(!event.target.closest('.menu'))$$('.menu[open]').forEach(m=>m.removeAttribute('open'));
     if(target?.dataset.proposal!==undefined){focusProposal(Number(target.dataset.proposal));return;}
     if(event.target.matches('[data-job-check]')){const id=event.target.dataset.jobCheck;if(event.target.checked)state.checked.add(id);else state.checked.delete(id);renderProject();return;}
     if(target?.dataset.source)operation('Load source',()=>selectAsset(target.dataset.source));
@@ -845,6 +850,7 @@ function bind(){
     if(target?.dataset.settingsNav){event.preventDefault();const section=$(`[data-settings-section="${target.dataset.settingsNav}"]`);section.open=true;section.scrollIntoView({block:'start'});}
     if(target?.dataset.trackMute)operation('Track mute',()=>edit('Track visibility / mute changed',s=>{const t=s.tracks.find(t=>t.id===target.dataset.trackMute);if(t.locked)throw new Error('Unlock the track first');t.muted=!t.muted;}));
     if(target?.dataset.trackLock)operation('Track lock',()=>edit('Track lock changed',s=>{const t=s.tracks.find(t=>t.id===target.dataset.trackLock);t.locked=!t.locked;}));
+    if(target?.dataset.trackDelete)operation('Delete track',()=>actions['delete-track'](target));
     if(target?.dataset.marker){const m=state.sequence.markers.find(m=>m.id===target.dataset.marker);if(m)seekProgram(m.time);}
     if(target?.dataset.sourceTime)seekSource(Number(target.dataset.sourceTime));
     if(target?.dataset.queue!==undefined){const r=state.job.review_intervals[Number(target.dataset.queue)];state.in=r.start;state.out=r.end;state.reviewEditing=null;seekSource(r.start);renderReview();}
@@ -886,14 +892,14 @@ function bind(){
   document.addEventListener('keydown',e=>{
     if(e.target.closest('input,textarea,select,[contenteditable="true"]')||$('#dialog').open)return;
     const key=e.key.toLowerCase();
-    if((e.ctrlKey||e.metaKey)&&['z','y','s'].includes(key)){e.preventDefault();operation('Keyboard edit',()=>key==='s'?actions.save():undo(key==='y'||e.shiftKey));return;}
+    if((e.ctrlKey||e.metaKey)&&['z','y','s'].includes(key)){e.preventDefault();operation('Keyboard edit',()=>key==='s'?actions['save-project']():undo(key==='y'||e.shiftKey));return;}
     if(e.ctrlKey||e.metaKey||e.altKey)return;
     const map={' ':'play',j:'reverse',k:'pause',l:'forward',c:'split',v:'select-tool',i:'in',o:'out',m:'marker',delete:e.shiftKey?'ripple':'delete',backspace:'delete',n:e.shiftKey?'prev-proposal':'next-proposal',a:'accept-current',x:'reject-current','?':'shortcuts',p:'audition',arrowup:'prev-edit',arrowdown:'next-edit',arrowleft:'frame-back',arrowright:'frame-next','\\':'zoom-fit','=':'zoom-in','+':'zoom-in','-':'zoom-out'};
     if(!map[key]){if(e.key==='Enter'&&e.target.dataset.source)operation('Select source',()=>selectAsset(e.target.dataset.source));return;}
     e.preventDefault();operation('Keyboard edit',()=>{if(map[key]==='play')togglePlay();else if(map[key]==='reverse')shuttle(-1);else if(map[key]==='forward')shuttle(1);else if(map[key]==='pause')pause();else return actions[map[key]]();});
   });
   $('#timeline-canvas').addEventListener('pointerdown',timelinePointer);
-  $('#timeline-canvas').addEventListener('contextmenu',e=>{const el=e.target.closest('[data-clip]');if(!el)return;e.preventDefault();if(!state.selection.has(el.dataset.clip))chooseClip(el.dataset.clip);const menu=$('#context-menu');menu.innerHTML=[['split','Split at playhead'],['delete','Delete'],['ripple','Ripple delete'],['duplicate','Duplicate'],['enable','Toggle enabled']].map(([a,l])=>button(a,l,'','role="menuitem"')).join('');menu.style.left=Math.min(e.clientX,innerWidth-210)+'px';menu.style.top=Math.min(e.clientY,innerHeight-220)+'px';menu.hidden=false;});
+  $('#timeline-canvas').addEventListener('contextmenu',e=>{const el=e.target.closest('[data-clip]');if(!el)return;e.preventDefault();if(!state.selection.has(el.dataset.clip))chooseClip(el.dataset.clip);const menu=$('#context-menu');menu.innerHTML=[['split','Split at playhead'],['delete','Delete'],['ripple','Ripple delete'],['duplicate','Duplicate'],['unlink','Unlink'],['enable','Toggle enabled']].map(([a,l])=>button(a,l,'','role="menuitem"')).join('');menu.style.left=Math.min(e.clientX,innerWidth-210)+'px';menu.style.top=Math.min(e.clientY,innerHeight-220)+'px';menu.hidden=false;});
   bindMediaDrag();
   document.addEventListener('visibilitychange',()=>{if(!document.hidden&&document.title.startsWith('✓'))document.title='SmartCut';});
   // Closing the desktop window stops the server, so an unsaved edit or a running render both deserve a warning.
