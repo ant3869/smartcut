@@ -53,6 +53,8 @@ before/after context is a limitation, not proof of waste. No category is mandato
 Return JSON only with decision CUT|KEEP|REVIEW, category, start, end, confidence (0-1),
 reason, uncertainty (list), evidence (list of {frame_time, observation}). Bound start/end
 inside the target. KEEP may use intended_content. REVIEW may use uncertain.
+Return every required field. If there is no uncertainty, use []. If there is no
+contradicting evidence, use []. Never omit required array fields.
 """
 
 

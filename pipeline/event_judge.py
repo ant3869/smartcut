@@ -20,6 +20,42 @@ and cover at most 8 seconds. Otherwise use UNCERTAIN. No automatic cutting occur
 """
 
 
+def native_evidence_block(native: dict | None) -> str:
+    """Render attached native-video evidence as labeled judge input, or ''.
+
+    Evidence only, never authority: the judge must reconcile it with frames,
+    transcript, temporal context and contradictions, not copy its verdict.
+    """
+    if not isinstance(native, dict) or native.get("status") != "available":
+        return ""
+    lines = [
+        "NATIVE VIDEO TEMPORAL EVIDENCE",
+        f"provider: {native.get('provider')}",
+        f"model: {native.get('model')}",
+        f"decision: {native.get('decision')}",
+        f"event_type: {native.get('event_type')}",
+        f"confidence: {native.get('confidence')}",
+        f"summary: {native.get('summary')}",
+        f"evidence: {native.get('evidence')}",
+        f"contradicting_evidence: {native.get('contradicting_evidence')}",
+        f"source event start/end: {native.get('event_start')} / {native.get('event_end')}",
+        ("The native-video model's decision is evidence, not ground truth. "
+         "Reconcile it with frames, transcript, temporal context, and contradictions. "
+         "Do not copy its CUT/KEEP verdict automatically."),
+    ]
+    return "\n".join(lines)
+
+
+def event_prompt_for(card: dict) -> str:
+    """EVENT_PROMPT plus the native-video evidence block when attached.
+
+    Both proposer and critic call sites must use this so each role sees the
+    same native evidence independently.
+    """
+    block = native_evidence_block(card.get("native_video") if isinstance(card, dict) else None)
+    return EVENT_PROMPT + ("\n" + block if block else "")
+
+
 def parse_event(raw, target, times, context):
     try:
         text = raw['choices'][0]['message']['content'].strip()
@@ -112,8 +148,17 @@ def review_event_card(card, ask, *, enabled=False, reinspect=None, max_reinspect
 
 
 def review_adaptive_events(eye, source, duration, *, enabled=False, max_calls=12,
-                           max_windows=3, protected_spans=None, confidence_threshold=.8):
-    """Actual cheap-scan -> EventCard -> contextual judge integration, advisory only."""
+                           max_windows=3, protected_spans=None, confidence_threshold=.8,
+                           native_video_enabled=False, native_video_model=None,
+                           native_video_context_seconds=2.0, native_api_key=None):
+    """Actual cheap-scan -> EventCard -> contextual judge integration, advisory only.
+
+    When native_video_enabled, each EventCard is enriched via inspect_card_native
+    BEFORE review_event_card, and both proposer and critic see the evidence block
+    through event_prompt_for. Disabled (default) keeps the existing path
+    functionally identical. Provider failure degrades to unavailable and the
+    existing path continues.
+    """
     from .adaptive_inspection import inspect_events
     from .util import write_json
     result = {'enabled':enabled,'advisory_only':True,'calls_used':0,'decisions':[],'events':[]}
@@ -128,10 +173,22 @@ def review_adaptive_events(eye, source, duration, *, enabled=False, max_calls=12
     for card in inspection['event_cards']:
         if result['calls_used']+3 > max_calls:
             break
+        if native_video_enabled:
+            from .native_inspection import inspect_card_native
+            from .meta_video import NATIVE_VIDEO_MODEL
+            card = inspect_card_native(
+                card, source, duration, enabled=True,
+                context_seconds=native_video_context_seconds,
+                model=native_video_model or NATIVE_VIDEO_MODEL,
+                api_key=native_api_key, work_dir=folder / 'native-clips')
+            result.setdefault('native_video', []).append(
+                {k: card.get('native_video', {}).get(k)
+                 for k in ('status', 'decision', 'event_type', 'confidence')})
         def ask(current,role):
             path = folder/f"call-{result['calls_used']+1:04d}.json"
             result['calls_used'] += 1
-            receipt = {'status':'started','role':role,'event_card':current,'prompt':EVENT_PROMPT}
+            prompt = event_prompt_for(current)
+            receipt = {'status':'started','role':role,'event_card':current,'prompt':prompt}
             write_json(path,receipt)
             try:
                 frames=[]
@@ -139,7 +196,7 @@ def review_adaptive_events(eye, source, duration, *, enabled=False, max_calls=12
                     if hashlib.sha256(Path(f['evidence_ref']).read_bytes()).hexdigest()!=f['frame_sha256']:
                         raise ValueError('Frame drift')
                     frames.append((f['timestamp'],cv2.imread(f['evidence_ref'])))
-                raw=eye.ask_editorial(frames,prompt=EVENT_PROMPT,evidence={'target':current['target'],'event_card':current},role=role)
+                raw=eye.ask_editorial(frames,prompt=prompt,evidence={'target':current['target'],'event_card':current},role=role)
                 receipt.update(status='received',response=raw)
                 return raw
             except Exception as exc:
