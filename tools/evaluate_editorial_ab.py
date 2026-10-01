@@ -25,7 +25,7 @@ from pipeline.brain import PipelineBrain
 from pipeline.util import read_json, write_json, sha256_file, post_json_with_retry, PipelineError
 
 OUT = ROOT / 'work/editorial-quality'
-GOLDS = ['004-editorial-v1.json', '008-editorial-v1.json', 'lyssa-editorial-v2.json']
+GOLDS = ['004-editorial-v2.json', '008-editorial-v2.json', 'lyssa-editorial-v2.json']
 POLICY = (
     'Evaluate general filmmaking quality only. Distinguish accidental camera handling, '
     'temporary incorrect orientation, between-take activity, accidental lens obstruction, '

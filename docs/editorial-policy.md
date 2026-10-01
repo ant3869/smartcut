@@ -32,12 +32,16 @@
 
 - w1 (004) and w3 (008) are segmented examples, NOT single
   all-or-nothing intervals. Each contains KEEP and CUT sub-segments.
-- v1 single-interval golds (`evaluation/004-editorial-v1.json`,
-  `evaluation/008-editorial-v1.json`) are superseded as scoring truth
-  for these two cases. Do not train or threshold on the whole-interval
-  form.
-- Precise seam times are NOT yet established. Approximate seams from
-  sparse-frame review are documented only in
-  `docs/w1-w3-segmented-note.md` and are explicitly marked
-  NEEDS_PRECISE_SEAM_REVIEW. Do not ingest them as gold until a
-  full-fps + transcript seam review confirms exact boundaries.
+- v2 golds (`evaluation/004-editorial-v2.json`,
+  `evaluation/008-editorial-v2.json`) are the scoring truth for these
+  two cases. `tools/evaluate_editorial_ab.py` GOLDS points at v2.
+  Do not train or threshold on the v1 whole-interval form.
+- v1 files are preserved byte-identical for provenance only.
+- Seam evidence: full-frame-rate review + transcript, documented in
+  `docs/w1-w3-segmented-note.md`. v2 seams:
+  w1 CUT 0-4.0 (setup selfie talk) / KEEP 4.0-9.45 (main action) /
+  CUT 9.45-15.419 (paused aside talk, contact ends ~9.4-9.5);
+  w3 KEEP 100.0-107.2 (main) / CUT 107.2-118.0 (coordination +
+  banter + pause; speech "do you wanna do it?" 107.55, "I'm bored"
+  108.91) / KEEP 118.0-119.0 (resumed; 119 verified paused again,
+  120.02 next aside not yet labeled).
