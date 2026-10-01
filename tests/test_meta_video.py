@@ -162,10 +162,11 @@ def test_nexus_chain_unchanged(monkeypatch):
 
 
 def test_adapter_prefers_smartcut_chain_over_model_key(monkeypatch):
+    # Custom gateway base: full gateway chain still applies (nexus wins).
     _clear_key_env(monkeypatch)
     monkeypatch.setenv("MODEL_API_KEY", "model-key")
     monkeypatch.setenv("NEXUS_LLM_API_KEY", "nexus-key")
-    adapter = mv.MetaVideoAdapter(api_key=None, tries=1)
+    adapter = mv.MetaVideoAdapter(api_key=None, tries=1, base_url="http://127.0.0.1:20128/v1")
     assert adapter.api_key == "nexus-key"
 
 
@@ -176,16 +177,53 @@ def test_adapter_accepts_explicit_vision_key(monkeypatch):
 
 
 def test_adapter_reads_model_api_key_env(monkeypatch):
+    # MODEL_API_KEY is a gateway-chain credential: honored for gateway bases,
+    # never silently sent to direct Meta.
     _clear_key_env(monkeypatch)
     monkeypatch.setenv("MODEL_API_KEY", "env-key")
-    adapter = mv.MetaVideoAdapter(api_key=None, tries=1)
+    adapter = mv.MetaVideoAdapter(api_key=None, tries=1, base_url="http://127.0.0.1:20128/v1")
     assert adapter.api_key == "env-key"
+    with pytest.raises(PipelineError, match="direct-Meta API key"):
+        mv.MetaVideoAdapter(api_key=None, tries=1)
 
 
 def test_adapter_base_url_configurable(monkeypatch):
     _clear_key_env(monkeypatch)
     adapter = mv.MetaVideoAdapter(api_key="k", base_url="http://127.0.0.1:20128/v1/", tries=1)
     assert adapter.base_url == "http://127.0.0.1:20128/v1"
+
+
+def test_direct_meta_selects_meta_key_even_when_nexus_present(monkeypatch):
+    # The reported bug: direct Meta must NEVER take the gateway credential.
+    _clear_key_env(monkeypatch)
+    monkeypatch.setenv("NEXUS_LLM_API_KEY", "nexus-key")
+    monkeypatch.setenv("NINEROUTER_API_KEY", "nine-key")
+    monkeypatch.setenv("META_API_KEY", "meta-key")
+    assert mv.resolve_api_key(None, base_url="https://api.meta.ai/v1") == "meta-key"
+    adapter = mv.MetaVideoAdapter(api_key=None, tries=1)
+    assert adapter.api_key == "meta-key"
+
+
+def test_direct_meta_without_meta_key_fails_redacted(monkeypatch):
+    _clear_key_env(monkeypatch)
+    monkeypatch.setenv("NEXUS_LLM_API_KEY", "nexus-key")
+    monkeypatch.setenv("NINEROUTER_API_KEY", "nine-key")
+    monkeypatch.setenv("MODEL_API_KEY", "model-key")
+    assert mv.resolve_api_key(None, base_url="https://api.meta.ai/v1") == ""
+    with pytest.raises(PipelineError) as excinfo:
+        mv.MetaVideoAdapter(api_key=None, tries=1)
+    for secret in ("nexus-key", "nine-key", "model-key"):
+        assert secret not in str(excinfo.value)
+
+
+def test_explicit_key_wins_on_both_routes(monkeypatch):
+    _clear_key_env(monkeypatch)
+    monkeypatch.setenv("NEXUS_LLM_API_KEY", "nexus-key")
+    monkeypatch.setenv("META_API_KEY", "meta-key")
+    assert mv.MetaVideoAdapter(api_key="explicit-key", tries=1).api_key == "explicit-key"
+    gw = mv.MetaVideoAdapter(api_key="explicit-key", tries=1,
+                             base_url="http://127.0.0.1:20128/v1")
+    assert gw.api_key == "explicit-key"
 
 
 def test_direct_meta_default_model_is_not_gateway_alias(monkeypatch):
@@ -197,6 +235,7 @@ def test_direct_meta_default_model_is_not_gateway_alias(monkeypatch):
 
 
 def test_upload_includes_model_env_fallback_key(tmp_path, monkeypatch):
+    # Gateway base keeps the MODEL_API_KEY fallback working over Bearer auth.
     clip = _clip(tmp_path)
     _clear_key_env(monkeypatch)
     monkeypatch.setenv("MODEL_API_KEY", "env-secret")
@@ -206,7 +245,8 @@ def test_upload_includes_model_env_fallback_key(tmp_path, monkeypatch):
         return FakeUploadResponse({"id": "file-x"})
 
     monkeypatch.setattr(mv.requests, "post", fake_post)
-    assert mv.MetaVideoAdapter(api_key=None, tries=1).upload_video(clip) == "file-x"
+    adapter = mv.MetaVideoAdapter(api_key=None, tries=1, base_url="http://127.0.0.1:20128/v1")
+    assert adapter.upload_video(clip) == "file-x"
 
 
 # 5 + 6 + 7 + 9 + 10 + 11 + 12: /responses shape without fps.

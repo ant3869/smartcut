@@ -259,7 +259,8 @@ class PipelineBrain:
     def review_editorial(
         self, source: Path, *, enabled: bool | None = None, refresh: bool = False,
         windows: list[dict] | None = None, duration: float | None = None,
-        story_map: dict | None = None,
+        story_map: dict | None = None, adaptive_events: bool = False,
+        transcript_words: list[dict] | None = None,
     ) -> dict:
         """Run the separate, default-off advisory judge on the configured vision route.
 
@@ -267,6 +268,10 @@ class PipelineBrain:
         sequences, config or the legacy temporal decisions consumed by the cutter.
         Explicit enabled=True is required unless editorial_review_enabled is true.
         Optional duration/story_map let callers reuse already observed evidence.
+        Adaptive EventCard review must be explicitly requested via
+        adaptive_events=True; native video stays default-off and advisory-only.
+        transcript_words forwards real timed words when the caller has them;
+        audio events are not fabricated (None stays unknown downstream).
         """
         from .editorial_judge import review_editorial
         enabled = (self.config.get("editorial_review_enabled", False) is True
@@ -287,6 +292,13 @@ class PipelineBrain:
             context_seconds=float(self.config.get("editorial_review_context_seconds", 2.0)),
             confidence_threshold=float(self.config.get("editorial_review_confidence_threshold", 0.8)),
             story_map=story_map, audio_enabled=bool(self.config.get("audio_evidence_enabled", True)),
+            adaptive_events=adaptive_events is True,
+            transcript_words=transcript_words,
+            native_video_enabled=bool(self.config.get("native_video_enabled", False)),
+            native_video_model=str(self.config.get(
+                "native_video_model", "muse-spark-1.3-contributor")),
+            native_video_context_seconds=float(self.config.get(
+                "native_video_context_seconds", 2.0)),
         )
         write_json(job / "editorial_review.json", result)
         return result

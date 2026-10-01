@@ -5,10 +5,12 @@ via the Meta Model API. NOT wired into EventCards, Brain, candidate
 generation, boundary refinement, or automatic editing -- this module only
 uploads a clip and returns a validated structured decision dict.
 
-Auth: explicit ``api_key=`` or the SmartCut credential chain
-(``vision_api_key`` -> ``NEXUS_LLM_API_KEY`` -> ``NINEROUTER_API_KEY`` ->
-``META_API_KEY`` -> ``MODEL_API_KEY``). Pass the already-resolved SmartCut
-key in, or let ``resolve_api_key()`` find it. The key is only ever sent as
+Auth: explicit ``api_key=`` or the SmartCut credential chain. For direct
+Meta base URLs (api.meta.ai) ONLY ``META_API_KEY`` is selected (gateway
+credentials are never sent to Meta); other base URLs keep the gateway
+chain (``vision_api_key`` -> ``NEXUS_LLM_API_KEY`` -> ``NINEROUTER_API_KEY`` ->
+``META_API_KEY`` -> ``MODEL_API_KEY``). Pass the already-resolved key in,
+or let ``resolve_api_key()`` find it. The key is only ever sent as
 a Bearer header; it is never printed, logged, or exposed through public
 settings.
 Base URL is configurable so the adapter can target SmartCut's current
@@ -38,26 +40,41 @@ MODEL_API_KEY_ENV_VAR = "MODEL_API_KEY"
 NATIVE_VIDEO_MODEL = "muse-spark-1.3-contributor"
 
 # SmartCut's existing credential chain, widest to narrowest. Explicit
-# api_key= always wins; then these env vars in order.
-API_KEY_ENV_CHAIN = (
+# api_key= always wins; then these env vars in order. Gateway-compatible
+# resolution (non-Meta base URLs) keeps the full chain; direct Meta
+# (api.meta.ai) uses ONLY META_API_KEY so a gateway credential can never
+# be sent to Meta by accident.
+GATEWAY_API_KEY_ENV_CHAIN = (
     "NEXUS_LLM_API_KEY",
     "NINEROUTER_API_KEY",
     META_API_KEY_ENV_VAR,
     MODEL_API_KEY_ENV_VAR,
 )
+DIRECT_META_API_KEY_ENV_CHAIN = (
+    META_API_KEY_ENV_VAR,
+)
+
+API_KEY_ENV_CHAIN = GATEWAY_API_KEY_ENV_CHAIN  # backwards-compat alias
 
 
-def resolve_api_key(explicit: str | None = None) -> str:
+def _is_direct_meta_url(base_url: str) -> bool:
+    return "api.meta.ai" in (base_url or "").lower()
+
+
+def resolve_api_key(explicit: str | None = None, base_url: str | None = None) -> str:
     """Resolve a credential the same way SmartCut already does.
 
-    Order: explicit ``vision_api_key`` value -> NEXUS_LLM_API_KEY ->
-    NINEROUTER_API_KEY -> META_API_KEY -> MODEL_API_KEY. Returns "" when
+    Order: explicit ``vision_api_key`` value -> chain env vars. For direct
+    Meta base URLs the chain is META_API_KEY only (gateway keys are never
+    selected); other base URLs keep the gateway chain (NEXUS_LLM_API_KEY ->
+    NINEROUTER_API_KEY -> META_API_KEY -> MODEL_API_KEY). Returns "" when
     nothing is set; the adapter raises a redacted error (no key material,
     no lengths).
     """
     if explicit:
         return explicit
-    for env_var in API_KEY_ENV_CHAIN:
+    chain = DIRECT_META_API_KEY_ENV_CHAIN if _is_direct_meta_url(base_url or "") else GATEWAY_API_KEY_ENV_CHAIN
+    for env_var in chain:
         value = os.getenv(env_var)
         if value:
             return value
@@ -197,9 +214,20 @@ class MetaVideoAdapter:
         base_url: str = META_API_BASE_URL,
         timeout: float = 180.0,
         tries: int = 3,
+        on_attempt: Any | None = None,
     ) -> None:
-        resolved = resolve_api_key(api_key)
+        """on_attempt(kind, attempt_number) optionally observes each real HTTP
+        attempt ('upload' for /files posts, 'inference' for /responses posts)
+        so callers can account retries truthfully. Defaults to None."""
+        resolved = resolve_api_key(api_key, base_url=base_url)
         if not resolved:
+            if _is_direct_meta_url(base_url):
+                raise PipelineError(
+                    "Meta video adapter needs a direct-Meta API key for api.meta.ai: "
+                    f"pass api_key=... or set {META_API_KEY_ENV_VAR} in the environment. "
+                    "Gateway credentials (NEXUS_LLM_API_KEY/NINEROUTER_API_KEY) are "
+                    "never sent to direct Meta."
+                )
             raise PipelineError(
                 "Meta video adapter needs an API key: pass api_key=... (e.g. SmartCut's "
                 "resolved vision_api_key) or set NEXUS_LLM_API_KEY, NINEROUTER_API_KEY, "
@@ -210,6 +238,7 @@ class MetaVideoAdapter:
         self.base_url = base_url.rstrip("/")
         self.timeout = timeout
         self.tries = max(1, int(tries))
+        self.on_attempt = on_attempt
 
     def _headers(self) -> dict[str, str]:
         return {"Authorization": f"Bearer {self.api_key}"}
@@ -234,6 +263,8 @@ class MetaVideoAdapter:
         url = f"{self.base_url}/files"
         last: Exception | None = None
         for attempt in range(self.tries):
+            if self.on_attempt is not None:
+                self.on_attempt("upload", attempt + 1)
             try:
                 with clip.open("rb") as handle:
                     files = {"file": (clip.name, handle, "video/mp4")}
@@ -290,13 +321,14 @@ class MetaVideoAdapter:
             "text": {"format": self._response_format()},
         }
         try:
-            response = post_json_with_retry(
-                f"{self.base_url}/responses",
-                payload,
-                tries=self.tries,
-                timeout=self.timeout,
-                headers=self._headers(),
-            )
+            kwargs: dict[str, Any] = {
+                "tries": self.tries,
+                "timeout": self.timeout,
+                "headers": self._headers(),
+            }
+            if self.on_attempt is not None:
+                kwargs["on_attempt"] = lambda n: self.on_attempt("inference", n)
+            response = post_json_with_retry(f"{self.base_url}/responses", payload, **kwargs)
         except PipelineError as exc:
             raise PipelineError(f"Meta /responses request failed: {exc}") from exc
         try:
