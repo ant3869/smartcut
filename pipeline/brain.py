@@ -165,7 +165,8 @@ class PipelineBrain:
         # never enter temporal_waste or the plan, even when legacy cuts are enabled.
         if "eye" in stages and self.config.get("editorial_review_enabled", False) is True:
             report("Eye · advisory editorial review", 71)
-            context_review = self.review_editorial(source, refresh=refresh, duration=duration, story_map=story_map)
+            context_review = self.review_editorial(source, refresh=refresh, duration=duration, story_map=story_map,
+                                                   transcript_words=(transcript.words if transcript.ok else None))
             if self.config.get("boundary_refinement_enabled", False) is True:
                 report("Eye · advisory boundary refinement", 71)
                 self.refine_boundaries(source, context_review=context_review, duration=duration,
