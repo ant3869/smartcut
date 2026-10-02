@@ -7,6 +7,7 @@ from typing import Iterable
 import numpy as np
 
 from .contracts import Clip
+from .passes import XFADE_FOR, overlay_filters
 from .util import PipelineError, ffprobe_json, media_duration, require_distinct, run_checked
 from .sequence import RenderSettings
 
@@ -80,8 +81,14 @@ class FfmpegBlade:
         return [name for name in ("libx264", "libx265", "libvpx-vp9") if any(line.split()[1:2] == [name] for line in encoders.splitlines())]
 
     def render_sequence(self, sequence, output: Path, *, watermark: Path | None = None,
-                        settings: RenderSettings | None = None, progress=None) -> Path:
-        """Composite visual tracks bottom to top; gaps remain black and clip alpha is retained."""
+                        settings: RenderSettings | None = None, progress=None,
+                        passes: dict | None = None, warnings: list | None = None) -> Path:
+        """Composite visual tracks bottom to top; gaps remain black and clip alpha is retained.
+
+        `passes` toggles the sequence-stored transition and watermark steps independently;
+        timeline edits always render. Transition groups that lost their source handles
+        (media changed since apply) fall back to hard cuts and are reported in `warnings`.
+        """
         duration = sequence.duration
         if duration <= 0:
             raise PipelineError("Cannot render an empty sequence")
@@ -101,10 +108,27 @@ class FfmpegBlade:
         filters = ["[0:v]format=yuv420p[base0]"]
         audio_labels = []
         video_label = "base0"
+        passes = {"transitions": True, "watermark": True, **(passes or {})}
+        render_warnings = warnings if warnings is not None else []
         probes = {}
         input_index = 0
-        ordered = sorted(clips, key=lambda c: (int(c.track[1:]) if c.track.startswith("V") else -1, c.start))
-        for clip in ordered:
+        cuts, edges = self._transition_lookup(sequence, passes["transitions"])
+        ordered = sorted(clips, key=lambda c: (c.track, c.start))
+        for unit in self._timeline_units(sequence, ordered, cuts, probes, render_warnings):
+            if unit["links"]:
+                input_index, video_label, audio_labels = self._render_group(
+                    unit, sequence, output, width, height, fps, duration, edges,
+                    cmd, filters, probes, input_index, video_label, audio_labels,
+                    render_warnings)
+                continue
+            clip = unit["clips"][0]
+            edge = edges.get(clip.id)
+            fade_in = edge.duration if edge and edge.edge == "in" else 0
+            fade_out = edge.duration if edge and edge.edge == "out" else 0
+            fade_v = (f",fade=t=in:st=0:d={fade_in:g}:alpha=1" if fade_in else "") + \
+                     (f",fade=t=out:st={max(0, clip.duration - fade_out):g}:d={fade_out:g}:alpha=1" if fade_out else "")
+            fade_a = (f",afade=t=in:st=0:d={fade_in:g}" if fade_in else "") + \
+                     (f",afade=t=out:st={max(0, clip.duration - fade_out):g}:d={fade_out:g}" if fade_out else "")
             source = Path(clip.source)
             require_distinct(output, source)
             if source not in probes:
@@ -130,7 +154,7 @@ class FfmpegBlade:
                     rate /= 2
                 tempos.append(f"atempo={rate:g}")
                 filters.append(f"[{index}:a]asetpts=PTS-STARTPTS,aresample=48000,{','.join(tempos)},"
-                               f"volume={clip.volume},atrim=duration={clip.duration:.6f},"
+                               f"volume={clip.volume},atrim=duration={clip.duration:.6f}{fade_a},"
                                f"adelay={round(clip.start * 1000)}:all=1[a{index}]")
                 audio_labels.append(f"[a{index}]")
             else:
@@ -145,14 +169,34 @@ class FfmpegBlade:
                 filters.append(f"[{index}:v]setpts=(PTS-STARTPTS)/{clip.speed},fps={fps},"
                                f"{fit},setsar=1,format=rgba,scale=w='max(2\\,trunc(iw*{scale}/2)*2)':"
                                f"h='max(2\\,trunc(ih*{scale}/2)*2)':eval=frame"
-                               f"{rotate}{alpha},"
+                               f"{rotate}{alpha}{fade_v},"
                                f"trim=duration={clip.duration:.6f},setpts=PTS+{clip.start}/TB[v{index}]")
                 x = self._escape_expression(self._animated(clip, "x", clock=f"(t-{clip.start:g})"))
                 y = self._escape_expression(self._animated(clip, "y", clock=f"(t-{clip.start:g})"))
                 filters.append(f"[{video_label}][v{index}]overlay=x='(W-w)/2+{x}':y='(H-h)/2+{y}':"
                                f"eof_action=pass:repeatlast=0:enable='gte(t,{clip.start})*lt(t,{clip.start + clip.duration})'[base{index}]")
                 video_label = f"base{index}"
-        if watermark:
+        sequence_overlays = list(getattr(sequence, "overlays", None) or []) if passes["watermark"] else []
+        for overlay in sequence_overlays:
+            try:
+                image = Path(overlay.path)
+                if not image.is_file():
+                    raise PipelineError(f"Watermark is missing: {image}")
+                require_distinct(output, image)
+                info = ffprobe_json(image)
+                stream = next((s for s in info.get("streams", []) if s.get("codec_type") == "video"), None)
+                if not stream or not stream.get("width") or not stream.get("height"):
+                    raise PipelineError(f"Overlay image has no decodable picture: {image}")
+                input_index += 1
+                cmd += ["-loop", "1", "-framerate", str(fps), "-t", f"{duration:.6f}", "-i", str(image)]
+                made, video_label, overlay_notes = overlay_filters(
+                    overlay, width, height, int(stream["width"]), int(stream["height"]),
+                    duration, video_label, input_index)
+                filters += made
+                render_warnings += overlay_notes
+            except PipelineError as exc:
+                render_warnings.append(str(exc))
+        if watermark and passes["watermark"] and not sequence_overlays:
             if not watermark.is_file():
                 raise PipelineError(f"Watermark is missing: {watermark}")
             require_distinct(output, watermark)
@@ -189,6 +233,205 @@ class FfmpegBlade:
         finally:
             temporary.unlink(missing_ok=True)
         return output
+
+    @staticmethod
+    def _transition_lookup(sequence, enabled):
+        """Cut transitions by clip pair and edge fades by clip. Stale refs are ignored."""
+        cuts, edges = {}, {}
+        if not enabled:
+            return cuts, edges
+        live = {c.id for c in sequence.clips}
+        for record in getattr(sequence, "transitions", None) or []:
+            if record.edge == "cut":
+                if record.outgoing_id in live and record.incoming_id in live:
+                    cuts[(record.outgoing_id, record.incoming_id)] = record
+            elif record.incoming_id in live or record.outgoing_id in live:
+                edges[record.incoming_id or record.outgoing_id] = record
+        return cuts, edges
+
+    def _probe_duration(self, source: Path, probes: dict):
+        if source not in probes:
+            probes[source] = ffprobe_json(source)
+        try:
+            return float(probes[source]["format"]["duration"])
+        except (KeyError, TypeError, ValueError):
+            return None
+
+    def _render_handles_ok(self, left, right, link, video: bool, probes: dict, render_warnings: list) -> bool:
+        """Handles must still exist at render time; media may have changed since apply."""
+        span = link.duration if video else (link.crossfade_duration or link.duration)
+        if span / 2 > min(left.duration, right.duration) + .001:
+            render_warnings.append(f"Transition at {link.cut_time:g}s is longer than its clips; hard cut kept")
+            return False
+        if not video and min(left.duration, right.duration) - span / 2 < .1:
+            # acrossfade needs real room beyond the crossfade itself; razor-edge fits
+            # fall back to a hard cut rather than failing the render.
+            render_warnings.append(f"Audio crossfade at {link.cut_time:g}s is too tight for its clips; hard cut kept")
+            return False
+        half = span / 2
+        for clip, side in ((left, "tail"), (right, "head")):
+            if clip.kind == "image":
+                continue
+            total = self._probe_duration(Path(clip.source), probes)
+            if total is None:
+                render_warnings.append(f"Could not probe {clip.source}; hard cut kept at {link.cut_time:g}s")
+                return False
+            avail = (total - clip.source_end) / clip.speed if side == "tail" else clip.source_start / clip.speed
+            if avail + .001 < half:
+                render_warnings.append(
+                    f"Not enough source handles at {link.cut_time:g}s "
+                    f"({side} has {max(0, avail):.2f}s, needs {half:.2f}s); hard cut kept")
+                return False
+        return True
+
+    def _timeline_units(self, sequence, ordered, cuts: dict, probes: dict, render_warnings: list) -> list:
+        """Maximal runs of adjacent clips joined by live transitions. Singles stay untouched.
+
+        Sorted by (track, start) so same-track adjacency survives cross-track
+        interleaving; audio-first compositing order is preserved (A < V).
+        """
+        units = []
+        clips = sorted(ordered, key=lambda c: (c.track, c.start))
+        index = 0
+        while index < len(clips):
+            members = [clips[index]]
+            links = []
+            video = clips[index].track.startswith("V")
+            while index + 1 < len(clips):
+                left, right = members[-1], clips[index + 1]
+                if right.track != left.track:
+                    break
+                if abs(left.start + left.duration - right.start) > .001:
+                    break
+                link = cuts.get((left.id, right.id))
+                if link is None or link.track != left.track:
+                    break
+                if not video and link.audio != "crossfade":
+                    break
+                if not self._render_handles_ok(left, right, link, video, probes, render_warnings):
+                    break
+                links.append(link)
+                members.append(right)
+                index += 1
+            units.append({"clips": members, "links": links})
+            index += 1
+        return units
+
+    def _segment_chain(self, clip, *, width, height, fps, head: float = 0,
+                       fade_in: float = 0, fade_out: float = 0, seg_duration: float = 0) -> str:
+        """Per-clip picture chain for a transition member. Keyframe clocks are shifted
+        by the head extension so animation stays glued to the source content."""
+        local = f"(t-{head:g})"
+        fit = (f"scale={width}:{height}:force_original_aspect_ratio=decrease" if clip.fit == "fit" else
+               f"scale={width}:{height}:force_original_aspect_ratio=increase,crop={width}:{height}" if clip.fit == "fill" else "null")
+        scale = self._escape_expression(self._animated(clip, "scale", clock=local))
+        rotation = self._escape_expression(self._animated(clip, "rotation", clock=local) + "*PI/180")
+        opacity = self._escape_expression(self._animated(clip, "opacity", clock=local))
+        rotate = f",rotate=a='{rotation}':ow=hypot(iw\\,ih):oh=ow:c=none" if clip.rotation or clip.keyframes.get("rotation") else ""
+        alpha = (f",format=yuva444p,geq=lum='lum(X,Y)':cb='cb(X,Y)':cr='cr(X,Y)':a='alpha(X,Y)*{opacity}'"
+                 if clip.keyframes.get("opacity") else f",colorchannelmixer=aa={clip.opacity:g}")
+        fade = ""
+        if fade_in:
+            fade += f",fade=t=in:st=0:d={fade_in:g}:alpha=1"
+        if fade_out:
+            fade += f",fade=t=out:st={max(0, seg_duration - fade_out):g}:d={fade_out:g}:alpha=1"
+        return (f"setpts=(PTS-STARTPTS)/{clip.speed},fps={fps},"
+                f"{fit},setsar=1,format=rgba,scale=w='max(2\\,trunc(iw*{scale}/2)*2)':"
+                f"h='max(2\\,trunc(ih*{scale}/2)*2)':eval=frame"
+                f"{rotate}{alpha}{fade},"
+                f"pad={width}:{height}:(ow-iw)/2:(oh-ih)/2:color=black@0,format=rgba")
+
+    def _render_group(self, unit, sequence, output: Path, width, height, fps, seq_duration, edges,
+                      cmd, filters, probes, input_index, video_label, audio_labels,
+                      render_warnings):
+        """Blend one transition group and composite it as a single timeline unit."""
+        members, links = unit["clips"], unit["links"]
+        video = members[0].track.startswith("V")
+        spans = [(link.crossfade_duration or link.duration) if not video else link.duration for link in links]
+        head = [0.0] * len(members)
+        tail = [0.0] * len(members)
+        for pos, span in enumerate(spans):
+            tail[pos] += span / 2
+            head[pos + 1] += span / 2
+        durations = [c.duration for c in members]
+        ext = [durations[pos] + head[pos] + tail[pos] for pos in range(len(members))]
+        start = members[0].start
+        first_edge = edges.get(members[0].id)
+        last_edge = edges.get(members[-1].id)
+        fade_in = first_edge.duration if first_edge and first_edge.edge == "in" else 0
+        fade_out = last_edge.duration if last_edge and last_edge.edge == "out" else 0
+        if video:
+            group_dur = sum(ext)
+            cmd += ["-f", "lavfi", "-i", f"color=c=black@0:s={width}x{height}:r={fps}:d={group_dur:.6f}"]
+            input_index += 1
+            canvas = input_index
+            filters.append(f"[{canvas}:v]format=rgba[canvas{canvas}]")
+            full = []
+            for pos, clip in enumerate(members):
+                source = Path(clip.source)
+                require_distinct(output, source)
+                input_index += 1
+                index = input_index
+                if clip.kind == "image":
+                    cmd += ["-loop", "1", "-framerate", str(fps), "-t",
+                            str(ext[pos] * clip.speed), "-i", str(source)]
+                else:
+                    src_ss = max(0.0, clip.source_start - head[pos] * clip.speed)
+                    src_t = (clip.source_end - clip.source_start) + (head[pos] + tail[pos]) * clip.speed
+                    cmd += ["-ss", f"{src_ss:.6f}", "-t", f"{src_t:.6f}", "-i", str(source)]
+                member_fade_in = fade_in if pos == 0 else 0
+                member_fade_out = fade_out if pos == len(members) - 1 else 0
+                filters.append(f"[{index}:v]{self._segment_chain(clip, width=width, height=height, fps=fps, head=head[pos], fade_in=member_fade_in, fade_out=member_fade_out, seg_duration=ext[pos])},trim=duration={ext[pos]:.6f}[gs{index}]")
+                x = self._escape_expression(self._animated(clip, "x", clock=f"(t-{head[pos]:g})"))
+                y = self._escape_expression(self._animated(clip, "y", clock=f"(t-{head[pos]:g})"))
+                filters.append(f"[canvas{canvas}][gs{index}]overlay=x='(W-w)/2+{x}':y='(H-h)/2+{y}':eof_action=pass[full{index}]")
+                full.append(f"[full{index}]")
+            label, acc = full[0], ext[0]
+            for pos, link in enumerate(links):
+                offset = acc - link.duration
+                filters.append(f"{label}{full[pos + 1]}xfade=transition={XFADE_FOR[link.type]}"
+                               f":duration={link.duration:g}:offset={max(0, offset):g}[gx{input_index}_{pos}]")
+                label = f"[gx{input_index}_{pos}]"
+                acc += ext[pos + 1] - link.duration
+            filters.append(f"{label}setpts=PTS+{start}/TB[gts{input_index}]")
+            filters.append(f"[{video_label}][gts{input_index}]overlay=0:0:"
+                           f"eof_action=pass:repeatlast=0:enable='gte(t,{start})*lt(t,{start + acc})'[base{input_index}]")
+            video_label = f"base{input_index}"
+        else:
+            aud = []
+            for pos, clip in enumerate(members):
+                source = Path(clip.source)
+                require_distinct(output, source)
+                input_index += 1
+                index = input_index
+                src_ss = max(0.0, clip.source_start - head[pos] * clip.speed)
+                src_t = (clip.source_end - clip.source_start) + (head[pos] + tail[pos]) * clip.speed
+                cmd += ["-ss", f"{src_ss:.6f}", "-t", f"{src_t:.6f}", "-i", str(source)]
+                rate = clip.speed
+                tempos = []
+                while rate < .5:
+                    tempos.append("atempo=0.5")
+                    rate /= .5
+                while rate > 2:
+                    tempos.append("atempo=2")
+                    rate /= 2
+                tempos.append(f"atempo={rate:g}")
+                member_fade_in = f",afade=t=in:st=0:d={fade_in:g}" if pos == 0 and fade_in else ""
+                member_fade_out = (f",afade=t=out:st={max(0, ext[pos] - fade_out):g}:d={fade_out:g}"
+                                   if pos == len(members) - 1 and fade_out else "")
+                filters.append(f"[{index}:a]asetpts=PTS-STARTPTS,aresample=48000,{','.join(tempos)},"
+                               f"volume={clip.volume},atrim=duration={ext[pos]:.6f}"
+                               f"{member_fade_in}{member_fade_out}[ga{index}]")
+                aud.append(f"[ga{index}]")
+            label = aud[0]
+            for pos, span in enumerate(spans):
+                room = min(ext[pos], ext[pos + 1]) - .05
+                cross = max(.05, min(span, room))
+                filters.append(f"{label}{aud[pos + 1]}acrossfade=d={cross:g}:c1=tri:c2=tri[gax{input_index}_{pos}]")
+                label = f"[gax{input_index}_{pos}]"
+            filters.append(f"{label}adelay={round(start * 1000)}:all=1[gaud{input_index}]")
+            audio_labels.append(f"[gaud{input_index}]")
+        return input_index, video_label, audio_labels
 
     def render_clips(self, source: Path, clips: Iterable[Clip], output_dir: Path, *, watermark: Path | None = None) -> list[Path]:
         output_dir.mkdir(parents=True, exist_ok=True)

@@ -13,6 +13,10 @@ from .util import PipelineError
 
 TRACKS = ("V2", "V1", "A1", "A2")
 INTERPOLATIONS = ("hold", "linear", "ease-in", "ease-out", "ease-in-out")
+TRANSITION_TYPES = ("cross-dissolve", "dip-black", "dip-white", "fade", "wipe", "slide")
+OVERLAY_POSITIONS = ("top-left", "top-center", "top-right", "center-left", "center",
+                     "center-right", "bottom-left", "bottom-center", "bottom-right", "custom")
+OVERLAY_BLENDS = ("normal", "screen", "multiply", "overlay")
 
 
 class StrictModel(BaseModel):
@@ -101,6 +105,76 @@ class Marker(StrictModel):
     label: str = Field(default="Marker", max_length=200)
 
 
+class Transition(StrictModel):
+    """A first-class edit-point effect between two adjacent clips (or a sequence edge).
+
+    `cut` transitions blend outgoing -> incoming around `cut_time`. `in`/`out` edges
+    are fades from/to black at a scope boundary and reference a single clip.
+    """
+
+    id: str = Field(min_length=1, max_length=100)
+    track: str = Field(pattern=r"^(V[1-8]|A[1-8])$")
+    cut_time: float = Field(ge=0, le=86400)
+    outgoing_id: str = ""
+    incoming_id: str = ""
+    edge: Literal["cut", "in", "out"] = "cut"
+    type: Literal["cross-dissolve", "dip-black", "dip-white", "fade", "wipe", "slide"] = "cross-dissolve"
+    duration: float = Field(default=.5, gt=0, le=5)
+    audio: Literal["none", "crossfade"] = "crossfade"
+    crossfade_duration: float | None = Field(default=None, gt=0, le=10)
+
+    @model_validator(mode="after")
+    def coherent(self):
+        if self.edge == "cut" and (not self.outgoing_id or not self.incoming_id):
+            raise ValueError("Cut transitions reference both adjacent clips")
+        if self.edge == "in" and (self.outgoing_id or not self.incoming_id):
+            raise ValueError("Fade-in transitions reference only the incoming clip")
+        if self.edge == "out" and (not self.outgoing_id or self.incoming_id):
+            raise ValueError("Fade-out transitions reference only the outgoing clip")
+        return self
+
+
+class Overlay(StrictModel):
+    """A persistent image overlay (watermark). `start`/`end` of None means the whole sequence."""
+
+    id: str = Field(min_length=1, max_length=100)
+    kind: Literal["watermark"] = "watermark"
+    path: str = Field(min_length=1)
+    position: Literal["top-left", "top-center", "top-right", "center-left", "center",
+                      "center-right", "bottom-left", "bottom-center", "bottom-right", "custom"] = "bottom-right"
+    x: float | None = Field(default=None, ge=0, le=8192)
+    y: float | None = Field(default=None, ge=0, le=8192)
+    scale: float = Field(default=.15, gt=0, le=1)
+    opacity: float = Field(default=.85, ge=0, le=1)
+    margin_x: float = Field(default=24, ge=0, le=2048)
+    margin_y: float = Field(default=24, ge=0, le=2048)
+    start: float | None = Field(default=None, ge=0, le=86400)
+    end: float | None = Field(default=None, ge=0, le=86400)
+    fade_in: float = Field(default=0, ge=0, le=60)
+    fade_out: float = Field(default=0, ge=0, le=60)
+    keep_aspect: bool = True
+    rotation: float = Field(default=0, ge=-360, le=360)
+    blend: Literal["normal", "screen", "multiply", "overlay"] = "normal"
+
+    @model_validator(mode="after")
+    def coherent(self):
+        if self.position == "custom" and (self.x is None or self.y is None):
+            raise ValueError("Custom overlay position needs X and Y")
+        if self.start is not None and self.end is not None and self.end <= self.start:
+            raise ValueError("Overlay end must be after its start")
+        window = (self.end or 86400) - (self.start or 0)
+        if self.fade_in + self.fade_out > window:
+            raise ValueError("Overlay fades must fit inside its time range")
+        return self
+
+
+class RenderPasses(StrictModel):
+    """Independently toggled export steps. Timeline edits are always rendered."""
+
+    transitions: bool = True
+    watermark: bool = True
+
+
 class RenderSettings(StrictModel):
     filename: str = Field(default="timeline_sequence.mp4", pattern=r"^[^/\\]+$")
     output_folder: str | None = None
@@ -113,6 +187,7 @@ class RenderSettings(StrictModel):
     width: int | None = Field(default=None, ge=64, le=4096, multiple_of=2)
     height: int | None = Field(default=None, ge=64, le=4096, multiple_of=2)
     fps: float | None = Field(default=None, ge=1, le=120)
+    passes: RenderPasses = Field(default_factory=RenderPasses)
 
     @model_validator(mode="after")
     def compatible(self):
@@ -138,6 +213,8 @@ class Sequence(StrictModel):
     tracks: list[Track] = Field(default_factory=lambda: [Track(id=t) for t in TRACKS])
     clips: list[SequenceClip] = Field(default_factory=list, max_length=500)
     markers: list[Marker] = Field(default_factory=list, max_length=500)
+    transitions: list[Transition] = Field(default_factory=list, max_length=500)
+    overlays: list[Overlay] = Field(default_factory=list, max_length=25)
 
     @property
     def duration(self):
@@ -156,6 +233,16 @@ class Sequence(StrictModel):
             raise ValueError("Every clip must reference a sequence track")
         if len({c.id for c in self.clips}) != len(self.clips):
             raise ValueError("Clip IDs must be unique")
+        if len({t.id for t in self.transitions}) != len(self.transitions):
+            raise ValueError("Transition IDs must be unique")
+        if len({o.id for o in self.overlays}) != len(self.overlays):
+            raise ValueError("Overlay IDs must be unique")
+        # Deleting a clip must never break unrelated saves: transitions that lost
+        # a referenced clip are pruned instead of failing validation.
+        live = {c.id for c in self.clips}
+        self.transitions = [t for t in self.transitions
+                            if (not t.outgoing_id or t.outgoing_id in live)
+                            and (not t.incoming_id or t.incoming_id in live)]
         for track in self.tracks:
             clips = sorted((c for c in self.clips if c.track == track.id and c.enabled), key=lambda c: c.start)
             for left, right in zip(clips, clips[1:]):
@@ -203,6 +290,8 @@ def export_sequence(sequence: Sequence, path: Path, fmt: str) -> list[str]:
         return warnings
     if fmt == "edl":
         video = [c for c in active if c.track.startswith("V")]
+        if sequence.transitions:
+            raise PipelineError("CMX EDL supports cuts only; remove transitions or use OTIO for layered edits or MP4 for baked effects.")
         if len({c.track for c in video}) > 1 or any(c.speed != 1 or c.kind == "image" or c.opacity != 1 or c.scale != 1 or c.rotation or c.x or c.y or c.keyframes for c in video):
             raise PipelineError("CMX EDL supports a single video track with cuts only. Use OTIO for layered edits or MP4 for baked effects.")
         lines = ["TITLE: SMARTCUT", "FCM: NON-DROP FRAME", ""]
@@ -241,4 +330,8 @@ def export_sequence(sequence: Sequence, path: Path, fmt: str) -> list[str]:
     otio.adapters.write_to_file(timeline, str(path))
     if any(c.opacity != 1 or c.scale != 1 or c.rotation or c.x or c.y or c.volume != 1 for c in active):
         warnings.append("OTIO stores transform, opacity and volume as Anna metadata; MP4 bakes them into the output.")
+    if sequence.transitions:
+        warnings.append("OTIO carries cuts; transitions stay in the Anna project and are baked by MP4 render.")
+    if sequence.overlays:
+        warnings.append("OTIO carries cuts; watermark overlays stay in the Anna project and are baked by MP4 render.")
     return warnings
