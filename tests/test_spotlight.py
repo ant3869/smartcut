@@ -154,6 +154,15 @@ def test_plan_shorts_tracks_used_moments_per_source():
     assert {(str(h.source), h.peak) for s in shorts for h in s.highlights} == {("a.mp4", 14), ("b.mp4", 14)}
 
 
+def test_plan_shorts_applies_dedup_gap_against_used_peaks():
+    cands = [hl(10, 18, 14, 9.0, "a.mp4"), hl(11, 19, 15, 8.0, "a.mp4"),
+             hl(50, 58, 54, 7.0, "a.mp4")]
+    evidence = {"a.mp4": rich_evidence()}
+    shorts = plan_shorts(cands, evidence, {"short_count": 2, "target_seconds": 30,
+                                           "max_clips": 1, "dedup_gap": 6, "weights": {}})
+    assert [s.highlights[0].peak for s in shorts] == [14, 54]
+
+
 def test_frame_interval_flows_from_saved_analysis(monkeypatch):
     import pipeline.highlights as highlights_mod
     seen = {}
@@ -268,12 +277,13 @@ def test_gather_candidates_reuses_waste_walls():
 def make_job(cfg, name, source, duration=3.0, peaks=None):
     import json
     from pathlib import Path
+    from pipeline.util import source_fingerprint
     job = Path(cfg["work_dir"]) / "jobs" / name
     job.mkdir(parents=True, exist_ok=True)
     peaks = peaks if peaks is not None else [(0.5, 9.0, "person laughing loudly"),
                                              (1.5, 8.0, "person talking calmly"),
                                              (2.5, 8.5, "bright action moment")]
-    plan = {"source": str(source), "source_sha256": "a" * 64, "duration": duration,
+    plan = {"source": str(source), "source_sha256": source_fingerprint(source)["sha256"], "duration": duration,
             "observations": [{"timestamp": t, "score": s, "description": d,
                               "keep": True, "dark": False} for t, s, d in peaks],
             "waste_intervals": [],
@@ -372,6 +382,11 @@ def test_shorts_apply_creates_multiple_editable_sequences(stage):
     client, _, cfg, source = stage
     peaks = [(float(t), 8.0 + (t % 3) * .4, f"lively moment {t}") for t in range(1, 20, 2)]
     make_job(cfg, "j1", source, duration=20.0, peaks=peaks)
+    plan_path = Path(cfg["work_dir"]) / "jobs" / "j1" / "edit_plan.json"
+    plan_data = json.loads(plan_path.read_text())
+    plan_data["transcript"]["segments"] = [{"start": 4.5, "end": 5.5, "text": "hello there"}]
+    plan_data["transcript"]["words"] = [{"start": 4.5, "end": 4.7, "word": "hello"}]
+    plan_path.write_text(json.dumps(plan_data))
     master = create_project(client)
     add_asset(client, master["id"], source)
     response = client.post(f"/api/projects/{master['id']}/shorts/apply",
@@ -465,6 +480,46 @@ def test_render_respects_intro_toggle(stage):
     assert (plain["final_output"]["duration"] - short["final_output"]["duration"]) == pytest.approx(3.0, abs=.4)
 
 
+def _short_render_setup(stage, short_spec):
+    import json
+    import shutil
+    from pipeline.brain import PipelineBrain
+    from pipeline.sequence import from_plan
+    from pipeline.util import source_fingerprint
+    client, _, cfg, source = stage
+    bumper = str(Path(cfg["work_dir"]) / "bumper.mp4")
+    Path(cfg["work_dir"]).mkdir(parents=True, exist_ok=True)
+    shutil.copyfile(str(source), bumper)
+    cfg["bumper_path"] = bumper
+    master = create_project(client)
+    plan = {"source": str(source), "source_sha256": source_fingerprint(source)["sha256"],
+            "duration": 3, "clips": [{"start": 0, "end": 3}]}
+    sequence = from_plan(plan, width=64, height=64, fps=10, has_audio=False)
+    project_dir = Path(cfg["work_dir"]) / "projects" / master["id"]
+    data = json.loads((project_dir / "project.json").read_text())
+    data["short_spec"] = short_spec
+    (project_dir / "project.json").write_text(json.dumps(data))
+    return PipelineBrain(cfg), source, sequence, project_dir
+
+
+def test_render_applies_outro_with_default_settings(stage):
+    from pipeline.util import media_duration
+    brain, source, sequence, project_dir = _short_render_setup(
+        stage, {"intro": False, "outro": True})
+    manifest = brain.render_edit(source, sequence, project_dir=project_dir)
+    assert manifest["final_output"]["duration"] == pytest.approx(6.0, abs=.4)
+
+
+def test_render_allows_hevc_when_bumpers_disabled(stage):
+    from pipeline.sequence import RenderSettings
+    brain, source, sequence, project_dir = _short_render_setup(
+        stage, {"intro": False, "outro": False})
+    settings = RenderSettings(filename="hevc.mp4", output_folder=str(project_dir),
+                              video_codec="libx265", quality="draft")
+    manifest = brain.render_edit(source, sequence, project_dir=project_dir, settings=settings)
+    assert manifest["final_output"]["duration"] == pytest.approx(3.0, abs=.4)
+
+
 def test_media_restricted_to_project_assets(stage):
     client, _, cfg, source = stage
     make_job(cfg, "j1", source)
@@ -481,3 +536,20 @@ def test_media_restricted_to_project_assets(stage):
     response = client.post(f"/api/projects/{master['id']}/shorts/plan",
                            json={"source_kind": "sequence", "sequence": window, "options": {}})
     assert response.status_code == 400
+
+
+def test_stale_evidence_rejected(stage):
+    import cv2
+    import numpy as np
+    client, _, cfg, source = stage
+    make_job(cfg, "j1", source)
+    master = create_project(client)
+    add_asset(client, master["id"], source)
+    writer = cv2.VideoWriter(str(source), cv2.VideoWriter_fourcc(*"mp4v"), 10, (64, 64))
+    for _ in range(30):
+        writer.write(np.full((64, 64, 3), (240, 0, 0), dtype=np.uint8))
+    writer.release()
+    response = client.post(f"/api/projects/{master['id']}/highlights/plan",
+                           json={"source_kind": "media", "job_ids": ["j1"], "options": {}})
+    assert response.status_code == 400
+    assert "re-analyze" in response.json()["detail"]
