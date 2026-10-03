@@ -408,8 +408,11 @@ class PipelineBrain:
         content = root / f".{final.stem}.{token}.content.mp4" if bumper else staged
         try:
             report("Blade · compositing sequence", 30)
+            render_notes: list = []
+            passes = settings.passes.model_dump() if settings and settings.passes else None
             self.blade.render_sequence(sequence, content, watermark=self._watermark(), settings=settings,
-                                       progress=lambda percent: report("Blade · rendering", round(percent)))
+                                       progress=lambda percent: report("Blade · rendering", round(percent)),
+                                       passes=passes, warnings=render_notes)
             if bumper:
                 report("Blade · adding bumper", 85)
                 self.blade.prepend_bumper(bumper, content, staged)
@@ -418,6 +421,8 @@ class PipelineBrain:
             staged.replace(final)
             manifest = {"source": str(source), "mode": "sequence", "sequence_revision": sequence.revision,
                         "final_output": self.blade.verify(final), "completed_at": datetime.now(timezone.utc).isoformat()}
+            if render_notes:
+                manifest["warnings"] = render_notes
             write_json(job / "render_manifest.json", manifest)
             return manifest
         finally:
