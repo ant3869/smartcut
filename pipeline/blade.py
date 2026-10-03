@@ -240,8 +240,8 @@ class FfmpegBlade:
             return eq
         return f"{eq}:enable='{'+'.join(windows)}'"
 
-    def prepend_bumper(self, bumper: Path, main: Path, output: Path) -> Path:
-        """Concat a short bumper asset before the assembled final render.
+    def prepend_bumper(self, bumper: Path, main: Path, output: Path, *, position: str = "front") -> Path:
+        """Concat a short bumper asset before (or after, with position="back") the main render.
 
         Normalizes the bumper to the main render's resolution/fps/SAR (letterboxed, never
         cropped) instead of relying on the bumper already matching exactly, so a concat
@@ -274,6 +274,10 @@ class FfmpegBlade:
             f"[1:v]setsar=1,fps={fps},settb=AVTB,setpts=PTS-STARTPTS[mv]",
         ]
 
+        if position not in ("front", "back"):
+            raise PipelineError("Bumper position must be front or back")
+        first, second = ("bv", "mv") if position == "front" else ("mv", "bv")
+        first_a, second_a = ("ba", "ma") if position == "front" else ("ma", "ba")
         if use_audio:
             next_input = 2
             if bumper_has_audio:
@@ -287,9 +291,9 @@ class FfmpegBlade:
             else:
                 cmd += ["-f", "lavfi", "-i", "anullsrc=r=48000:cl=stereo"]
                 filters.append(f"[{next_input}:a]atrim=duration={media_duration(main):.3f},asetpts=PTS-STARTPTS[ma]")
-            filters.append("[bv][ba][mv][ma]concat=n=2:v=1:a=1[outv][outa]")
+            filters.append(f"[{first}][{first_a}][{second}][{second_a}]concat=n=2:v=1:a=1[outv][outa]")
         else:
-            filters.append("[bv][mv]concat=n=2:v=1:a=0[outv]")
+            filters.append(f"[{first}][{second}]concat=n=2:v=1:a=0[outv]")
 
         cmd += ["-filter_complex", ";".join(filters), "-map", "[outv]"]
         if use_audio:

@@ -25,6 +25,19 @@ from .util import PipelineError, read_json, source_fingerprint, write_json, ffpr
 from .lifecycle import contain_children, spawn_detached
 from .settings import SETTINGS, ensure_config, public_settings, validate_settings, revision
 from .sequence import Sequence, RenderSettings, from_plan, export_sequence
+try:  # Live when the transitions/watermark pass work merges; shorts degrade honestly without it.
+    from .passes import apply_transitions as apply_transition_pass
+    from .passes import upsert_watermark as upsert_watermark_pass
+    HAS_PASSES = True
+except ImportError:
+    HAS_PASSES = False
+from .spotlight import build_sequence as build_spotlight_sequence
+from .spotlight import captions_srt as spotlight_captions
+from .spotlight import gather_candidates as spotlight_candidates
+from .spotlight import load_evidence as spotlight_evidence
+from .spotlight import plan_shorts as spotlight_shorts
+from .spotlight import rescore as spotlight_rescore
+from .spotlight import select as spotlight_select
 
 MEDIA_EXTENSIONS = {".mp4", ".mov", ".mkv", ".avi", ".webm", ".mp3", ".wav", ".m4a", ".aac", ".flac", ".ogg", ".png", ".jpg", ".jpeg", ".webp", ".bmp"}
 VIDEO_EXTENSIONS = {".mp4", ".mov", ".mkv", ".avi", ".webm"}
@@ -101,6 +114,14 @@ class AssetRequest(BaseModel):
 class RenderRequest(BaseModel):
     settings: RenderSettings | None = None
     dry_run: bool = False
+
+
+class SpotlightRequest(BaseModel):
+    source_kind: str = "media"
+    job_ids: list[str] = []
+    sequence: Sequence | None = None
+    options: dict[str, Any] = {}
+    name: str | None = None
 
 
 def load_config(path: Path) -> dict[str, Any]:
@@ -713,6 +734,185 @@ def create_app(config_path: str | Path = DEFAULT_CONFIG) -> FastAPI:
         out = project_path(project_id) / f"timeline.{fmt}"
         warnings = export_sequence(sequence, out, fmt)
         return {"ok": True, "path": str(out), "warnings": warnings}
+
+    def spotlight_inputs(project_id: str, request: SpotlightRequest):
+        """Evidence + hashes for highlight/shorts sources. Reads only; masters untouched."""
+        if request.source_kind not in ("media", "current-source", "sequence"):
+            raise HTTPException(400, "Source must be current source, sequence, or project media")
+        project_path(project_id)
+        options = request.options
+        evidence_map, sha_map, segments_map, warnings = {}, {}, {}, []
+
+        def add_job_evidence(job_id: str, windows=None):
+            folder = job_path(job_id)
+            plan = safe_read_json(folder / "edit_plan.json")
+            if not plan:
+                raise HTTPException(400, f"Analyze {job_id} before generating highlights")
+            evidence = spotlight_evidence(plan)
+            evidence_map[evidence.source] = evidence
+            try:
+                sha_map[evidence.source] = media_info(evidence.source)["sha256"]
+            except HTTPException:
+                sha_map[evidence.source] = plan.get("source_sha256") or ""
+            segments_map[evidence.source] = evidence.segments
+            segments_map[str(Path(evidence.source).resolve())] = evidence.segments
+            return evidence
+
+        if request.source_kind == "sequence":
+            if request.sequence is None:
+                raise HTTPException(400, "Send the sequence to select from")
+            jobs = {job.get("source"): job.get("id") for job in all_jobs() if job.get("source")}
+            windows: dict[str, list] = {}
+            for clip in request.sequence.clips:
+                if not clip.track.startswith("V"):
+                    continue
+                windows.setdefault(clip.source, []).append((clip.source_start, clip.source_end))
+                sha_map.setdefault(clip.source, clip.source_sha256)
+            if not windows:
+                raise HTTPException(400, "The sequence has no video clips to select from")
+            for source, spans in windows.items():
+                job_id = jobs.get(source)
+                if not job_id:
+                    warnings.append(f"No analysis for {Path(source).name}; skipped")
+                    continue
+                evidence = add_job_evidence(job_id)
+                segments_map[source] = evidence.segments
+                evidence_map[source] = evidence
+                evidence._seq_windows = spans
+            if not evidence_map:
+                raise HTTPException(400, "None of the sequence media has analysis yet")
+        else:
+            if not request.job_ids:
+                raise HTTPException(400, "Select analyzed media first")
+            for job_id in request.job_ids:
+                add_job_evidence(job_id)
+        return evidence_map, sha_map, segments_map, warnings
+
+    def collect_candidates(evidence_map, options):
+        candidates = []
+        for source, evidence in evidence_map.items():
+            windows = getattr(evidence, "_seq_windows", None)
+            gather_options = {**options, "windows": windows} if windows else dict(options)
+            candidates += spotlight_candidates(evidence, gather_options)
+        return candidates
+
+    def create_derived_project(name: str, sequence: Sequence, sources: list[str], extra: dict) -> dict:
+        project_id = uuid.uuid4().hex[:16]
+        folder = work_dir() / "projects" / project_id
+        folder.mkdir(parents=True, exist_ok=True)
+        assets = [media_info(source) for source in dict.fromkeys(sources)]
+        data = {"id": project_id, "name": name, "assets": assets,
+                "updated_at": utc_now(), **extra}
+        write_json(folder / "sequence.json", sequence.model_dump())
+        write_json(folder / "project.json", data)
+        return project_view(project_id)
+
+    @app.post("/api/projects/{project_id}/highlights/plan")
+    def highlights_plan(project_id: str, request: SpotlightRequest):
+        project_path(project_id)
+        evidence_map, _, _, warnings = spotlight_inputs(project_id, request)
+        candidates = collect_candidates(evidence_map, request.options)
+        ranked = spotlight_rescore(candidates, evidence_map, request.options.get("weights"))
+        result = spotlight_select(candidates, evidence_map, request.options)
+        return {"ranked": [{"source": str(s.highlight.source), "start": s.highlight.clip.start,
+                            "end": s.highlight.clip.end, "peak": s.highlight.peak,
+                            "score": s.score, "signals": s.signals} for s in ranked],
+                "selected": [h.peak for h in result.selected],
+                "skipped": result.skipped, "total_seconds": result.total_seconds,
+                "warnings": warnings}
+
+    @app.post("/api/projects/{project_id}/highlights/apply")
+    def highlights_apply(project_id: str, request: SpotlightRequest):
+        master = project_view(project_id)
+        evidence_map, sha_map, _, warnings = spotlight_inputs(project_id, request)
+        candidates = collect_candidates(evidence_map, request.options)
+        result = spotlight_select(candidates, evidence_map, request.options)
+        if not result.selected:
+            raise HTTPException(400, "No highlight moments found with these settings")
+        options = request.options
+        sequence = build_spotlight_sequence(
+            result.selected, sha_map=sha_map,
+            width=int(options.get("width", 1280)), height=int(options.get("height", 720)),
+            fps=float(options.get("fps", 30)), fit=str(options.get("fit", "fit")))
+        name = (request.name or "").strip() or f"{master['name']} · Highlights"
+        sources = [str(h.source) for h in result.selected]
+        project = create_derived_project(
+            name, sequence, sources,
+            {"derived_from": {"project_id": project_id, "kind": "highlights"}})
+        return {"project": project, "total_seconds": result.total_seconds,
+                "skipped": result.skipped, "warnings": warnings}
+
+    @app.post("/api/projects/{project_id}/shorts/plan")
+    def shorts_plan(project_id: str, request: SpotlightRequest):
+        project_path(project_id)
+        evidence_map, _, _, warnings = spotlight_inputs(project_id, request)
+        candidates = collect_candidates(evidence_map, request.options)
+        shorts = spotlight_shorts(candidates, evidence_map, request.options)
+        return {"shorts": [{"peaks": [h.peak for h in short.highlights], "total": short.total,
+                            "width": short.width, "height": short.height, "spec": short.spec}
+                           for short in shorts], "warnings": warnings}
+
+    @app.post("/api/projects/{project_id}/shorts/apply")
+    def shorts_apply(project_id: str, request: SpotlightRequest):
+        master = project_view(project_id)
+        evidence_map, sha_map, segments_map, warnings = spotlight_inputs(project_id, request)
+        candidates = collect_candidates(evidence_map, request.options)
+        shorts = spotlight_shorts(candidates, evidence_map, request.options)
+        if not shorts:
+            raise HTTPException(400, "No short-form moments found with these settings")
+        options = request.options
+        projects = []
+        for index, short in enumerate(shorts, start=1):
+            sequence = build_spotlight_sequence(
+                short.highlights, sha_map=sha_map, width=short.width, height=short.height,
+                fps=float(options.get("fps", 30)), fit=str(options.get("fit", "fill")))
+            if short.spec.get("transitions") not in (None, "none"):
+                if not HAS_PASSES:
+                    warnings.append(f"Short {index}: transitions need the transitions pass update")
+                else:
+                    try:
+                        durations = {}
+                        for source in {c.source for c in sequence.clips}:
+                            try:
+                                durations[source] = float(probe(Path(source))["format"]["duration"])
+                            except (KeyError, TypeError, ValueError, PipelineError):
+                                durations[source] = None
+                        sequence, _ = apply_transition_pass(
+                            sequence, {"type": short.spec["transitions"], "duration": .4,
+                                       "audio": "crossfade", "replace_existing": True}, durations)
+                    except PipelineError as exc:
+                        warnings.append(f"Short {index}: transitions skipped ({exc})")
+            if short.spec.get("watermark"):
+                watermark_path = options.get("watermark_path") or cfg().get("watermark_path")
+                if not HAS_PASSES:
+                    warnings.append(f"Short {index}: watermark needs the watermark pass update")
+                elif watermark_path and Path(watermark_path).is_file():
+                    sequence, _ = upsert_watermark_pass(
+                        sequence, {"path": str(watermark_path), "position": "top-right",
+                                   "scale": .18, "replace_existing": True})
+                else:
+                    warnings.append(f"Short {index}: watermark skipped (no image configured)")
+            if short.spec.get("music_bed"):
+                warnings.append(f"Short {index}: music bed is stored but the renderer mixes no bed yet")
+            if short.spec.get("cta"):
+                warnings.append(f"Short {index}: CTA card is stored but not rendered yet")
+            name = f"{master['name']} · Short {index}"
+            project = create_derived_project(
+                name, sequence, [str(h.source) for h in short.highlights],
+                {"derived_from": {"project_id": project_id, "kind": "short"},
+                 "short_spec": {**short.spec, "intro": bool(options.get("intro", False)),
+                                "outro": bool(options.get("outro", False))}})
+            if short.spec.get("captions"):
+                srt = spotlight_captions(short.highlights, segments_map)
+                if srt.strip():
+                    folder = project_path(project["id"])
+                    (folder / "captions.srt").write_text(srt, encoding="utf-8")
+                    data = read_json(folder / "project.json")
+                    data["captions_path"] = str(folder / "captions.srt")
+                    write_json(folder / "project.json", data)
+                    project = project_view(project["id"])
+            projects.append(project)
+        return {"projects": projects, "warnings": warnings}
 
     @app.get("/api/summary")
     def summary() -> dict[str, Any]:
