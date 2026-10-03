@@ -173,6 +173,8 @@ class RenderPasses(StrictModel):
 
     transitions: bool = True
     watermark: bool = True
+    cleanup: bool = True
+    music_bed: bool = True
 
 
 class RenderSettings(StrictModel):
@@ -202,6 +204,43 @@ class RenderSettings(StrictModel):
         return self
 
 
+class AudioCleanup(StrictModel):
+    """Standalone cleanup pass settings. Saved on the sequence, honored at render."""
+
+    enabled: bool = True
+    scope: Literal["mix", "clips"] = "mix"
+    normalize: bool = True
+    target_lufs: float = Field(default=-16, ge=-30, le=-8)
+    noise_reduce: bool = False
+    noise_amount: float = Field(default=12, ge=0, le=30)
+    highpass: bool = False
+    highpass_freq: float = Field(default=80, ge=20, le=500)
+    compress: bool = False
+    limiter: bool = False
+    deesser: bool = False
+    voice_preset: bool = False
+
+
+class MusicBed(StrictModel):
+    """Generated music bed. Clips are first-class sequence data; spec re-applies."""
+
+    enabled: bool = True
+    music_path: str
+    track: str = Field(default="A2", pattern=r"^A[1-8]$")
+    start: float = Field(default=0, ge=0, le=86400)
+    end: float | None = Field(default=None, ge=0, le=86400)
+    loop: bool = True
+    volume: float = Field(default=.25, ge=0, le=1)
+    fade_in: float = Field(default=1, ge=0, le=30)
+    fade_out: float = Field(default=2, ge=0, le=30)
+    duck: bool = False
+    duck_amount: float = Field(default=.4, ge=0, le=1)
+    duck_attack: float = Field(default=.02, ge=.005, le=1)
+    duck_release: float = Field(default=.4, ge=.05, le=3)
+    beat_align: bool = False
+    clip_ids: list[str] = Field(default_factory=list)
+
+
 class Sequence(StrictModel):
     version: Literal[1] = 1
     revision: int = Field(default=0, ge=0)
@@ -215,6 +254,8 @@ class Sequence(StrictModel):
     markers: list[Marker] = Field(default_factory=list, max_length=500)
     transitions: list[Transition] = Field(default_factory=list, max_length=500)
     overlays: list[Overlay] = Field(default_factory=list, max_length=25)
+    cleanup: AudioCleanup | None = None
+    music_bed: MusicBed | None = None
 
     @property
     def duration(self):

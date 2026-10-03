@@ -108,8 +108,28 @@ class FfmpegBlade:
         filters = ["[0:v]format=yuv420p[base0]"]
         audio_labels = []
         video_label = "base0"
-        passes = {"transitions": True, "watermark": True, **(passes or {})}
+        passes = {"transitions": True, "watermark": True, "cleanup": True, "music_bed": True,
+                  **(passes or {})}
         render_warnings = warnings if warnings is not None else []
+        from .audio import cleanup_chain, duck_chain
+        cleanup_spec = sequence.cleanup
+        if not (passes["cleanup"] and cleanup_spec and cleanup_spec.enabled):
+            cleanup_spec = None
+        chain, chain_notes = cleanup_chain(cleanup_spec.model_dump() if cleanup_spec else {},
+                                           warnings=True) if cleanup_spec else ("", [])
+        render_warnings.extend(chain_notes)
+        clip_cleanup = f",{chain}" if cleanup_spec and cleanup_spec.scope == "clips" and chain else ""
+        mix_cleanup = chain if cleanup_spec and cleanup_spec.scope == "mix" and chain else ""
+        bed_spec = sequence.music_bed
+        if not (passes["music_bed"] and bed_spec and bed_spec.enabled):
+            bed_spec = None
+        bed_excluded = set(sequence.music_bed.clip_ids) if bed_spec is None and sequence.music_bed else set()
+        if bed_excluded:
+            clips = [c for c in clips if c.id not in bed_excluded]
+            if not clips:
+                raise PipelineError("No enabled clips on unmuted tracks")
+        bed_ids = set(bed_spec.clip_ids) if bed_spec else set()
+        bed_labels: list[str] = []
         probes = {}
         input_index = 0
         cuts, edges = self._transition_lookup(sequence, passes["transitions"])
@@ -119,7 +139,8 @@ class FfmpegBlade:
                 input_index, video_label, audio_labels = self._render_group(
                     unit, sequence, output, width, height, fps, duration, edges,
                     cmd, filters, probes, input_index, video_label, audio_labels,
-                    render_warnings)
+                    render_warnings, clip_cleanup=clip_cleanup,
+                    bed_ids=bed_ids, bed_labels=bed_labels)
                 continue
             clip = unit["clips"][0]
             edge = edges.get(clip.id)
@@ -154,9 +175,11 @@ class FfmpegBlade:
                     rate /= 2
                 tempos.append(f"atempo={rate:g}")
                 filters.append(f"[{index}:a]asetpts=PTS-STARTPTS,aresample=48000,{','.join(tempos)},"
-                               f"volume={clip.volume},atrim=duration={clip.duration:.6f}{fade_a},"
+                               f"volume={clip.volume}{clip_cleanup},atrim=duration={clip.duration:.6f}{fade_a},"
                                f"adelay={round(clip.start * 1000)}:all=1[a{index}]")
                 audio_labels.append(f"[a{index}]")
+                if clip.id in bed_ids:
+                    bed_labels.append(f"[a{index}]")
             else:
                 fit = (f"scale={width}:{height}:force_original_aspect_ratio=decrease" if clip.fit == "fit" else
                        f"scale={width}:{height}:force_original_aspect_ratio=increase,crop={width}:{height}" if clip.fit == "fill" else "null")
@@ -206,7 +229,29 @@ class FfmpegBlade:
                         f"[{video_label}][wm]overlay=W-w-10:H-h-10:format=auto[watermarked]"]
             video_label = "watermarked"
         filters.append(f"anullsrc=r=48000:cl=stereo,atrim=duration={duration:.6f}[silence]")
-        filters.append(f"[silence]{''.join(audio_labels)}amix=inputs={len(audio_labels) + 1}:normalize=0:duration=first[aout]")
+        bed_set = set(bed_labels)
+        main_labels = ["[silence]"] + [label for label in audio_labels if label not in bed_set]
+        duck = bed_spec.duck if bed_spec else False
+        if duck and bed_labels:
+            bed_end = bed_spec.end if bed_spec.end is not None else duration
+            fade_in = (f"afade=t=in:st=0:d={bed_spec.fade_in:g}" if bed_spec.fade_in else "")
+            fade_out = (f"afade=t=out:st={max(0, bed_end - bed_spec.fade_out):g}:d={bed_spec.fade_out:g}"
+                        if bed_spec.fade_out else "")
+            filters.append(f"{''.join(bed_labels)}amix=inputs={len(bed_labels)}:normalize=0[bedmix]")
+            bed_fx = ",".join(f for f in (fade_in, fade_out) if f)
+            filters.append(f"[bedmix]{bed_fx}[bedready]" if bed_fx else "[bedmix]anull[bedready]")
+            filters.append(f"{''.join(main_labels)}amix=inputs={len(main_labels)}:normalize=0[mainmix]")
+            filters.append(f"[mainmix]asplit[mainkey][mainout]")
+            filters.append(f"[bedready][mainkey]{duck_chain(bed_spec.model_dump())}[bedducked]")
+            filters.append(f"[mainout][bedducked]amix=inputs=2:normalize=0:duration=first[aoutraw]")
+        else:
+            if duck and bed_spec:
+                render_warnings.append("Ducking on but no music bed clips rendered; bed plays flat")
+            filters.append(f"{''.join(main_labels + bed_labels)}amix=inputs={len(main_labels) + len(bed_labels)}:normalize=0:duration=first[aoutraw]")
+        if mix_cleanup:
+            filters.append(f"[aoutraw]{mix_cleanup}[aout]")
+        else:
+            filters.append("[aoutraw]anull[aout]")
         output.parent.mkdir(parents=True, exist_ok=True)
         temporary = output.with_name(output.stem + ".rendering" + output.suffix)
         require_distinct(temporary, *(Path(c.source) for c in clips))
@@ -343,7 +388,7 @@ class FfmpegBlade:
 
     def _render_group(self, unit, sequence, output: Path, width, height, fps, seq_duration, edges,
                       cmd, filters, probes, input_index, video_label, audio_labels,
-                      render_warnings):
+                      render_warnings, clip_cleanup="", bed_ids=frozenset(), bed_labels=None):
         """Blend one transition group and composite it as a single timeline unit."""
         members, links = unit["clips"], unit["links"]
         video = members[0].track.startswith("V")
@@ -420,7 +465,7 @@ class FfmpegBlade:
                 member_fade_out = (f",afade=t=out:st={max(0, ext[pos] - fade_out):g}:d={fade_out:g}"
                                    if pos == len(members) - 1 and fade_out else "")
                 filters.append(f"[{index}:a]asetpts=PTS-STARTPTS,aresample=48000,{','.join(tempos)},"
-                               f"volume={clip.volume},atrim=duration={ext[pos]:.6f}"
+                               f"volume={clip.volume}{clip_cleanup},atrim=duration={ext[pos]:.6f}"
                                f"{member_fade_in}{member_fade_out}[ga{index}]")
                 aud.append(f"[ga{index}]")
             label = aud[0]
@@ -431,6 +476,8 @@ class FfmpegBlade:
                 label = f"[gax{input_index}_{pos}]"
             filters.append(f"{label}adelay={round(start * 1000)}:all=1[gaud{input_index}]")
             audio_labels.append(f"[gaud{input_index}]")
+            if bed_labels is not None and any(m.id in bed_ids for m in members):
+                bed_labels.append(f"[gaud{input_index}]")
         return input_index, video_label, audio_labels
 
     def render_clips(self, source: Path, clips: Iterable[Clip], output_dir: Path, *, watermark: Path | None = None) -> list[Path]:

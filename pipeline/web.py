@@ -29,6 +29,14 @@ from .passes import clear_transitions as clear_transition_pass
 from .passes import plan_transitions as plan_transition_pass
 from .passes import remove_watermark as remove_watermark_pass
 from .passes import upsert_watermark as upsert_watermark_pass
+from .audio import add_beat_markers as audio_markers
+from .audio import build_music_bed as audio_bed
+from .audio import cleanup_chain as audio_cleanup_chain
+from .audio import cut_on_beats as audio_cut
+from .audio import detect_beats as audio_beats
+from .audio import remove_music_bed as audio_bed_remove
+from .audio import snap_cuts_to_beats as audio_snap
+from .sequence import AudioCleanup
 from .sequence import Sequence, RenderSettings, from_plan, export_sequence
 try:  # Live when the transitions/watermark pass work merges; shorts degrade honestly without it.
     from .passes import apply_transitions as apply_transition_pass
@@ -133,6 +141,25 @@ class WatermarkRequest(BaseModel):
 
 class SequenceRequest(BaseModel):
     sequence: Sequence
+
+
+class BeatsRequest(BaseModel):
+    sequence: Sequence
+    beats: list[float] = []
+    downbeats: list[float] = []
+    options: dict[str, Any] = {}
+
+
+class BeatsAnalyzeRequest(BaseModel):
+    path: str
+    sensitivity: float = 3.0
+
+
+class BedRequest(BaseModel):
+    sequence: Sequence
+    music_path: str
+    beats: list[float] = []
+    options: dict[str, Any] = {}
 class SpotlightRequest(BaseModel):
     source_kind: str = "media"
     job_ids: list[str] = []
@@ -789,6 +816,97 @@ def create_app(config_path: str | Path = DEFAULT_CONFIG) -> FastAPI:
     def watermark_delete(project_id: str, request: SequenceRequest):
         project_path(project_id)
         sequence, removed = remove_watermark_pass(request.sequence)
+        return {"sequence": sequence.model_dump(), "removed": removed}
+
+    def _beat_options(options: dict) -> dict:
+        """Whitelist beat-edit knobs so endpoint options can't inject kwargs."""
+        options = dict(options or {})
+        out: dict[str, Any] = {}
+        for key, cast in (("max_distance", float), ("every", int),
+                          ("range_start", float), ("range_end", float)):
+            if options.get(key) is not None:
+                out[key] = cast(options[key])
+        return out
+
+    @app.post("/api/projects/{project_id}/audio/cleanup/plan")
+    def audio_cleanup_plan(project_id: str, request: PassSequenceRequest):
+        project_path(project_id)
+        chain, warnings = audio_cleanup_chain(request.options, warnings=True)
+        return {"chain": chain, "warnings": warnings,
+                "processors": [p for p in ("highpass", "noise_reduce", "compress",
+                                           "normalize", "limiter")
+                               if request.options.get(p)]}
+
+    @app.post("/api/projects/{project_id}/audio/cleanup/apply")
+    def audio_cleanup_apply(project_id: str, request: PassSequenceRequest):
+        project_path(project_id)
+        try:
+            spec = AudioCleanup(**{k: v for k, v in request.options.items()
+                                   if k in AudioCleanup.model_fields})
+        except ValueError as exc:
+            raise HTTPException(400, f"Bad cleanup settings: {exc}")
+        sequence = request.sequence.model_copy(update={"cleanup": spec,
+                                                       "revision": request.sequence.revision + 1})
+        _, warnings = audio_cleanup_chain(request.options, warnings=True)
+        return {"sequence": sequence.model_dump(), "warnings": warnings}
+
+    @app.post("/api/projects/{project_id}/audio/cleanup/clear")
+    def audio_cleanup_clear(project_id: str, request: SequenceRequest):
+        project_path(project_id)
+        sequence = request.sequence.model_copy(update={"cleanup": None,
+                                                       "revision": request.sequence.revision + 1})
+        return {"sequence": sequence.model_dump(), "removed": 1 if request.sequence.cleanup else 0}
+
+    @app.post("/api/projects/{project_id}/audio/beats/analyze")
+    def audio_beats_analyze(project_id: str, request: BeatsAnalyzeRequest):
+        project_path(project_id)
+        if not Path(request.path).is_file():
+            raise HTTPException(400, f"Audio file not found: {Path(request.path).name}")
+        try:
+            return {"source": request.path,
+                    **audio_beats(request.path, sensitivity=request.sensitivity)}
+        except PipelineError as exc:
+            raise HTTPException(400, str(exc))
+
+    @app.post("/api/projects/{project_id}/audio/beats/snap")
+    def audio_beats_snap(project_id: str, request: BeatsRequest):
+        project_path(project_id)
+        sequence, summary = audio_snap(request.sequence, request.beats, **_beat_options(request.options))
+        return {"sequence": sequence.model_dump(), "summary": summary}
+
+    @app.post("/api/projects/{project_id}/audio/beats/cut")
+    def audio_beats_cut(project_id: str, request: BeatsRequest):
+        project_path(project_id)
+        sequence, summary = audio_cut(request.sequence, request.beats, **_beat_options(request.options))
+        return {"sequence": sequence.model_dump(), "summary": summary}
+
+    @app.post("/api/projects/{project_id}/audio/beats/markers")
+    def audio_beats_markers(project_id: str, request: BeatsRequest):
+        project_path(project_id)
+        every = max(1, int((request.options or {}).get("every", 1)))
+        duration = request.sequence.duration
+        beats = [b for b in request.beats[::every] if 0 <= b <= duration]
+        in_grid = set(beats)
+        downs = sorted(b for b in (request.downbeats or []) if b in in_grid)
+        sequence, summary = audio_markers(request.sequence, beats, downbeats=downs)
+        return {"sequence": sequence.model_dump(), "summary": summary}
+
+    @app.post("/api/projects/{project_id}/audio/bed/apply")
+    def audio_bed_apply(project_id: str, request: BedRequest):
+        project_path(project_id)
+        if not Path(request.music_path).is_file():
+            raise HTTPException(400, f"Music file not found: {Path(request.music_path).name}")
+        try:
+            sequence, summary = audio_bed(request.sequence, request.music_path,
+                                          request.options, beats=request.beats or None)
+        except PipelineError as exc:
+            raise HTTPException(400, str(exc))
+        return {"sequence": sequence.model_dump(), "summary": summary}
+
+    @app.delete("/api/projects/{project_id}/audio/bed")
+    def audio_bed_delete(project_id: str, request: SequenceRequest):
+        project_path(project_id)
+        sequence, removed = audio_bed_remove(request.sequence)
         return {"sequence": sequence.model_dump(), "removed": removed}
     def spotlight_inputs(project_id: str, request: SpotlightRequest):
         """Evidence + hashes for highlight/shorts sources. Reads only; masters untouched.
