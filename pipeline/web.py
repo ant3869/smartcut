@@ -736,10 +736,18 @@ def create_app(config_path: str | Path = DEFAULT_CONFIG) -> FastAPI:
         return {"ok": True, "path": str(out), "warnings": warnings}
 
     def spotlight_inputs(project_id: str, request: SpotlightRequest):
-        """Evidence + hashes for highlight/shorts sources. Reads only; masters untouched."""
+        """Evidence + hashes for highlight/shorts sources. Reads only; masters untouched.
+
+        Sources must belong to the open project: job media and sequence clips outside
+        the project's assets are rejected, never silently skipped.
+        """
         if request.source_kind not in ("media", "current-source", "sequence"):
             raise HTTPException(400, "Source must be current source, sequence, or project media")
-        project_path(project_id)
+        assets = {str(Path(a["path"]).resolve()) for a in project_view(project_id)["assets"]}
+
+        def require_asset(source: str, what: str) -> None:
+            if str(Path(source).resolve()) not in assets:
+                raise HTTPException(400, f"{what} is not media in this project: {Path(source).name}")
         options = request.options
         evidence_map, sha_map, segments_map, warnings = {}, {}, {}, []
 
@@ -748,6 +756,7 @@ def create_app(config_path: str | Path = DEFAULT_CONFIG) -> FastAPI:
             plan = safe_read_json(folder / "edit_plan.json")
             if not plan:
                 raise HTTPException(400, f"Analyze {job_id} before generating highlights")
+            require_asset(plan.get("source") or "", f"Job {job_id}")
             evidence = spotlight_evidence(plan)
             evidence_map[evidence.source] = evidence
             try:
@@ -766,6 +775,7 @@ def create_app(config_path: str | Path = DEFAULT_CONFIG) -> FastAPI:
             for clip in request.sequence.clips:
                 if not clip.track.startswith("V"):
                     continue
+                require_asset(clip.source, "Sequence clip")
                 windows.setdefault(clip.source, []).append((clip.source_start, clip.source_end))
                 sha_map.setdefault(clip.source, clip.source_sha256)
             if not windows:

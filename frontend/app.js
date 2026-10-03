@@ -478,7 +478,7 @@ async function applyAuto(form){
 async function quickAuto(options){const {next,lines}=await runAuto({...Object.fromEntries(Object.keys(state.prefs.auto).map(k=>[k,false])),threshold:state.prefs.auto.threshold,minSilence:state.prefs.auto.minSilence,pad:state.prefs.auto.pad,highlightCount:state.prefs.auto.highlightCount,...options});if(!lines.length)return toast('Nothing to change','warn');commit(lines.join(' · '),next);}
 // ---- Spotlight: highlight + shorts generation over saved AI evidence. ----
 function spotlightSourceFields(){
-  const analyzed=(state.jobs||[]).filter(j=>j.clips?.length&&j.source_available);
+  const analyzed=S.projectMedia((state.jobs||[]).filter(j=>j.clips?.length&&j.source_available),state.project?.assets||[]);
   const currentJob=state.job?.id;
   return `<div class="stacked"><span>Source</span>`
     +`<label class="toggle-row">Current source${currentJob?'':' (analyze a source first)'}<input type="radio" name="source_kind" value="current-source" ${currentJob?'checked':''} ${currentJob?'':'disabled'}></label>`

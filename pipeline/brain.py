@@ -417,14 +417,17 @@ class PipelineBrain:
             raise PipelineError("Configured bumper currently requires H.264 MP4 export")
         token = uuid4().hex
         staged = root / f".{final.stem}.{token}{final.suffix}"
-        content = root / f".{final.stem}.{token}.content.mp4" if bumper else staged
+        short_spec = safe_short_spec(project_dir)
+        # Shorts opt into the bumper explicitly; normal projects keep legacy behavior.
+        use_intro = bumper if (not short_spec or short_spec.get("intro", True)) else None
+        content = root / f".{final.stem}.{token}.content.mp4" if use_intro else staged
         try:
             report("Blade · compositing sequence", 30)
             self.blade.render_sequence(sequence, content, watermark=self._watermark(), settings=settings,
                                        progress=lambda percent: report("Blade · rendering", round(percent)))
-            if bumper:
+            if use_intro:
                 report("Blade · adding bumper", 85)
-                self.blade.prepend_bumper(bumper, content, staged)
+                self.blade.prepend_bumper(use_intro, content, staged)
             short_spec = safe_short_spec(project_dir)
             if short_spec.get("outro") and bumper and settings and settings.video_codec == "libx264":
                 report("Blade · adding outro", 90)
