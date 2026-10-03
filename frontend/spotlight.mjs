@@ -4,6 +4,11 @@ export function weightFields() {
   return ['action', 'dialogue', 'emotion', 'quality', 'scores'];
 }
 
+export function projectMedia(jobs, assets) {
+  const allowed = new Set((assets || []).map(a => String(a.path).replace(/\\/g, '/')));
+  return (jobs || []).filter(j => allowed.has(String(j.source).replace(/\\/g, '/')));
+}
+
 export function parseRanges(text) {
   const ranges = [];
   for (const part of String(text || '').split(',')) {

@@ -30,6 +30,7 @@ class Evidence:
     words: list = field(default_factory=list)
     duration: float = 0.0
     waste: list = field(default_factory=list)
+    frame_interval: float = 2.0
 
 
 @dataclass
@@ -88,7 +89,9 @@ def select(candidates: list, evidence_map: dict, options: dict | None = None) ->
         if _in_ranges(cand.peak, exclude, False):
             skipped.append({"peak": cand.peak, "reason": "inside excluded range"})
             continue
-        if any(abs(cand.peak - prior.peak) < dedup_gap for prior in selected):
+        if any((str(cand.source), cand.peak) == (str(prior.source), prior.peak) or
+                (str(cand.source) == str(prior.source) and abs(cand.peak - prior.peak) < dedup_gap)
+                for prior in selected):
             skipped.append({"peak": cand.peak, "reason": "near-duplicate of a stronger moment"})
             continue
         length = min(max_length, max(min_length, cand.clip.duration))
@@ -112,17 +115,17 @@ def build_sequence(selected: list, *, sha_map: dict, width: int = 1280, height: 
                    fps: float = 30, fit: str = "fit", name: str = ""):
     """Assemble an editable Sequence from ranked highlights. Pure: inputs untouched.
 
-    Multi-source: each clip carries its own source + hash, laid chronologically.
+    Preserves the given order exactly (rank order for hooks, chronological when
+    requested). Callers pass select()'s final order; never re-sort here.
     """
     import uuid
     from pathlib import Path
 
     from .sequence import Sequence, SequenceClip
-    ordered = sorted(selected, key=lambda h: (h.clip.start, h.peak))
     clips: list = []
     cursor = 0.0
-    master = hashlib.sha256("|".join(sorted(str(h.source) for h in ordered)).encode()).hexdigest()
-    for item in ordered:
+    master = hashlib.sha256("|".join(sorted(str(h.source) for h in selected)).encode()).hexdigest()
+    for item in selected:
         source = str(item.source)
         link = uuid.uuid4().hex[:12]
         base = dict(source=source, source_sha256=sha_map[source], start=round(cursor, 3),
@@ -164,14 +167,14 @@ def plan_shorts(candidates: list, evidence_map: dict, options: dict | None = Non
     shorts: list[ShortPlan] = []
     used: set = set()
     for _ in range(count):
-        remaining = [s.highlight for s in ranked if s.highlight.peak not in used]
+        remaining = [s.highlight for s in ranked if (str(s.highlight.source), s.highlight.peak) not in used]
         if not remaining:
             break
         result = select(remaining, evidence_map, per_short)
         if not result.selected:
             break
         for item in result.selected:
-            used.add(item.peak)
+            used.add((str(item.source), item.peak))
         spec = {"aspect": aspect, "hook_first": hook_first, "reframe": "center",
                 "captions": bool(options.get("captions", False)),
                 "watermark": bool(options.get("watermark", False)),
@@ -193,11 +196,14 @@ def _srt_timestamp(value: float) -> str:
 
 
 def captions_srt(highlights: list, segments_map: dict) -> str:
-    """Sidecar captions: source-time transcript mapped onto short timeline order."""
+    """Sidecar captions: source-time transcript mapped onto the assembled order.
+
+    Highlights arrive in final timeline order; never re-sort here.
+    """
     lines: list = []
     cursor = 0.0
     index = 0
-    for item in sorted(highlights, key=lambda h: (h.clip.start, h.peak)):
+    for item in highlights:
         key = str(item.source)
         segments = segments_map.get(key)
         if segments is None:
@@ -236,10 +242,14 @@ def load_evidence(plan_data: dict) -> Evidence:
                   tuple(w.get("reasons") or ()), tuple(w.get("dark_spans") or ()))
              for w in plan_data.get("waste_intervals") or []]
     transcript = plan_data.get("transcript") or {}
+    try:
+        frame_interval = float(plan_data.get("frame_interval") or 2.0)
+    except (TypeError, ValueError):
+        frame_interval = 2.0
     return Evidence(source=source, observations=observations,
                     segments=list(transcript.get("segments") or []),
                     words=list(transcript.get("words") or []),
-                    duration=duration, waste=waste)
+                    duration=duration, waste=waste, frame_interval=frame_interval)
 
 
 def gather_candidates(evidence: Evidence, options: dict | None = None) -> list:
@@ -270,7 +280,7 @@ def gather_candidates(evidence: Evidence, options: dict | None = None) -> list:
         from .contracts import Clip
         walls.append(Clip(cursor, evidence.duration, ("outside-selection",), ()))
     return plan_highlights(source=Path(evidence.source), observations=evidence.observations,
-                           duration=evidence.duration, waste=walls, interval=2.0,
+                           duration=evidence.duration, waste=walls, interval=evidence.frame_interval,
                            threshold=threshold, min_seconds=min_length, max_seconds=max_length,
                            target_seconds=evidence.duration, max_clips=pool_clips)
 
