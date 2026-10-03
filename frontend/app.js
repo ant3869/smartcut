@@ -600,6 +600,7 @@ async function applyWatermark(form){
   closeDialog();commit('Watermark applied',result.sequence);
   const box=`${result.overlay.position}${result.overlay.position==='custom'?` at ${result.overlay.x},${result.overlay.y}`:''}`;
   toast(`Watermark · ${box} · render bakes it in`,'ok');
+}
 // ---- Spotlight: highlight + shorts generation over saved AI evidence. ----
 function spotlightSourceFields(){
   const analyzed=S.projectMedia((state.jobs||[]).filter(j=>j.clips?.length&&j.source_available),state.project?.assets||[]);
