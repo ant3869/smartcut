@@ -2,8 +2,8 @@
 
 > Policy pointer (current): `docs/editorial-policy.md` is the KEEP/CUT
 > authority. The v1 single-interval golds for 004/008 are superseded as
-> whole-interval truth — see `docs/w1-w3-segmented-note.md`
-> (DRAFT, seams need precise review). This file below is history.
+> whole-interval truth (local `evaluation/` golds, git-ignored).
+> This file below is history.
 
 Status: IN PROGRESS. This is a checkpoint, not a completed evaluation or installed runtime Stop hook.
 
