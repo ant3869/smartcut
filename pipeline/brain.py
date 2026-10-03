@@ -22,6 +22,18 @@ from .blade import FfmpegBlade
 from .voice import PersonaVoice
 
 
+def safe_short_spec(project_dir) -> dict:
+    """Short render spec from a derived project's project.json; {} when absent."""
+    try:
+        if not project_dir:
+            return {}
+        data = read_json(Path(project_dir) / "project.json")
+        spec = data.get("short_spec")
+        return dict(spec) if isinstance(spec, dict) else {}
+    except Exception:
+        return {}
+
+
 class PipelineBrain:
     """Stateful orchestrator. It plans first, renders second, and leaves evidence behind."""
 
@@ -401,11 +413,16 @@ class PipelineBrain:
         if settings and final.exists():
             raise PipelineError(f"Output already exists: {final}; choose a different name")
         bumper = Path(self.config["bumper_path"]) if self.config.get("bumper_path") else None
-        if bumper and settings and settings.video_codec != "libx264":
+        short_spec = safe_short_spec(project_dir)
+        effective_codec = settings.video_codec if settings else "libx264"
+        # Shorts opt into the bumper explicitly; normal projects keep legacy behavior.
+        use_intro = bumper if (not short_spec or short_spec.get("intro", True)) else None
+        use_outro = bumper if short_spec.get("outro") and effective_codec == "libx264" else None
+        if bumper and (use_intro or use_outro) and effective_codec != "libx264":
             raise PipelineError("Configured bumper currently requires H.264 MP4 export")
         token = uuid4().hex
         staged = root / f".{final.stem}.{token}{final.suffix}"
-        content = root / f".{final.stem}.{token}.content.mp4" if bumper else staged
+        content = root / f".{final.stem}.{token}.content.mp4" if use_intro else staged
         try:
             report("Blade · compositing sequence", 30)
             render_notes: list = []
@@ -413,9 +430,14 @@ class PipelineBrain:
             self.blade.render_sequence(sequence, content, watermark=self._watermark(), settings=settings,
                                        progress=lambda percent: report("Blade · rendering", round(percent)),
                                        passes=passes, warnings=render_notes)
-            if bumper:
+            if use_intro:
                 report("Blade · adding bumper", 85)
-                self.blade.prepend_bumper(bumper, content, staged)
+                self.blade.prepend_bumper(use_intro, content, staged)
+            if use_outro:
+                report("Blade · adding outro", 90)
+                outro = staged.with_name(staged.stem + ".outro" + staged.suffix)
+                self.blade.prepend_bumper(use_outro, staged, outro, position="back")
+                outro.replace(staged)
             report("Verifying output", 95)
             self.blade.verify(staged)
             staged.replace(final)

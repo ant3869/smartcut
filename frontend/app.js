@@ -1,6 +1,7 @@
 import * as T from './timeline.mjs';
 import * as A from './auto.mjs';
 import * as P from './passes.mjs';
+import * as S from './spotlight.mjs';
 import * as Theme from './theme.mjs';
 import {icon} from './icons.mjs';
 import * as Tasks from './tasks.mjs';
@@ -81,7 +82,7 @@ function shell(){
         ${menu('Project',[['save-project','Save project · Ctrl+S'],['new-project','New project…'],['open-project','Open project…'],['settings','Pipeline settings…'],['refresh','Refresh media'],['analyze-all','Analyze all…']])}
         ${menu('Sequence',[['sequence-settings','Sequence settings…'],['Add track…',[['add-video-track','Video track'],['add-audio-track','Audio track']]],['save','Save sequence'],['undo','Undo'],['redo','Redo'],['rebuild','Load approved plan'],['reel','Best-of reel…']])}
         ${menu('Markers',[['in','Mark In · I'],['out','Mark Out · O'],['marker','Add sequence marker · M'],['auto-scenes','Markers at scene changes'],['auto-highlights','Markers at AI highlights'],['clear-markers','Clear all markers']])}
-        ${menu('Auto',[['auto-edit','Auto-edit sequence…'],['auto-waste','Remove AI-flagged waste'],['auto-silence','Remove silences…'],['auto-gaps','Close all gaps'],['auto-fill','Fill frame'],['transitions','Add transitions…'],['clear-transitions','Clear transitions'],['watermark','Add watermark…'],['remove-watermark','Remove watermark'],['next-proposal','Next AI proposal · N']])}
+        ${menu('Auto',[['auto-edit','Auto-edit sequence…'],['auto-waste','Remove AI-flagged waste'],['auto-silence','Remove silences…'],['auto-gaps','Close all gaps'],['auto-fill','Fill frame'],['transitions','Add transitions…'],['clear-transitions','Clear transitions'],['watermark','Add watermark…'],['remove-watermark','Remove watermark'],['highlights','Generate highlights…'],['shorts','Generate shorts…'],['next-proposal','Next AI proposal · N']])}
         ${menu('Export',[['export-edl','EDL cut list'],['export-csv','CSV edit list'],['export-otio','OpenTimelineIO'],['export-srt','Captions for this edit (.srt)'],['export-mp4','Render video…']])}
         ${menu('View',[...Theme.MODES.map(mode=>[`theme-${mode}`,`Theme · ${Theme.label(mode)}`,`role="menuitemradio" data-theme-option="${mode}" aria-checked="${mode===state.themeMode}"`]),['-'],['toggle-lanes','AI lanes on timeline','role="menuitemcheckbox"'],['toggle-cc','Live captions','role="menuitemcheckbox"'],['toggle-hud','AI verdict overlay','role="menuitemcheckbox"']])}
         ${menu('Help',[['shortcuts','Keyboard shortcuts · ?']])}
@@ -600,6 +601,81 @@ async function applyWatermark(form){
   const box=`${result.overlay.position}${result.overlay.position==='custom'?` at ${result.overlay.x},${result.overlay.y}`:''}`;
   toast(`Watermark · ${box} · render bakes it in`,'ok');
 }
+// ---- Spotlight: highlight + shorts generation over saved AI evidence. ----
+function spotlightSourceFields(){
+  const analyzed=S.projectMedia((state.jobs||[]).filter(j=>j.clips?.length&&j.source_available),state.project?.assets||[]);
+  const currentJob=state.job?.id;
+  return `<div class="stacked"><span>Source</span>`
+    +`<label class="toggle-row">Current source${currentJob?'':' (analyze a source first)'}<input type="radio" name="source_kind" value="current-source" ${currentJob?'checked':''} ${currentJob?'':'disabled'}></label>`
+    +`<label class="toggle-row">Current sequence<input type="radio" name="source_kind" value="sequence" ${currentJob?'':'checked'}></label>`
+    +`<label class="toggle-row">Selected project media<input type="radio" name="source_kind" value="media"></label>`
+    +`<div class="reel-sources">${analyzed.map(j=>`<label><input type="checkbox" name="job_ids" value="${esc(j.id)}"><span>${esc(basename(j.source))}</span><small>${short(j.duration)}</small></label>`).join('')||'<p>No analyzed media yet.</p>'}</div></div>`;
+}
+function spotlightWeightFields(){
+  const defaults={action:4,dialogue:4,emotion:4,quality:5,scores:6};
+  return `<div class="stacked"><span>Prioritize</span>${S.weightFields().map(k=>`<label class="toggle-row">${k}<input type="number" name="w_${k}" min="0" max="10" step="1" value="${defaults[k]}"></label>`).join('')}</div>`;
+}
+function spotlightRequest(form){
+  const f=new FormData(form),kind=f.get('source_kind');
+  const weights={};for(const k of S.weightFields())weights[k]=Number(f.get('w_'+k))||0;
+  const preset=f.get('target_preset');
+  const options={target_seconds:preset&&preset!=='custom'?Number(preset):(Number(f.get('target_seconds'))||30),
+    max_clips:Number(f.get('max_clips'))||5,
+    min_length:Number(f.get('min_length'))||2,max_length:Number(f.get('max_length'))||12,
+    dedup_gap:Number(f.get('dedup_gap'))||6,chronological:f.has('chronological'),
+    include:S.parseRanges(f.get('include')),exclude:S.parseRanges(f.get('exclude')),weights};
+  const body={source_kind:kind,options};
+  if(kind==='current-source')body.job_ids=[state.job.id];
+  if(kind==='media')body.job_ids=f.getAll('job_ids');
+  if(kind==='sequence')body.sequence=state.sequence;
+  return body;
+}
+function highlightsDialog(){
+  openDialog(`${dialogHead('AUTO','Generate highlights')}<form id="highlights-form"><div class="dialog-body"><p>Finds the strongest moments using saved AI scores, dialogue, and quality. Creates a <b>new project</b>; your master sequence is never touched.</p>${spotlightSourceFields()}<div class="export-grid"><label class="stacked">Target duration<select name="target_preset"><option value="15">15 sec</option><option value="30" selected>30 sec</option><option value="60">60 sec</option><option value="custom">Custom</option></select></label><label class="stacked">Custom seconds<input name="target_seconds" type="number" min="1" max="600" step="1" value="30"></label><label class="stacked">Number of highlights<input name="max_clips" type="number" min="1" max="20" value="5"></label><label class="stacked">Min clip<input name="min_length" type="number" min=".25" max="60" step=".25" value="2"></label><label class="stacked">Max clip<input name="max_length" type="number" min="1" max="120" step="1" value="12"></label><label class="stacked">Duplicate gap<input name="dedup_gap" type="number" min="0" max="60" step="1" value="6"></label></div>${spotlightWeightFields()}<div class="export-grid"><label class="stacked">Only these ranges<input name="include" placeholder="12-18, 40-44"></label><label class="stacked">Skip these ranges<input name="exclude" placeholder="0-4"></label></div><label class="toggle-row">Keep chronological order<input type="checkbox" name="chronological" checked></label></div><output id="highlights-preview" class="auto-preview" aria-live="polite">Calculating…</output><footer class="dialog-footer"><span>Result opens as its own project.</span>${button('close-dialog','Cancel')}<button class="primary" type="submit">Generate highlights</button></footer></form>`,'highlights');
+  updateHighlightsPreview();
+}
+async function updateHighlightsPreview(){
+  const form=$('#highlights-form'),out=$('#highlights-preview');if(!form||!out)return;const token=++previewToken;out.classList.add('busy');
+  try{
+    const plan=await post(projectURL('highlights/plan'),spotlightRequest(form));
+    if(token!==previewToken)return;
+    out.innerHTML=`<p>${esc(S.spotlightSummary(plan))}</p><ul>${(plan.ranked||[]).slice(0,8).map(r=>`<li>${tc(r.peak)} · score ${r.score} · ${esc(basename(r.source))}</li>`).join('')}</ul>`;
+  }catch(e){if(token!==previewToken)return;out.innerHTML=`<p class="error-text">${esc(e.message)}</p>`;}
+  finally{out.classList.remove('busy');}
+}
+async function applyHighlights(form){
+  const result=await post(projectURL('highlights/apply'),{...spotlightRequest(form),name:`${state.project?.name||'Project'} · Highlights`});
+  closeDialog();await load();await openProject(result.project.id);
+  toast(`Highlights · ${result.total_seconds}s in a new project`,'ok');
+}
+function shortsDialog(){
+  openDialog(`${dialogHead('AUTO','Generate shorts')}<form id="shorts-form"><div class="dialog-body"><p>Builds vertical short-form edits from the strongest moments. Each short becomes <b>its own editable project</b>.</p>${spotlightSourceFields()}<div class="export-grid"><label class="stacked">Number of shorts<input name="short_count" type="number" min="1" max="10" value="3"></label><label class="stacked">Target length<input name="target_seconds" type="number" min="5" max="180" step="1" value="30"></label><label class="stacked">Aspect ratio<select name="aspect"><option>9:16</option><option>1:1</option><option>4:5</option></select></label><label class="stacked">Clips per short<input name="max_clips" type="number" min="1" max="10" value="3"></label><label class="stacked">Min clip<input name="min_length" type="number" min=".25" max="60" step=".25" value="2"></label><label class="stacked">Max clip<input name="max_length" type="number" min="1" max="120" step="1" value="12"></label></div>${spotlightWeightFields()}<div class="export-grid"><label class="stacked">Transitions<select name="transitions"><option value="none">None</option><option value="cross-dissolve">Cross Dissolve</option><option value="dip-black">Dip to Black</option><option value="dip-white">Dip to White</option><option value="wipe">Wipe</option><option value="slide">Slide</option></select></label><label class="stacked">Watermark image<input name="watermark_path" placeholder="blank = pipeline default"></label></div><label class="toggle-row">Captions sidecar (.srt)<input type="checkbox" name="captions" checked></label><label class="toggle-row">Watermark<input type="checkbox" name="watermark"></label><label class="toggle-row">Intro bumper<input type="checkbox" name="intro"></label><label class="toggle-row">Outro bumper<input type="checkbox" name="outro"></label><label class="toggle-row">Hook first (lead with the peak)<input type="checkbox" name="hook_first" checked></label><label class="toggle-row">Music bed<input type="checkbox" name="music_bed"></label><label class="toggle-row">CTA card<input type="checkbox" name="cta"></label><p class="field-note">Vertical shorts center-crop each clip (Fill). Subject tracking is a hook for later; music beds and CTA cards are stored but not rendered yet.</p></div><output id="shorts-preview" class="auto-preview" aria-live="polite">Calculating…</output><footer class="dialog-footer"><span>Each short opens editable.</span>${button('close-dialog','Cancel')}<button class="primary" type="submit">Generate shorts</button></footer></form>`,'shorts');
+  updateShortsPreview();
+}
+function shortsOptions(form){
+  const f=new FormData(form);
+  return {...spotlightRequest(form).options,short_count:Number(f.get('short_count'))||3,
+    aspect:f.get('aspect'),hook_first:f.has('hook_first'),
+    captions:f.has('captions'),watermark:f.has('watermark'),intro:f.has('intro'),outro:f.has('outro'),
+    transitions:f.get('transitions'),watermark_path:String(f.get('watermark_path')||'').trim()||null,
+    music_bed:f.has('music_bed'),cta:f.has('cta')};
+}
+async function updateShortsPreview(){
+  const form=$('#shorts-form'),out=$('#shorts-preview');if(!form||!out)return;const token=++previewToken;out.classList.add('busy');
+  try{
+    const body=spotlightRequest(form);body.options=shortsOptions(form);
+    const plan=await post(projectURL('shorts/plan'),body);
+    if(token!==previewToken)return;
+    out.innerHTML=`<p>${esc(S.spotlightSummary(plan))}</p><ul>${(plan.shorts||[]).map((s,i)=>`<li>Short ${i+1}: ${s.peaks.map(p=>tc(p)).join(', ')} · ${s.total}s</li>`).join('')}</ul>${(plan.warnings||[]).map(w=>`<p class="field-note">${esc(w)}</p>`).join('')}`;
+  }catch(e){if(token!==previewToken)return;out.innerHTML=`<p class="error-text">${esc(e.message)}</p>`;}
+  finally{out.classList.remove('busy');}
+}
+async function applyShorts(form){
+  const body=spotlightRequest(form);body.options=shortsOptions(form);
+  const result=await post(projectURL('shorts/apply'),body);
+  closeDialog();await load();await openProject(result.projects[0].id);
+  toast(`Short 1 of ${result.projects.length} open · ${(result.warnings||[]).join(' · ')||'all passes applied'}`,'ok');
+}
 async function fillFrame(fit=false){
   needSequence();const targets=(state.selected?T.linkedClips(state.sequence,state.selected,state.linked):state.sequence.clips).filter(c=>c.track[0]==='V');
   if(!targets.length)throw new Error('Select a video clip, or clear the selection to fill every video clip');
@@ -868,6 +944,7 @@ const actions={
   'key-prev':t=>jumpKeyframe(t.dataset.property,-1),'key-next':t=>jumpKeyframe(t.dataset.property,1),
   'auto-edit':()=>autoEditDialog(),'auto-silence':()=>autoEditDialog('silence'),'auto-waste':()=>quickAuto({waste:true}),'auto-gaps':()=>quickAuto({gaps:true}),
   'auto-scenes':()=>quickAuto({scenes:true}),'auto-highlights':()=>quickAuto({highlights:true}),'auto-fill':()=>fillFrame(),'auto-fit':()=>fillFrame(true),
+  highlights:()=>highlightsDialog(),shorts:()=>shortsDialog(),
   'original-size':()=>edit('Original size',s=>{const c=s.clips.find(c=>c.id===state.selected);if(c)c.fit='original';}),
   keyframe:t=>edit('Keyframe changed',s=>{const c=s.clips.find(c=>c.id===state.selected),key=t.dataset.keyframe;if(!c||!key)return;c.keyframes??={};const frames=c.keyframes[key]??=[],time=round(Math.max(0,state.time-c.start)),index=frames.findIndex(f=>Math.abs(f.time-time)<.001);if(index>=0)frames.splice(index,1);else {frames.push({time,value:c[key],interpolation:'linear'});frames.sort((a,b)=>a.time-b.time);}c.keyframes[key]=frames;}),
   'previous-keyframe':()=>{const c=state.sequence?.clips.find(c=>c.id===state.selected),times=(c?Object.values(c.keyframes||{}).flat().map(k=>k.time+c.start):[]).filter(t=>t<state.time-.001);if(times.length)seekProgram(Math.max(...times));},
@@ -1018,7 +1095,7 @@ function bind(){
     if(e.target.dataset.keyInterpolation){const key=e.target.dataset.keyInterpolation,at=Number(e.target.dataset.at);operation('Keyframe interpolation',()=>edit('Interpolation updated',s=>{s.clips.find(c=>c.id===state.selected).keyframes[key].find(k=>k.time===at).interpolation=e.target.value;}));}
     if(e.target.id==='review-in'){state.in=Number(e.target.value);syncTransport();}if(e.target.id==='review-out'){state.out=Number(e.target.value);syncTransport();}
   });
-  document.addEventListener('input',e=>{if(e.target.closest('#auto-form'))updateAutoPreview();if(e.target.closest('#transitions-form'))updateTransitionsPreview();if(e.target.closest('#render-form'))updateRenderSummary();if(e.target.name==='includeAnalyzed'&&e.target.closest('#analyze-all-form'))renderAnalyzeAllList();if(e.target.dataset.settingRange){const input=$(`[name="${e.target.dataset.settingRange}"]`);input.value=e.target.value;}if(e.target.name&&state.schema[e.target.name]){const r=$(`[data-setting-range="${e.target.name}"]`);if(r)r.value=e.target.value;}});
+  document.addEventListener('input',e=>{if(e.target.closest('#auto-form'))updateAutoPreview();if(e.target.closest('#transitions-form'))updateTransitionsPreview();if(e.target.closest('#highlights-form'))updateHighlightsPreview();if(e.target.closest('#shorts-form'))updateShortsPreview();if(e.target.closest('#render-form'))updateRenderSummary();if(e.target.name==='includeAnalyzed'&&e.target.closest('#analyze-all-form'))renderAnalyzeAllList();if(e.target.dataset.settingRange){const input=$(`[name="${e.target.dataset.settingRange}"]`);input.value=e.target.value;}if(e.target.name&&state.schema[e.target.name]){const r=$(`[data-setting-range="${e.target.name}"]`);if(r)r.value=e.target.value;}});
   document.addEventListener('submit',e=>{e.preventDefault();operation('Submit',async()=>{
     if(e.target.id==='new-project-form')await createProject(String(new FormData(e.target).get('name')).trim());
     if(e.target.id==='existing-media-form'){const paths=new FormData(e.target).getAll('paths');if(!paths.length)throw new Error('Select media to add');await addAssets(paths);closeDialog();await selectAsset(paths[0]);}
@@ -1031,6 +1108,8 @@ function bind(){
     if(e.target.id==='auto-form')await applyAuto(e.target);
     if(e.target.id==='transitions-form')await applyTransitions(e.target);
     if(e.target.id==='watermark-form')await applyWatermark(e.target);
+    if(e.target.id==='highlights-form')await applyHighlights(e.target);
+    if(e.target.id==='shorts-form')await applyShorts(e.target);
     if(e.target.id==='marker-form'){const f=new FormData(e.target),id=e.target.dataset.markerForm;closeDialog();edit('Marker updated',s=>{const m=s.markers.find(x=>x.id===id);if(!m)throw new Error('Marker no longer exists');m.label=String(f.get('label')).trim().slice(0,200)||'Marker';m.time=Math.max(0,Number(f.get('time'))||0);});}
   });});
   document.addEventListener('keydown',e=>{
