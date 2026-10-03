@@ -111,7 +111,7 @@ def test_select_honors_include_exclude_ranges():
 
 
 def test_build_sequence_maps_source_spans_chronologically():
-    cands = [hl(50, 58, 54, 7.0, "b.mp4"), hl(10, 18, 14, 9.0, "a.mp4")]
+    cands = [hl(10, 18, 14, 9.0, "a.mp4"), hl(50, 58, 54, 7.0, "b.mp4")]
     sha = {"a.mp4": "a" * 64, "b.mp4": "b" * 64}
     sequence = build_sequence(cands, sha_map=sha, width=1080, height=1920, fps=30, fit="fill")
     assert sequence.width == 1080 and sequence.height == 1920 and sequence.fps == 30
@@ -119,6 +119,65 @@ def test_build_sequence_maps_source_spans_chronologically():
     first = next(c for c in sequence.clips if c.track == "V1")
     assert (first.start, first.source_start, first.source_end, first.fit) == (0, 10, 18, "fill")
     assert sequence.clips[0].link_id and sequence.duration == 16
+
+
+def test_hook_order_preserved_in_sequence_and_captions():
+    cands = [hl(50, 58, 54, 7.0), hl(10, 18, 14, 9.0)]
+    evidence = {"s.mp4": rich_evidence()}
+    result = select(cands, evidence, {"target_seconds": 60, "max_clips": 2,
+                                      "chronological": False, "weights": {}})
+    sequence = build_sequence(result.selected, sha_map={"s.mp4": "a" * 64})
+    assert [c.source_start for c in sequence.clips if c.track == "V1"] == [10, 50]
+    srt = captions_srt(result.selected,
+                       {"s.mp4": [{"start": 11, "end": 12, "text": "first"},
+                                  {"start": 51, "end": 52, "text": "second"}]})
+    assert srt.index("first") < srt.index("second")
+
+
+def test_dedup_keys_include_source_identity():
+    cands = [hl(10, 18, 14, 9.0, "a.mp4"), hl(10, 18, 14, 8.5, "b.mp4"),
+             hl(11, 19, 15, 8.0, "a.mp4")]
+    evidence = {"a.mp4": rich_evidence(), "b.mp4": rich_evidence()}
+    result = select(cands, evidence, {"target_seconds": 60, "max_clips": 3,
+                                      "dedup_gap": 8, "weights": {}})
+    peaks = [(str(h.source), h.peak) for h in result.selected]
+    assert ("a.mp4", 14) in peaks and ("b.mp4", 14) in peaks  # same time, keep both
+    assert ("a.mp4", 15) not in peaks  # same source, too close
+
+
+def test_plan_shorts_tracks_used_moments_per_source():
+    cands = [hl(10, 18, 14, 9.0, "a.mp4"), hl(10, 18, 14, 8.5, "b.mp4")]
+    evidence = {"a.mp4": rich_evidence(), "b.mp4": rich_evidence()}
+    shorts = plan_shorts(cands, evidence, {"short_count": 2, "target_seconds": 30,
+                                           "max_clips": 1, "weights": {}})
+    assert len(shorts) == 2
+    assert {(str(h.source), h.peak) for s in shorts for h in s.highlights} == {("a.mp4", 14), ("b.mp4", 14)}
+
+
+def test_frame_interval_flows_from_saved_analysis(monkeypatch):
+    import pipeline.highlights as highlights_mod
+    seen = {}
+
+    def spy(*, interval, **kwargs):
+        seen["interval"] = interval
+        return []
+    monkeypatch.setattr(highlights_mod, "plan_highlights", spy)
+    evidence = ev(source="s.mp4", duration=60.0, observations=[obs(10, 9.0, "x")])
+    evidence.frame_interval = 4.5
+    gather_candidates(evidence, {})
+    assert seen["interval"] == 4.5
+
+
+def test_load_evidence_preserves_frame_interval():
+    job = {"source": "s.mp4", "source_sha256": "a" * 64, "duration": 60.0,
+           "frame_interval": 4.0, "observations": [], "waste_intervals": [],
+           "transcript": {"ok": True, "model": "m", "segments": [], "words": [],
+                          "duration": 60.0, "detected_language": "en",
+                          "cached": False, "error": None}}
+    assert load_evidence(job).frame_interval == 4.0
+    job2 = dict(job)
+    del job2["frame_interval"]
+    assert load_evidence(job2).frame_interval == 2.0
 
 
 def test_build_sequence_never_touches_inputs():
@@ -250,8 +309,8 @@ def stage(tmp_path):
     return spotlight_client(tmp_path)
 
 
-def create_project(client, name="Master"):
-    response = client.post("/api/projects", json={"name": name})
+def add_asset(client, project_id, path):
+    response = client.post(f"/api/projects/{project_id}/assets", json={"paths": [str(path)]})
     assert response.status_code == 200, response.text
     return response.json()
 
@@ -267,6 +326,7 @@ def test_highlights_plan_ranks_without_mutation(stage):
     client, _, cfg, source = stage
     make_job(cfg, "j1", source)
     master = create_project(client)
+    add_asset(client, master["id"], source)
     before = master_bytes(client, master["id"])
     response = client.post(f"/api/projects/{master['id']}/highlights/plan",
                            json={"source_kind": "media", "job_ids": ["j1"],
@@ -284,6 +344,7 @@ def test_highlights_apply_creates_derived_project(stage):
     client, _, cfg, source = stage
     make_job(cfg, "j1", source)
     master = create_project(client)
+    add_asset(client, master["id"], source)
     before = master_bytes(client, master["id"])
     response = client.post(f"/api/projects/{master['id']}/highlights/apply",
                            json={"source_kind": "media", "job_ids": ["j1"],
@@ -312,6 +373,7 @@ def test_shorts_apply_creates_multiple_editable_sequences(stage):
     peaks = [(float(t), 8.0 + (t % 3) * .4, f"lively moment {t}") for t in range(1, 20, 2)]
     make_job(cfg, "j1", source, duration=20.0, peaks=peaks)
     master = create_project(client)
+    add_asset(client, master["id"], source)
     response = client.post(f"/api/projects/{master['id']}/shorts/apply",
                            json={"source_kind": "media", "job_ids": ["j1"],
                                  "options": {"short_count": 2, "target_seconds": 4,
@@ -337,8 +399,9 @@ def test_shorts_apply_creates_multiple_editable_sequences(stage):
 def test_sequence_source_restricts_to_sequence_windows(stage):
     import json
     client, _, cfg, source = stage
-    make_job(cfg, "j1", source)
+    job = make_job(cfg, "j1", source)
     master = create_project(client)
+    add_asset(client, master["id"], source)
     window = {"version": 1, "revision": 0, "source_sha256": master["sequence"]["source_sha256"],
               "width": 64, "height": 64, "fps": 10,
               "tracks": [{"id": t} for t in ("V2", "V1", "A1", "A2")],
@@ -371,3 +434,50 @@ def test_bumper_appends_as_outro(tmp_path):
     out = FfmpegBlade(preset="ultrafast", output_fps=10).prepend_bumper(
         bumper, main, tmp_path / "out.mp4", position="back")
     assert abs(media_duration(out) - 4.0) < .3
+
+
+def test_render_respects_intro_toggle(stage):
+    import json
+    from pipeline.brain import PipelineBrain
+    from pipeline.sequence import RenderSettings, from_plan
+    from pipeline.util import media_duration, source_fingerprint
+    client, _, cfg, source = stage
+    bumper = str(Path(cfg["work_dir"]) / "bumper.mp4")
+    import shutil
+    Path(cfg["work_dir"]).mkdir(parents=True, exist_ok=True)
+    shutil.copyfile(str(source), bumper)
+    cfg["bumper_path"] = bumper
+    master = create_project(client)
+    plan = {"source": str(source), "source_sha256": source_fingerprint(source)["sha256"],
+            "duration": 3, "clips": [{"start": 0, "end": 3}]}
+    sequence = from_plan(plan, width=64, height=64, fps=10, has_audio=False)
+    project_dir = Path(cfg["work_dir"]) / "projects" / master["id"]
+    settings = RenderSettings(filename="plain.mp4", output_folder=str(project_dir),
+                              video_codec="libx264", quality="draft")
+    brain = PipelineBrain(cfg)
+    plain = brain.render_edit(source, sequence, project_dir=project_dir, settings=settings)
+    data = json.loads((project_dir / "project.json").read_text())
+    data["short_spec"] = {"intro": False, "outro": False}
+    (project_dir / "project.json").write_text(json.dumps(data))
+    settings2 = RenderSettings(filename="nointro.mp4", output_folder=str(project_dir),
+                               video_codec="libx264", quality="draft")
+    short = brain.render_edit(source, sequence, project_dir=project_dir, settings=settings2)
+    assert (plain["final_output"]["duration"] - short["final_output"]["duration"]) == pytest.approx(3.0, abs=.4)
+
+
+def test_media_restricted_to_project_assets(stage):
+    client, _, cfg, source = stage
+    make_job(cfg, "j1", source)
+    master = create_project(client)  # blank: source is not its asset
+    response = client.post(f"/api/projects/{master['id']}/highlights/plan",
+                           json={"source_kind": "media", "job_ids": ["j1"], "options": {}})
+    assert response.status_code == 400
+    window = {"version": 1, "revision": 0, "source_sha256": master["sequence"]["source_sha256"],
+              "width": 64, "height": 64, "fps": 10,
+              "tracks": [{"id": t} for t in ("V2", "V1", "A1", "A2")],
+              "clips": [{"id": "only", "source": str(source), "source_sha256": master["sequence"]["source_sha256"],
+                         "track": "V1", "start": 0, "source_start": 0, "source_end": 1}],
+              "markers": []}
+    response = client.post(f"/api/projects/{master['id']}/shorts/plan",
+                           json={"source_kind": "sequence", "sequence": window, "options": {}})
+    assert response.status_code == 400

@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {parseRanges, spotlightSummary, weightFields} from '../frontend/spotlight.mjs';
+import {parseRanges, projectMedia, spotlightSummary, weightFields} from '../frontend/spotlight.mjs';
 
 test('parseRanges reads start-end pairs', () => {
   assert.deepEqual(parseRanges('12-18, 40-44'), [[12, 18], [40, 44]]);
@@ -18,6 +18,13 @@ test('spotlightSummary narrates a highlight plan', () => {
   assert.match(text, /2 moments · 9\.5s/);
   assert.match(text, /1 skipped/);
   assert.match(text, /no transcript/);
+});
+
+test('projectMedia keeps only the open project assets', () => {
+  const jobs = [{id: 'j1', source: 'E:/vid/a.mp4'}, {id: 'j2', source: 'E:/vid/b.mp4'}];
+  const assets = [{path: 'E:/vid/b.mp4'}];
+  assert.deepEqual(projectMedia(jobs, assets).map(j => j.id), ['j2']);
+  assert.deepEqual(projectMedia(jobs, []), []);
 });
 
 test('spotlightSummary narrates shorts', () => {
