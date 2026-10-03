@@ -22,6 +22,18 @@ from .blade import FfmpegBlade
 from .voice import PersonaVoice
 
 
+def safe_short_spec(project_dir) -> dict:
+    """Short render spec from a derived project's project.json; {} when absent."""
+    try:
+        if not project_dir:
+            return {}
+        data = read_json(Path(project_dir) / "project.json")
+        spec = data.get("short_spec")
+        return dict(spec) if isinstance(spec, dict) else {}
+    except Exception:
+        return {}
+
+
 class PipelineBrain:
     """Stateful orchestrator. It plans first, renders second, and leaves evidence behind."""
 
@@ -416,6 +428,12 @@ class PipelineBrain:
             if bumper:
                 report("Blade · adding bumper", 85)
                 self.blade.prepend_bumper(bumper, content, staged)
+            short_spec = safe_short_spec(project_dir)
+            if short_spec.get("outro") and bumper and settings and settings.video_codec == "libx264":
+                report("Blade · adding outro", 90)
+                outro = staged.with_name(staged.stem + ".outro" + staged.suffix)
+                self.blade.prepend_bumper(bumper, staged, outro, position="back")
+                outro.replace(staged)
             report("Verifying output", 95)
             self.blade.verify(staged)
             staged.replace(final)
