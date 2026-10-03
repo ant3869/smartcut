@@ -89,9 +89,8 @@ def select(candidates: list, evidence_map: dict, options: dict | None = None) ->
         if _in_ranges(cand.peak, exclude, False):
             skipped.append({"peak": cand.peak, "reason": "inside excluded range"})
             continue
-        if any((str(cand.source), cand.peak) == (str(prior.source), prior.peak) or
-                (str(cand.source) == str(prior.source) and abs(cand.peak - prior.peak) < dedup_gap)
-                for prior in selected):
+        taken = [(str(prior.source), prior.peak) for prior in selected]
+        if _too_close(str(cand.source), cand.peak, taken, dedup_gap):
             skipped.append({"peak": cand.peak, "reason": "near-duplicate of a stronger moment"})
             continue
         length = min(max_length, max(min_length, cand.clip.duration))
@@ -166,8 +165,10 @@ def plan_shorts(candidates: list, evidence_map: dict, options: dict | None = Non
                  "chronological": not hook_first}
     shorts: list[ShortPlan] = []
     used: set = set()
+    gap = float(per_short.get("dedup_gap", 6))
     for _ in range(count):
-        remaining = [s.highlight for s in ranked if (str(s.highlight.source), s.highlight.peak) not in used]
+        remaining = [s.highlight for s in ranked
+                     if not _too_close(str(s.highlight.source), s.highlight.peak, list(used), gap)]
         if not remaining:
             break
         result = select(remaining, evidence_map, per_short)
@@ -319,6 +320,12 @@ def moment_signals(peak, observations: list, segments: list, words: list,
     quality = (max(scores) / 10.0) * (0.25 if dark else 1.0)
     return {"action": round(action, 3), "dialogue": round(dialogue, 3),
             "emotion": round(emotion, 3), "quality": round(quality, 3)}
+
+
+def _too_close(source: str, peak: float, taken: list, gap: float) -> bool:
+    """Same exact moment, or same source within the dedup gap of a taken peak."""
+    return any((source, peak) == t or (source == t[0] and abs(peak - t[1]) < gap)
+               for t in taken)
 
 
 def rescore(candidates: list, evidence_map: dict, weights: dict | None = None) -> list[ScoredHighlight]:

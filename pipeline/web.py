@@ -815,9 +815,13 @@ def create_app(config_path: str | Path = DEFAULT_CONFIG) -> FastAPI:
             evidence = spotlight_evidence(plan)
             evidence_map[evidence.source] = evidence
             try:
-                sha_map[evidence.source] = media_info(evidence.source)["sha256"]
+                current_sha = media_info(evidence.source)["sha256"]
             except HTTPException:
-                sha_map[evidence.source] = plan.get("source_sha256") or ""
+                current_sha = plan.get("source_sha256") or ""
+            saved_sha = plan.get("source_sha256") or ""
+            if saved_sha and current_sha and current_sha != saved_sha:
+                raise HTTPException(400, f"Job {job_id} source changed since analysis; re-analyze before generating")
+            sha_map[evidence.source] = current_sha
             segments_map[evidence.source] = evidence.segments
             segments_map[str(Path(evidence.source).resolve())] = evidence.segments
             return evidence
