@@ -24,6 +24,11 @@ from .contracts import Clip
 from .util import PipelineError, read_json, source_fingerprint, write_json, ffprobe_json
 from .lifecycle import contain_children, spawn_detached
 from .settings import SETTINGS, ensure_config, public_settings, validate_settings, revision
+from .passes import apply_transitions as apply_transition_pass
+from .passes import clear_transitions as clear_transition_pass
+from .passes import plan_transitions as plan_transition_pass
+from .passes import remove_watermark as remove_watermark_pass
+from .passes import upsert_watermark as upsert_watermark_pass
 from .sequence import Sequence, RenderSettings, from_plan, export_sequence
 
 MEDIA_EXTENSIONS = {".mp4", ".mov", ".mkv", ".avi", ".webm", ".mp3", ".wav", ".m4a", ".aac", ".flac", ".ogg", ".png", ".jpg", ".jpeg", ".webp", ".bmp"}
@@ -101,6 +106,20 @@ class AssetRequest(BaseModel):
 class RenderRequest(BaseModel):
     settings: RenderSettings | None = None
     dry_run: bool = False
+
+
+class PassSequenceRequest(BaseModel):
+    sequence: Sequence
+    options: dict[str, Any] = {}
+
+
+class WatermarkRequest(BaseModel):
+    sequence: Sequence
+    overlay: dict[str, Any] = {}
+
+
+class SequenceRequest(BaseModel):
+    sequence: Sequence
 
 
 def load_config(path: Path) -> dict[str, Any]:
@@ -713,6 +732,45 @@ def create_app(config_path: str | Path = DEFAULT_CONFIG) -> FastAPI:
         out = project_path(project_id) / f"timeline.{fmt}"
         warnings = export_sequence(sequence, out, fmt)
         return {"ok": True, "path": str(out), "warnings": warnings}
+
+    def pass_durations(sequence: Sequence) -> dict[str, float | None]:
+        """Probed source lengths for handle checks; unknown stays None (skip, never guess)."""
+        durations: dict[str, float | None] = {}
+        for source in {c.source for c in sequence.clips}:
+            try:
+                durations[source] = float(probe(Path(source))["format"]["duration"])
+            except (KeyError, TypeError, ValueError, PipelineError):
+                durations[source] = None
+        return durations
+
+    @app.post("/api/projects/{project_id}/transitions/plan")
+    def transitions_plan(project_id: str, request: PassSequenceRequest):
+        project_path(project_id)
+        return plan_transition_pass(request.sequence, request.options, pass_durations(request.sequence))
+
+    @app.post("/api/projects/{project_id}/transitions/apply")
+    def transitions_apply(project_id: str, request: PassSequenceRequest):
+        project_path(project_id)
+        sequence, result = apply_transition_pass(request.sequence, request.options, pass_durations(request.sequence))
+        return {"sequence": sequence.model_dump(), **result}
+
+    @app.post("/api/projects/{project_id}/transitions/clear")
+    def transitions_clear(project_id: str, request: SequenceRequest):
+        project_path(project_id)
+        sequence, removed = clear_transition_pass(request.sequence)
+        return {"sequence": sequence.model_dump(), "removed": removed}
+
+    @app.put("/api/projects/{project_id}/watermark")
+    def watermark_put(project_id: str, request: WatermarkRequest):
+        project_path(project_id)
+        sequence, overlay = upsert_watermark_pass(request.sequence, request.overlay)
+        return {"sequence": sequence.model_dump(), "overlay": overlay.model_dump()}
+
+    @app.delete("/api/projects/{project_id}/watermark")
+    def watermark_delete(project_id: str, request: SequenceRequest):
+        project_path(project_id)
+        sequence, removed = remove_watermark_pass(request.sequence)
+        return {"sequence": sequence.model_dump(), "removed": removed}
 
     @app.get("/api/summary")
     def summary() -> dict[str, Any]:

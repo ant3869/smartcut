@@ -99,14 +99,19 @@ export function split(sequence, id, time, linked = true) {
   }
   return validate(sequence);
 }
+export function pruneTransitions(sequence, ids) {
+  sequence.transitions = (sequence.transitions || []).filter(t =>
+    (!t.outgoing_id || !ids.has(t.outgoing_id)) && (!t.incoming_id || !ids.has(t.incoming_id)));
+  return sequence;
+}
 export function remove(sequence, id, ripple = false, linked = true) {
   const targets = linkedClips(sequence, id, linked);
   editable(sequence, targets);
   if (Array.isArray(id)) {
-    if (!ripple) {const ids=new Set(targets.map(c=>c.id));sequence.clips=sequence.clips.filter(c=>!ids.has(c.id));return validate(sequence);}
+    if (!ripple) {const ids=new Set(targets.map(c=>c.id));sequence.clips=sequence.clips.filter(c=>!ids.has(c.id));pruneTransitions(sequence,ids);return validate(sequence);}
     const spans=targets.map(c=>[c.start,end(c)]).sort((a,b)=>a[0]-b[0]),merged=[];
     for(const [a,b] of spans){const last=merged.at(-1);if(last&&a<=last[1]+.001)last[1]=Math.max(last[1],b);else merged.push([a,b]);}
-    const ids=new Set(targets.map(c=>c.id));sequence.clips=sequence.clips.filter(c=>!ids.has(c.id));
+    const ids=new Set(targets.map(c=>c.id));sequence.clips=sequence.clips.filter(c=>!ids.has(c.id));pruneTransitions(sequence,ids);
     for(const [a,b] of merged.reverse()){
       if(sequence.clips.some(c=>c.start<b-.001&&end(c)>a+.001))throw new Error('Another clip crosses this ripple range. Split it or use Delete.');
       editable(sequence,sequence.clips.filter(c=>c.start>=b-.001));
@@ -126,6 +131,7 @@ export function remove(sequence, id, ripple = false, linked = true) {
     sequence.markers = sequence.markers.map(m => ({...m,time:m.time >= finish ? m.time-delta : m.time > start ? start : m.time}));
   }
   sequence.clips = sequence.clips.filter(c => !ids.has(c.id));
+  pruneTransitions(sequence, ids);
   return validate(sequence);
 }
 export function addTrack(sequence, kind) {
