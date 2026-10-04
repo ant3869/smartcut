@@ -735,8 +735,10 @@ async function savePasses(patch){
   state.passes.state=body.passes;
   return body.passes;
 }
-let passBusy=false;
+let passBusy=false,passProject=null;
+const passAlive=()=>!passBusy||state.project?.id===passProject;
 function passCommit(label,next,epoch){
+  if(!passAlive())throw new Error('Project changed during the run — result discarded');
   const stale=PP.epochMismatch(epoch,state.editVersion);
   if(stale)throw new Error(stale);
   commit(label,next);
@@ -769,7 +771,7 @@ const passClear={
 function passStatus(id){
   const entry=state.passes?.state[id];
   if(!entry)return 'unconfigured';
-  if(entry.status==='running'||entry.status==='complete'||entry.status==='warning'||entry.status==='error')return entry.status;
+  if(entry.status==='running'||entry.status==='complete'||entry.status==='warning'||entry.status==='error'||entry.status==='ready')return entry.status;
   return state.passes.derived?.[id]==='ready'?'ready':'unconfigured';
 }
 function passesIntroDialog(){
@@ -826,13 +828,15 @@ function passRow(def){
   const kindBadge=def.kind==='timeline'?'<span class="pass-badge timeline">timeline</span>':'<span class="pass-badge render">render-only</span>';
   const canRun=def.executor!=='none',canClear=!!passClear[def.id];
   const runTitle=passBusy?'A pass is running':canRun?'Run this pass now':'Planned pass — no runner yet';
+  const cfgDis=passConfigure[def.id]&&!passBusy?'':'disabled';
+  const cfgTitle=!passConfigure[def.id]?'No settings yet':passBusy?'A pass is running':'Pass settings';
   return `<div class="pass-row" draggable="true" data-pass-row="${def.id}">
     <span class="pass-grip" title="Drag to reorder">⋮⋮</span>
     <input type="checkbox" data-pass-enabled="${def.id}" ${entry.enabled===false?'':'checked'} aria-label="Enable ${esc(def.label)}">
     <span class="pass-main"><strong>${esc(def.label)}</strong><small>${esc(def.description)} ${kindBadge}</small>
     ${entry.summary?`<small class="pass-summary">${esc(entry.summary)}</small>`:''}</span>
     <span class="pass-status ${status}">${status}</span>
-    <span class="pass-actions">${button('pass-configure','Settings','quiet',`data-id="${def.id}" ${passConfigure[def.id]?'':'disabled title="No settings yet"'}`)}${button('pass-run','Run','accent',`data-id="${def.id}" title="${runTitle}" ${canRun&&!passBusy?'':'disabled'}`)}${canClear?button('pass-clear','Clear','quiet',`data-id="${def.id}" ${passBusy?'disabled':''}`):''}</span>
+    <span class="pass-actions">${button('pass-configure','Settings','quiet',`data-id="${def.id}" title="${cfgTitle}" ${cfgDis}`)}${button('pass-run','Run','accent',`data-id="${def.id}" title="${runTitle}" ${canRun&&!passBusy?'':'disabled'}`)}${canClear?button('pass-clear','Clear','quiet',`data-id="${def.id}" ${passBusy?'disabled':''}`):''}</span>
   </div>`;
 }
 function passesDialog(){
@@ -843,8 +847,8 @@ function passesDialog(){
   const recipes=(state.passes.recipes||[]).map(r=>`<option value="${esc(r.name)}">${esc(r.name)}${r.builtin?' · built-in':''}</option>`).join('');
   openDialog(`${dialogHead('PIPELINE','Passes')}<div class="dialog-body">
     <p>Runs the same features as the Auto menu, in order. <b>Timeline</b> passes edit your sequence (undoable); <b>render-only</b> passes bake in at export.</p>
-    <div class="pass-recipes"><label class="stacked">Recipe<select id="passes-recipe">${recipes}</select></label>
-    <span class="pass-recipe-actions">${button('pass-recipe-apply','Apply','accent')}${button('pass-recipe-save','Save','quiet')}${button('pass-recipe-duplicate','Duplicate','quiet')}${button('pass-recipe-rename','Rename','quiet')}${button('pass-recipe-delete','Delete','quiet')}${button('pass-recipe-reset','Defaults','quiet')}</span></div>
+    <div class="pass-recipes"><label class="stacked">Recipe<select id="passes-recipe" ${passBusy?'disabled':''}>${recipes}</select></label>
+    <span class="pass-recipe-actions">${button('pass-recipe-apply','Apply','accent',passBusy?'disabled':'')}${button('pass-recipe-save','Save','quiet',passBusy?'disabled':'')}${button('pass-recipe-duplicate','Duplicate','quiet',passBusy?'disabled':'')}${button('pass-recipe-rename','Rename','quiet',passBusy?'disabled':'')}${button('pass-recipe-delete','Delete','quiet',passBusy?'disabled':'')}${button('pass-recipe-reset','Defaults','quiet',passBusy?'disabled':'')}</span></div>
     <div id="passes-rows">${rows}</div>
     <label class="toggle-row">Stop on first failure<input type="checkbox" id="passes-stop" checked><small>Uncheck to run every pass and collect all results</small></label>
     </div><footer class="dialog-footer"><span id="passes-note">Drag rows to reorder · single Run never touches other passes.</span>${button('close-dialog','Close')}<button class="primary" data-action="pass-run-all" ${passBusy?'disabled':''}>Run Enabled Passes</button></footer>`,'passes');
@@ -856,30 +860,34 @@ async function refreshPassesPanel(){
 }
 async function runSinglePass(id){
   if(passBusy){toast('A pass is already running','warn');return;}
-  passBusy=true;const epoch=state.editVersion;
+  passBusy=true;passProject=state.project?.id;const epoch=state.editVersion;
+  try{
   await savePasses({[id]:{status:'running'}});
   if($('#passes-rows'))await refreshPassesPanel();
   try{
     const summary=await PP.runPass(id,state.passes.state,{runners:passRunners,epoch});
+    if(!passAlive()){toast('Project changed during the run — status not saved','warn');return;}
     await savePasses({[id]:{status:'complete',summary:String(summary??'')}});
     toast(`${id} · ${summary}`,'ok');
   }catch(e){
-    await savePasses({[id]:{status:'error',summary:String(e.message||e)}});
+    if(passAlive())await savePasses({[id]:{status:'error',summary:String(e.message||e)}});
     throw e;
-  }finally{passBusy=false;if($('#passes-rows'))await refreshPassesPanel();}
+  }finally{if($('#passes-rows'))await refreshPassesPanel();}
+  }finally{passBusy=false;passProject=null;}
 }
 async function runAllPasses(){
   if(passBusy){toast('A pass is already running','warn');return;}
-  passBusy=true;const epoch=state.editVersion;
+  passBusy=true;passProject=state.project?.id;const epoch=state.editVersion;
   try{
   const stopOnError=$('#passes-stop')?.checked!==false;
   const report=await PP.runEnabled(state.passes.state,{runners:passRunners,stopOnError,job:state.job,epoch,version:()=>state.editVersion,
-    onStatus:(id,status,summary)=>savePasses({[id]:{status,summary:String(summary??'')}}).catch(()=>{})});
+    onStatus:(id,status,summary)=>{if(passAlive())savePasses({[id]:{status,summary:String(summary??'')}}).catch(()=>{});}});
   for(const [id,r] of Object.entries(report.results))
     await savePasses({[id]:r.skipped?{summary:r.summary}:r.ok?{status:id==='qc'&&/[1-9]\d* error/.test(r.summary||'')?'error':'complete',summary:r.summary}:{status:'error',summary:r.error}});
   await refreshPassesPanel();
   toast(report.terminated?`Render is terminal · later passes skipped`:report.stopped?`Stopped at ${report.stopped}`:`All enabled passes ran`,'ok');
-  }finally{passBusy=false;await refreshPassesPanel();}}
+  if(!passAlive())toast('Project changed during the run — statuses not saved','warn');
+  }finally{passBusy=false;passProject=null;if(passAlive())await refreshPassesPanel();}}
 async function applyRecipe(name){
   const recipe=(state.passes.recipes||[]).find(r=>r.name===name);
   if(!recipe)throw new Error('Pick a recipe first');
