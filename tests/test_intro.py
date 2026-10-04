@@ -73,9 +73,60 @@ def test_build_reapply_replaces(tmp_path):
     sha = source_fingerprint(intro)["sha256"]
     sequence = intro_sequence()
     once, _ = build_intro_outro(sequence, {"intro_path": str(intro), "intro_sha": sha})
-    twice, _ = build_intro_outro(once, {"intro_path": str(intro), "intro_sha": sha})
+    twice, summary = build_intro_outro(once, {"intro_path": str(intro), "intro_sha": sha})
     assert len(twice.clips) == 4  # v1/a1 + fresh intro pair, no stacking
     assert twice.intro and len(twice.intro.clip_ids) == 2
+    v1 = next(c for c in twice.clips if c.id == "v1")
+    assert v1.start == 2.0  # old offset undone first, no accumulating gap
+    assert summary["intro_duration"] == 2.0
+
+
+def test_preset_values_apply_per_side(tmp_path):
+    import sys
+    sys.path.insert(0, "tests")
+    from test_passes import av_media
+    from pipeline.util import source_fingerprint
+    intro = av_media(tmp_path, name="intro.mp4", dur=2.0)
+    sha = source_fingerprint(intro)["sha256"]
+    sequence = intro_sequence()
+    built, _ = build_intro_outro(sequence, {"intro_path": str(intro), "intro_sha": sha,
+                                            "preset": "Nexco Standard"})
+    assert built.intro.fade_in == .5 and built.intro.transition == "cross-dissolve"
+    assert built.intro.transition_duration == .5 and built.intro.preset == "Nexco Standard"
+
+
+def test_video_transition_reserves_handles(tmp_path):
+    import sys
+    sys.path.insert(0, "tests")
+    from test_passes import av_media
+    from pipeline.util import source_fingerprint
+    intro = av_media(tmp_path, name="intro.mp4", dur=2.0)
+    sha = source_fingerprint(intro)["sha256"]
+    sequence = intro_sequence()
+    built, summary = build_intro_outro(
+        sequence, {"intro_path": str(intro), "intro_sha": sha,
+                   "intro_transition": "cross-dissolve", "intro_transition_duration": .5})
+    assert summary["intro_duration"] == 1.75  # tail .25 reserved as handle
+    iclip = next(c for c in built.clips if c.id in built.intro.clip_ids and c.track == "V1")
+    assert iclip.source_end == 1.75  # 2.0 - .25 stays available
+    cuts = [t for t in built.transitions if t.edge == "cut"]
+    assert len(cuts) == 1 and cuts[0].type == "cross-dissolve"
+
+
+def test_still_transition_degrades_to_edges(tmp_path):
+    import sys
+    sys.path.insert(0, "tests")
+    from test_passes import mark_png
+    from pipeline.util import source_fingerprint
+    logo = mark_png(tmp_path)
+    sha = source_fingerprint(logo)["sha256"]
+    sequence = intro_sequence()
+    built, summary = build_intro_outro(
+        sequence, {"intro_path": str(logo), "intro_sha": sha, "intro_duration": 2.0,
+                   "intro_transition": "cross-dissolve"})
+    assert summary["intro_duration"] == 2.0
+    assert not [t for t in built.transitions if t.edge == "cut"]
+    assert "intro_note" in summary or "intro_warning" in summary
 
 
 def video_only_sequence(path, sha):
@@ -131,7 +182,7 @@ def test_intro_apply_endpoint(tmp_path):
                                  "options": {"intro_path": str(intro), "preset": "Nexco Standard"}})
     assert response.status_code == 200, response.text
     body = response.json()
-    assert body["summary"]["intro_duration"] == 2.0
+    assert body["summary"]["intro_duration"] == 1.75  # Nexco cut reserves a tail handle
     assert body["sequence"]["intro"]["preset"] == "Nexco Standard"
 
 
@@ -220,3 +271,28 @@ def test_intro_toggle_off_leaves_silent_gap(tmp_path):
     assert mean_volume(on) != "n/a"  # intro tone audible
     off_level = mean_volume(off)
     assert off_level == "n/a" or float(off_level) <= -80  # gap is silent
+
+
+def test_intro_toggle_off_hides_branded_overlays(tmp_path):
+    import sys
+    sys.path.insert(0, "tests")
+    from test_passes import av_media, mark_png
+    from pipeline.blade import FfmpegBlade
+    from pipeline.util import media_duration, run_checked, source_fingerprint
+    main = av_media(tmp_path, name="main.mp4", dur=2.0)
+    sequence = video_only_sequence(main, source_fingerprint(main)["sha256"])
+    intro = av_media(tmp_path, name="intro.mp4", dur=2.0)
+    logo = mark_png(tmp_path)
+    built, _ = build_intro_outro(
+        sequence, {"intro_path": str(intro), "intro_sha": source_fingerprint(intro)["sha256"],
+                   "intro_logo_path": str(logo)})
+    assert built.intro.overlay_ids  # logo overlay stored
+    out = FfmpegBlade(preset="ultrafast", output_fps=10).render_sequence(
+        built, tmp_path / "off.mp4", passes={"intro": False})
+    assert abs(media_duration(out) - 4.0) < .3
+    frame = tmp_path / "gap.rgb"
+    run_checked(["ffmpeg", "-hide_banner", "-v", "error", "-y", "-ss", "0.5", "-i", str(out),
+                 "-vframes", "1", "-vf", "crop=16:16:24:0", "-f", "rawvideo", "-pix_fmt",
+                 "rgb24", str(frame)])
+    top = frame.read_bytes()
+    assert max(top) < 40  # top-center band is black, no logo drawn

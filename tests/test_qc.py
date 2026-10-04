@@ -171,3 +171,44 @@ def test_qc_reports_loudness_info(tmp_path):
                      kind="audio", track="A1", start=0, source_start=0, source_end=4)])
     _, _, infos = levels(full_report(sequence))
     assert "loudness" in infos
+
+
+def test_qc_ignores_disabled_and_muted(tmp_path):
+    from pipeline.sequence import Sequence, SequenceClip
+    sequence = qc_sequence()
+    ghost = next(c for c in sequence.clips if c.id == "v2").model_copy(update={
+        "id": "ghost", "source": "gone.mp4",
+        "source_sha256": "c" * 64, "enabled": False})
+    sequence.clips.append(ghost)
+    muted = next(c for c in sequence.clips if c.id == "a1").model_copy(update={
+        "id": "a1b", "start": 0})
+    sequence.clips.append(muted)
+    next(t for t in sequence.tracks if t.id == "A1").muted = True
+    report = run_qc(sequence)
+    accused = {f.get("clip_id") for f in report["errors"] + report["warnings"]}
+    assert "ghost" not in accused and "a1b" not in accused
+
+
+def mixed_wav(tmp_path):
+    from pipeline.util import run_checked
+    path = tmp_path / "mixed.wav"
+    run_checked(["ffmpeg", "-hide_banner", "-v", "error", "-y", "-f", "lavfi",
+                 "-i", "sine=frequency=440:duration=2",
+                 "-f", "lavfi", "-i", "anullsrc=r=44100:cl=mono:d=2",
+                 "-filter_complex", "[0:a][1:a]concat=n=2:v=0:a=1",
+                 "-c:a", "pcm_s16le", str(path)])
+    return path
+
+
+def test_qc_scans_each_source_window(tmp_path):
+    from pipeline.sequence import Sequence, SequenceClip
+    from pipeline.util import source_fingerprint
+    wav = mixed_wav(tmp_path)
+    sha = source_fingerprint(wav)["sha256"]
+    clips = [SequenceClip(id="a1", source=str(wav), source_sha256=sha, kind="audio",
+                          track="A1", start=0, source_start=0, source_end=2),
+             SequenceClip(id="a2", source=str(wav), source_sha256=sha, kind="audio",
+                          track="A1", start=2, source_start=2, source_end=4)]
+    sequence = Sequence(source_sha256=sha, width=64, height=64, fps=10, clips=clips)
+    _, warnings, _ = levels(full_report(sequence))
+    assert "silent-audio" in warnings  # second window is silence, same file

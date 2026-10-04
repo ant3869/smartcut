@@ -85,12 +85,14 @@ def _insert_clips(sequence, spec, media: dict, start: float, prefix: str, option
     from .sequence import SequenceClip
     ids: list[str] = []
     link = uuid.uuid4().hex[:12]
+    play_start, play_end = media.get("play", (0.0, media["resolved"]))
     video_id = f"{prefix}-{uuid.uuid4().hex[:8]}"
     fit = spec.fit if media["kind"] == "video" else ("fit" if spec.keep_aspect else "stretch")
     sequence.clips.append(SequenceClip(
         id=video_id, source=spec.media_path, source_sha256=spec.media_sha,
         kind="image" if media["kind"] == "image" else "video", track="V1",
-        start=round(start, 3), source_start=0.0, source_end=round(spec.duration, 3),
+        start=round(start, 3), source_start=round(play_start, 3),
+        source_end=round(play_end, 3),
         volume=spec.volume, fit=fit, link_id=link if media["has_audio"] else None,
         name=f"{prefix.title()} · {spec.preset or 'custom'}".strip()))
     ids.append(video_id)
@@ -99,7 +101,7 @@ def _insert_clips(sequence, spec, media: dict, start: float, prefix: str, option
         sequence.clips.append(SequenceClip(
             id=audio_id, source=spec.media_path, source_sha256=spec.media_sha,
             kind="audio", track="A1", start=round(start, 3),
-            source_start=0.0, source_end=round(spec.duration, 3),
+            source_start=round(play_start, 3), source_end=round(play_end, 3),
             volume=spec.volume, link_id=link, name=f"{prefix.title()} audio"))
         ids.append(audio_id)
     return ids
@@ -131,7 +133,8 @@ def _side_overlays(sequence, spec, start: float, prefix: str, options: dict):
     return ids
 
 
-def _side_transitions(sequence, video_id: str, start: float, spec, prefix: str):
+def _side_transitions(sequence, video_id: str, start: float, spec, prefix: str,
+                      media_kind: str = "video"):
     """Edge fades plus the cut transition into/out of the main sequence.
 
     The cut side needs a real adjacent main clip; without one the edge
@@ -154,7 +157,7 @@ def _side_transitions(sequence, video_id: str, start: float, spec, prefix: str):
             outgoing_id=video_id, edge="out", type="fade",
             duration=min(spec.fade_out, spec.duration / 2)))
         ids.append(fade_id)
-    if spec.transition != "none":
+    if spec.transition != "none" and media_kind != "image":
         at = round(start + spec.duration, 3) if prefix == "intro" else round(start, 3)
         if prefix == "intro":
             neighbor = next((c for c in sequence.clips
@@ -189,12 +192,28 @@ def build_intro_outro(sequence, options: dict | None = None):
 
     options = dict(options or {})
     if options.get("preset") and options["preset"] in PRESETS:
-        options = {**PRESETS[options["preset"]], **options}
+        for prefix in ("intro", "outro"):
+            for key, value in PRESETS[options["preset"]].items():
+                options.setdefault(f"{prefix}_{key}", value)
     sequence = copy.deepcopy(sequence)
     summary: dict = {}
     for prefix in ("intro", "outro"):
         path = options.get(f"{prefix}_path")
         old = getattr(sequence, prefix)
+        if prefix == "intro" and old is not None:
+            # Undo the prior ripple before removing, or gaps accumulate.
+            unshift = round(old.duration, 3)
+            for clip in sequence.clips:
+                clip.start = round(clip.start - unshift, 3)
+            for marker in sequence.markers:
+                marker.time = round(marker.time - unshift, 3)
+            for transition in sequence.transitions:
+                transition.cut_time = round(transition.cut_time - unshift, 3)
+            for overlay in sequence.overlays:
+                if overlay.start is not None:
+                    overlay.start = round(overlay.start - unshift, 3)
+                if overlay.end is not None:
+                    overlay.end = round(overlay.end - unshift, 3)
         if not path:
             _remove_side(sequence, old)
             setattr(sequence, prefix, None)
@@ -202,6 +221,7 @@ def build_intro_outro(sequence, options: dict | None = None):
             continue
         _remove_side(sequence, old)
         media = _probe(path)
+        media["total"] = media["duration"] or 0
         resolved = media["duration"]
         if media["kind"] == "image":
             resolved = options.get(f"{prefix}_duration")
@@ -210,6 +230,20 @@ def build_intro_outro(sequence, options: dict | None = None):
                 raise PipelineError(f"Still {prefix} needs a duration in seconds")
             resolved = float(resolved)
         media["resolved"] = resolved
+        if media["kind"] == "video" and options.get(f"{prefix}_transition", "none") != "none":
+            reserve = min(float(options.get(f"{prefix}_transition_duration", .5)) / 2,
+                          max(0.0, media["total"] - .1))
+            if reserve > 0:
+                if prefix == "intro":
+                    media["play"] = (0.0, media["total"] - reserve)
+                else:
+                    media["play"] = (reserve, media["total"])
+                media["resolved"] = round(media["play"][1] - media["play"][0], 3)
+        else:
+            media["play"] = (0.0, media["resolved"])
+        if media["kind"] == "image" and options.get(f"{prefix}_transition", "none") != "none":
+            summary[f"{prefix}_note"] = \
+                "still images have no source handles; the cut transition is skipped, edge fades apply"
         spec = _side_spec(sequence, {**options, f"{prefix}_sha": options[f"{prefix}_sha"]}, prefix, media)
         if prefix == "intro":
             shift = round(spec.duration, 3)
@@ -229,7 +263,8 @@ def build_intro_outro(sequence, options: dict | None = None):
             start = round(sequence.duration, 3)
         spec.clip_ids = _insert_clips(sequence, spec, media, start, prefix, options)
         spec.overlay_ids = _side_overlays(sequence, spec, start, prefix, options)
-        spec.transition_ids, cut_note = _side_transitions(sequence, spec.clip_ids[0], start, spec, prefix)
+        spec.transition_ids, cut_note = _side_transitions(
+            sequence, spec.clip_ids[0], start, spec, prefix, media["kind"])
         if cut_note:
             summary[f"{prefix}_warning"] = cut_note
         setattr(sequence, prefix, spec)

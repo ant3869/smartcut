@@ -89,13 +89,13 @@ class FfmpegBlade:
 
     def _render_text_overlays(self, sequence, video_label: str, width: int, height: int,
                               duration: float, filters: list, render_warnings: list,
-                              enabled: bool) -> str:
+                              enabled: bool, skip: set | None = None) -> str:
         """drawtext pass for title/cta overlays. Warns (no text) when the host
         has no usable font; text fades are stored but not rendered."""
         if not enabled:
             return video_label
         texts = [o for o in (getattr(sequence, "overlays", None) or [])
-                 if o.kind in ("title", "cta")]
+                 if o.kind in ("title", "cta") and o.id not in (skip or set())]
         if not texts:
             return video_label
         font = self.text_font()
@@ -307,6 +307,10 @@ class FfmpegBlade:
             if spec and spec.background:
                 for clip_id in spec.clip_ids:
                     framing[clip_id] = (spec.background, spec.fit)
+        skip_overlays: set[str] = set()
+        for spec in (sequence.intro, sequence.outro):
+            if spec and (spec is not intro_spec and spec is not outro_spec):
+                skip_overlays.update(spec.overlay_ids)
         probes = {}
         input_index = 0
         cuts, edges = self._transition_lookup(sequence, passes["transitions"])
@@ -385,6 +389,8 @@ class FfmpegBlade:
         for overlay in sequence_overlays:
             if overlay.kind in ("title", "cta"):
                 continue  # text pass below; image branch requires a file
+            if overlay.id in skip_overlays:
+                continue  # branded overlay of a disabled intro/outro
             try:
                 image = Path(overlay.path)
                 if not image.is_file():
@@ -405,7 +411,7 @@ class FfmpegBlade:
                 render_warnings.append(str(exc))
         video_label = self._render_text_overlays(
             sequence, video_label, width, height, duration, filters, render_warnings,
-            passes["watermark"])
+            passes["watermark"], skip_overlays)
         if watermark and passes["watermark"] and not sequence_overlays:
             if not watermark.is_file():
                 raise PipelineError(f"Watermark is missing: {watermark}")

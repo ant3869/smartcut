@@ -27,6 +27,13 @@ def _probe_duration(source: str):
         return None
 
 
+def _playable(sequence):
+    """Clips the renderer actually exports: enabled, unmuted tracks."""
+    muted = {t.id for t in sequence.tracks if t.muted}
+    clips = [c for c in sequence.clips if c.enabled and c.track not in muted]
+    return clips
+
+
 def run_qc(sequence, *, settings=None, output_folder: str | None = None,
            filename: str | None = None, scan_seconds: float = 60.0) -> dict:
     """Inspect sequence (+ optional render settings/destination). Read-only."""
@@ -38,16 +45,20 @@ def run_qc(sequence, *, settings=None, output_folder: str | None = None,
     warnings: list[dict] = []
     infos: list[dict] = []
     checks = 0
+    clips = _playable(sequence)
+    excluded = {c.id for c in sequence.clips if c not in clips}
+    transitions = [t for t in sequence.transitions
+                   if t.outgoing_id not in excluded and t.incoming_id not in excluded]
 
     durations: dict[str, float | None] = {}
-    for clip in sequence.clips:
+    for clip in clips:
         if clip.source not in durations:
             durations[clip.source] = _probe_duration(clip.source) \
                 if Path(clip.source).is_file() else False
 
     # Media presence, staleness, trims.
     checks += 1
-    for clip in sequence.clips:
+    for clip in clips:
         known = durations[clip.source]
         if known is False:
             errors.append(_finding("error", "media-missing",
@@ -74,7 +85,7 @@ def run_qc(sequence, *, settings=None, output_folder: str | None = None,
     # Track topology: overlaps, gaps, duplicates, fragments.
     checks += 1
     tracks: dict[str, list] = {}
-    for clip in sorted(sequence.clips, key=lambda c: (c.track, c.start)):
+    for clip in sorted(clips, key=lambda c: (c.track, c.start)):
         tracks.setdefault(clip.track, []).append(clip)
     for track, clips in tracks.items():
         for left, right in zip(clips, clips[1:]):
@@ -105,8 +116,8 @@ def run_qc(sequence, *, settings=None, output_folder: str | None = None,
 
     # Transitions: references + handles.
     checks += 1
-    ids = {c.id for c in sequence.clips}
-    for transition in sequence.transitions:
+    ids = {c.id for c in clips}
+    for transition in transitions:
         for ref in (transition.outgoing_id, transition.incoming_id):
             if ref and ref not in ids:
                 errors.append(_finding("error", "transition-orphan",
@@ -114,8 +125,8 @@ def run_qc(sequence, *, settings=None, output_folder: str | None = None,
                                        f"missing clip {ref}", time=transition.cut_time))
         if transition.edge != "cut":
             continue
-        out = next((c for c in sequence.clips if c.id == transition.outgoing_id), None)
-        inc = next((c for c in sequence.clips if c.id == transition.incoming_id), None)
+        out = next((c for c in clips if c.id == transition.outgoing_id), None)
+        inc = next((c for c in clips if c.id == transition.incoming_id), None)
         if not out or not inc:
             continue
         for clip, side in ((out, "outgoing"), (inc, "incoming")):
@@ -197,7 +208,7 @@ def run_qc(sequence, *, settings=None, output_folder: str | None = None,
 
     infos.append(_finding("info", "qc-complete",
                           f"{checks} check groups, "
-                          f"{len(sequence.clips)} clips scanned"))
+                          f"{len(clips)} clips scanned"))
     return {"errors": errors, "warnings": warnings, "infos": infos,
             "summary": {"errors": len(errors), "warnings": len(warnings),
                         "infos": len(infos), "checks": checks}}
@@ -209,12 +220,15 @@ def run_signal_qc(sequence, *, scan_seconds: float = 60.0) -> dict:
     errors: list[dict] = []
     warnings: list[dict] = []
     infos: list[dict] = []
-    seen_audio: set[str] = set()
-    seen_video: set[str] = set()
-    for clip in sequence.clips:
+    seen_windows: set[tuple] = set()
+    scanned_audio = 0
+    scanned_video = 0
+    for clip in _playable(sequence):
         window = min(clip.duration, scan_seconds)
-        if clip.kind == "audio" and clip.source not in seen_audio:
-            seen_audio.add(clip.source)
+        key = (clip.source, round(clip.source_start, 3), round(clip.source_end, 3))
+        if clip.kind == "audio" and key not in seen_windows:
+            seen_windows.add(key)
+            scanned_audio += 1
             levels = FfmpegBlade.audio_levels(clip.source, start=clip.source_start,
                                               seconds=window)
             if levels["mean"] is None or levels["mean"] <= -70:
@@ -234,9 +248,9 @@ def run_signal_qc(sequence, *, scan_seconds: float = 60.0) -> dict:
                                       f"integrated, TP {loud['true_peak']:.1f}dB, "
                                       f"LRA {loud['lra']:.1f}",
                                       time=clip.start, clip_id=clip.id))
-        if clip.track.startswith("V") and clip.kind != "audio" \
-                and clip.source not in seen_video:
-            seen_video.add(clip.source)
+        if clip.track.startswith("V") and clip.kind != "audio" and key not in seen_windows:
+            seen_windows.add(key)
+            scanned_video += 1
             for span in FfmpegBlade.frozen_spans(clip.source, start=clip.source_start,
                                                  seconds=window):
                 at = clip.start + max(0, span["start"] - clip.source_start)
@@ -247,5 +261,5 @@ def run_signal_qc(sequence, *, scan_seconds: float = 60.0) -> dict:
     return {"errors": errors, "warnings": warnings, "infos": infos,
             "summary": {"errors": len(errors), "warnings": len(warnings),
                         "infos": len(infos),
-                        "scanned_audio": len(seen_audio),
-                        "scanned_video": len(seen_video)}}
+                        "scanned_audio": scanned_audio,
+                        "scanned_video": scanned_video}}
