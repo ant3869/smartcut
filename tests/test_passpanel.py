@@ -23,6 +23,12 @@ def test_default_state_covers_catalog():
     assert [s["order"] for s in state.values()] == list(range(len(PASSES)))
     assert all(s["status"] == "unconfigured" for s in state.values())
     assert all(s["settings"] == {} for s in state.values())
+    # Media-configured passes default off so a fresh batch reaches QC/Render.
+    assert state["silence"]["enabled"] is True
+    assert state["transitions"]["enabled"] is True
+    assert state["qc"]["enabled"] is True
+    for off in ("music-bed", "beat-cuts", "intro-outro", "watermark", "captions"):
+        assert state[off]["enabled"] is False, off
 
 
 def test_migration_adds_passes_and_recipes():

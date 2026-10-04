@@ -130,6 +130,10 @@ export async function runEnabled(state, ctx = {}) {
     try {
       const summary = await runPass(id, state, ctx);
       results[id] = { ok: true, summary: summary ?? '' };
+      // Rebase the staleness epoch: this pass legitimately edited the
+      // timeline, so the next runner must compare against the new version,
+      // not the batch start. Without a version source the epoch holds.
+      if (typeof ctx.version === 'function') ctx.epoch = ctx.version();
       if (passDef(id).terminal) terminated = id;
       if (id === 'qc' && typeof summary === 'string' && /[1-9]\d* error/.test(summary)
         && (state[id]?.settings?.block !== false) && stopOnError) {

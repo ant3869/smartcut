@@ -195,3 +195,19 @@ test('epochMismatch only fails on intervening edits', async () => {
   assert.equal(epochMismatch(5, 5), null);
   assert.match(epochMismatch(5, 6), /discarded/);
 });
+
+test('runEnabled rebases the epoch after each editing pass', async () => {
+  const seen = [];
+  let version = 0;
+  const st = state({
+    'audio-cleanup': { enabled: true, order: 0, settings: { normalize: true }, status: 'ready', summary: '' },
+    silence: { enabled: true, order: 1, settings: {}, status: 'ready', summary: '' },
+  });
+  const runners = {
+    applyCleanup: async (s, ctx) => { seen.push(ctx.epoch); version += 1; return 'saved'; },
+    quickSilence: async (s, ctx) => { seen.push(ctx.epoch); version += 1; return 'cut 1'; },
+  };
+  const report = await runEnabled(st, { runners, stopOnError: true, epoch: 0, version: () => version });
+  assert.deepEqual(seen, [0, 1]);
+  assert.equal(report.stopped, null);
+});

@@ -718,7 +718,7 @@ async function applyBed(form){
   const music_path=String(new FormData(form).get('music_path'));
   const result=await post(projectURL('audio/bed/apply'),{sequence:state.sequence,music_path,
     beats:audioBeats?.beats||[],options:bedOptions(form)});
-  closeDialog();passCommit(`Music bed · ${result.summary.clips_added} clips`,result.sequence,ctx?.epoch);
+  closeDialog();commit(`Music bed · ${result.summary.clips_added} clips`,result.sequence);
   toast(`Music bed · end ${result.summary.end}s`,'ok');
 }
 // ---- Passes panel: first-class orchestration over the Auto menu features. ----
@@ -873,7 +873,7 @@ async function runAllPasses(){
   passBusy=true;const epoch=state.editVersion;
   try{
   const stopOnError=$('#passes-stop')?.checked!==false;
-  const report=await PP.runEnabled(state.passes.state,{runners:passRunners,stopOnError,job:state.job,epoch,
+  const report=await PP.runEnabled(state.passes.state,{runners:passRunners,stopOnError,job:state.job,epoch,version:()=>state.editVersion,
     onStatus:(id,status,summary)=>savePasses({[id]:{status,summary:String(summary??'')}}).catch(()=>{})});
   for(const [id,r] of Object.entries(report.results))
     await savePasses({[id]:r.skipped?{summary:r.summary}:r.ok?{status:id==='qc'&&/[1-9]\d* error/.test(r.summary||'')?'error':'complete',summary:r.summary}:{status:'error',summary:r.error}});

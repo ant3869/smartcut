@@ -92,8 +92,16 @@ def catalog() -> list[dict]:
 
 
 def default_pass_state() -> dict:
-    """Fresh per-project pass config: all enabled, catalog order, no runs yet."""
-    return {p["id"]: {"enabled": True, "order": i, "settings": {},
+    """Fresh per-project pass config: runnable passes on, catalog order.
+
+    Passes that need per-project media configuration (a music file, an
+    audio source, intro/outro files, a watermark image) or have no runner
+    yet (captions) default off, or Run Enabled would halt on validation
+    before reaching QC and Render. The panel rows stay visible; enabling
+    one is a checkbox once its settings exist.
+    """
+    off_by_default = {"music-bed", "beat-cuts", "intro-outro", "watermark", "captions"}
+    return {p["id"]: {"enabled": p["id"] not in off_by_default, "order": i, "settings": {},
                       "status": "unconfigured", "summary": ""}
             for i, p in enumerate(PASSES)}
 
