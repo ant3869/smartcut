@@ -758,7 +758,7 @@ const passClear={
   'watermark':async()=>{needSequence();const r=await api(projectURL('watermark'),{method:'DELETE',body:JSON.stringify({sequence:state.sequence})});commit('Watermark removed',r.sequence);return `removed ${r.removed}`;},
   'audio-cleanup':async()=>{needSequence();const r=await post(projectURL('audio/cleanup/clear'),{sequence:state.sequence});commit('Cleanup cleared',r.sequence);return 'cleanup cleared';},
   'music-bed':async()=>{needSequence();const r=await api(projectURL('audio/bed'),{method:'DELETE',body:JSON.stringify({sequence:state.sequence})});commit('Music bed removed',r.sequence);return `removed ${r.removed} clips`;},
-  'intro-outro':async()=>{needSequence();let n=0;for(const side of ['intro','outro']){try{const r=await post(projectURL('intro-outro/remove'),{sequence:state.sequence,side});state.sequence=r.sequence;n+=r.removed;}catch{}}commit('Intro / outro removed',state.sequence);return `removed ${n} clips`;},
+  'intro-outro':async()=>{needSequence();const r=await post(projectURL('intro-outro/remove'),{sequence:state.sequence,side:'both'});commit('Intro / outro removed',r.sequence);return `removed ${r.removed} clips`;},
 };
 function passStatus(id){
   const entry=state.passes?.state[id];
@@ -767,8 +767,10 @@ function passStatus(id){
   return state.passes.derived?.[id]==='ready'?'ready':'unconfigured';
 }
 function passesIntroDialog(){
-  needSequence();
-  openDialog(`${dialogHead('PASSES','Intro / Outro settings')}<form id="passes-intro-form"><div class="dialog-body"><p>Saved on this pass. Run applies the preset through the same endpoint as the intro/outro feature.</p><label class="stacked">Preset<select name="preset"><option value="">Custom (set paths via API)</option>${['Nexco Standard','Social Promo','No Intro / Branded Outro'].map(p=>`<option ${state.passes?.state['intro-outro']?.settings?.preset===p?'selected':''}>${p}</option>`).join('')}</select></label></div><footer class="dialog-footer">${button('close-dialog','Cancel')}<button class="primary" type="submit">Save settings</button></footer></form>`,'passes');
+  needSequence();const s=state.passes?.state['intro-outro']?.settings||{};
+  const media=(state.project?.assets||[]).map(a=>a.path).filter(p=>/\.(mp4|mov|m4a|png|jpe?g|webp)$/i.test(p));
+  const opts=(sel)=>['<option value="">—</option>'].concat(media.map(p=>`<option value="${esc(p)}" ${sel===p?'selected':''}>${esc(basename(p))}</option>`)).join('');
+  openDialog(`${dialogHead('PASSES','Intro / Outro settings')}<form id="passes-intro-form"><div class="dialog-body"><p>Run applies these through the same intro/outro endpoint. At least one file is required — a preset alone carries no media.</p><label class="stacked">Preset<select name="preset"><option value="">Custom</option>${['Nexco Standard','Social Promo','No Intro / Branded Outro'].map(p=>`<option ${s.preset===p?'selected':''}>${p}</option>`).join('')}</select></label><label class="stacked">Intro file<select name="intro_path">${opts(s.intro_path)}</select></label><label class="stacked">Outro file<select name="outro_path">${opts(s.outro_path)}</select></label></div><footer class="dialog-footer">${button('close-dialog','Cancel')}<button class="primary" type="submit">Save settings</button></footer></form>`,'passes');
 }
 function passesQcDialog(){
   needSequence();const s=state.passes?.state.qc?.settings||{};
@@ -812,8 +814,8 @@ function passRow(def){
 function passesDialog(){
   needSequence();
   if(!state.passes)throw new Error('Passes not loaded yet');
-  const rows=PP.orderedPasses(Object.fromEntries(Object.entries(state.passes.state).map(([id,s])=>[id,{enabled:s.enabled!==false,order:s.order??0}])))
-    .map(({id})=>passRow(state.passes.catalog.find(c=>c.id===id))).join('');
+  const rows=PP.allOrdered(state.passes.catalog.map(c=>c.id),state.passes.state)
+    .map(id=>passRow(state.passes.catalog.find(c=>c.id===id))).join('');
   const recipes=(state.passes.recipes||[]).map(r=>`<option value="${esc(r.name)}">${esc(r.name)}${r.builtin?' · built-in':''}</option>`).join('');
   openDialog(`${dialogHead('PIPELINE','Passes')}<div class="dialog-body">
     <p>Runs the same features as the Auto menu, in order. <b>Timeline</b> passes edit your sequence (undoable); <b>render-only</b> passes bake in at export.</p>
@@ -1402,7 +1404,7 @@ function bind(){
     if(e.target.id==='passes-watermark-form'){const f=new FormData(e.target);await savePasses({watermark:{settings:{path:String(f.get('path')).trim(),position:String(f.get('position'))},status:'ready'}});closeDialog();toast('Watermark settings saved on the pass','ok');}
     if(e.target.id==='passes-beat-form'){const f=new FormData(e.target);await savePasses({'beat-cuts':{settings:{path:String(f.get('path')),sensitivity:Number(f.get('sensitivity')),mode:String(f.get('mode')),every:Number(f.get('every'))},status:'ready'}});closeDialog();toast('Beat Cuts settings saved on the pass','ok');}
     if(e.target.id==='passes-bed-form'){const f=new FormData(e.target);await savePasses({'music-bed':{settings:{music_path:String(f.get('music_path')),volume:Number(f.get('volume')),duck:f.has('duck')},status:'ready'}});closeDialog();toast('Music Bed settings saved on the pass','ok');}
-    if(e.target.id==='passes-intro-form'){const f=new FormData(e.target);await savePasses({'intro-outro':{settings:{preset:String(f.get('preset'))},status:'ready'}});closeDialog();toast('Intro / Outro settings saved on the pass','ok');}
+    if(e.target.id==='passes-intro-form'){const f=new FormData(e.target);await savePasses({'intro-outro':{settings:{preset:String(f.get('preset')),intro_path:String(f.get('intro_path')||''),outro_path:String(f.get('outro_path')||'')},status:'ready'}});closeDialog();toast('Intro / Outro settings saved on the pass','ok');}
     if(e.target.id==='passes-qc-form'){const f=new FormData(e.target);await savePasses({qc:{settings:{deep:f.has('deep'),block:f.has('block')},status:'ready'}});closeDialog();toast('QC settings saved on the pass','ok');}
     if(e.target.id==='marker-form'){const f=new FormData(e.target),id=e.target.dataset.markerForm;closeDialog();edit('Marker updated',s=>{const m=s.markers.find(x=>x.id===id);if(!m)throw new Error('Marker no longer exists');m.label=String(f.get('label')).trim().slice(0,200)||'Marker';m.time=Math.max(0,Number(f.get('time'))||0);});}
   });});

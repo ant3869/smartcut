@@ -46,11 +46,39 @@ export function orderedPasses(state) {
     .map(([id, s]) => ({ id, ...s }));
 }
 
+// Panel rendering order: EVERY catalog entry by stored order, including
+// disabled passes (they must stay visible so the user can re-enable them).
+// The enabled filter above is for execution only.
+export function allOrdered(ids, state) {
+  return [...ids].sort((a, b) => (state[a]?.order ?? 0) - (state[b]?.order ?? 0));
+}
+
+// Pre-run settings check so a pass with nothing configured fails with a
+// clear message instead of running against defaults that delete content
+// (e.g. an intro/outro preset with no media paths removes both sides).
+export function validatePassSettings(id, settings = {}) {
+  passDef(id);
+  const need = {
+    'music-bed': ['music_path'],
+    'beat-cuts': ['path'],
+    'watermark': ['path'],
+  }[id];
+  if (need && !need.every(k => settings[k])) {
+    const label = { 'music-bed': 'the music file', 'beat-cuts': 'the audio source', 'watermark': 'the watermark image' }[id];
+    return `Configure ${label} first`;
+  }
+  if (id === 'intro-outro' && !settings.intro_path && !settings.outro_path)
+    return 'Set an intro or outro file first (a preset alone has no media)';
+  return null;
+}
+
 // Run one pass through its registered runner. Runners are injected by app.js
 // and are the exact functions the Auto menu uses — never panel-local copies.
 export async function runPass(id, state, ctx = {}) {
   const def = passDef(id);
   const entry = state[id] || {};
+  const problem = validatePassSettings(id, entry.settings || {});
+  if (problem) throw new Error(problem);
   const key = def.reuses;
   const fn = key && (ctx.runners || {})[key];
   if (!fn) throw new Error(`Pass ${id} has no runner registered${def.executor === 'none' ? ' (planned pass)' : ''}`);
@@ -73,6 +101,10 @@ export async function runEnabled(state, ctx = {}) {
   const results = {};
   let stopped = null;
   for (const { id } of orderedPasses(state)) {
+    if (passDef(id).executor === 'none') {
+      results[id] = { ok: true, skipped: true, summary: 'planned pass — skipped' };
+      continue;
+    }
     try {
       const summary = await runPass(id, state, ctx);
       results[id] = { ok: true, summary: summary ?? '' };

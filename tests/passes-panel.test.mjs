@@ -1,6 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { PASS_DEFS, orderedPasses, runPass, runEnabled } from '../frontend/passes-panel.mjs';
+import { allOrdered, validatePassSettings } from '../frontend/passes-panel.mjs';
 
 const state = (over = {}) => ({
   'audio-cleanup': { enabled: true, order: 1, settings: { normalize: true }, status: 'ready', summary: '' },
@@ -68,8 +69,6 @@ test('runEnabled skips disabled passes and reports per-pass status', async () =>
 });
 
 test('registry reuses the same runner keys as the Auto menu paths', async () => {
-  // The panel must orchestrate, not duplicate: transitions/watermark entries
-  // name the exact implementation they drive, and runPass dispatches through it.
   const defs = Object.fromEntries(PASS_DEFS.map(p => [p.id, p]));
   assert.equal(defs.transitions.reuses, 'applyTransitions');
   assert.equal(defs.watermark.reuses, 'applyWatermark');
@@ -80,4 +79,38 @@ test('registry reuses the same runner keys as the Auto menu paths', async () => 
   };
   await runPass('transitions', state({ transitions: { enabled: true, order: 3, settings: { type: 'fade' }, status: 'ready', summary: '' } }), { runners });
   assert.deepEqual(calls, [['transitions', { type: 'fade' }]]);
+});
+
+test('allOrdered keeps disabled passes visible in stored order', () => {
+  const ids = ['silence', 'qc', 'audio-cleanup'];
+  const st = state({ qc: { enabled: false, order: 5, settings: {}, status: 'x', summary: '' } });
+  assert.deepEqual(allOrdered(ids, st), ['silence', 'audio-cleanup', 'qc']);
+});
+
+test('runEnabled skips planned passes without runners', async () => {
+  const calls = [];
+  const st = state({
+    'audio-cleanup': { enabled: false, order: 9, settings: {}, status: 'ready', summary: '' },
+    captions: { enabled: true, order: 0, settings: {}, status: 'ready', summary: '' },
+    silence: { enabled: true, order: 1, settings: {}, status: 'ready', summary: '' },
+  });
+  const runners = { quickSilence: async () => { calls.push('silence'); return 'cut 3'; } };
+  const report = await runEnabled(st, { runners, stopOnError: true });
+  assert.deepEqual(calls, ['silence']);
+  assert.equal(report.stopped, null);
+  assert.equal(report.results.captions.skipped, true);
+});
+
+test('validatePassSettings requires media before destructive runs', () => {
+  assert.match(validatePassSettings('intro-outro', { preset: 'Nexco Standard' }), /intro or outro file/i);
+  assert.equal(validatePassSettings('intro-outro', { intro_path: 'a.mp4' }), null);
+  assert.match(validatePassSettings('music-bed', {}), /music file/i);
+  assert.match(validatePassSettings('beat-cuts', {}), /audio source/i);
+  assert.match(validatePassSettings('watermark', {}), /watermark image/i);
+  assert.equal(validatePassSettings('qc', {}), null);
+});
+
+test('runPass refuses an unconfigured intro/outro instead of wiping sides', async () => {
+  const st = state({ 'intro-outro': { enabled: true, order: 0, settings: { preset: 'Nexco Standard' }, status: 'ready', summary: '' } });
+  await assert.rejects(runPass('intro-outro', st, { runners: { applyIntroOutro: async () => 'never' } }), /intro or outro file/i);
 });

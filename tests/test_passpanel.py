@@ -116,3 +116,15 @@ def test_passes_endpoints_roundtrip(tmp_path):
     assert "Mine" not in [r["name"] for r in dropped["recipes"]]
     empty = client.post(f"/api/projects/{pid}/pass-recipes", json={"name": " ", "passes": []})
     assert empty.status_code == 400
+
+
+def test_builtin_deletion_survives_refresh(tmp_path):
+    from pipeline.passpanel import ensure_project_passes
+    client = passes_client(tmp_path)
+    pid = client.post("/api/projects", json={"name": "Panel"}).json()["id"]
+    client.get(f"/api/projects/{pid}/passes")
+    client.delete(f"/api/projects/{pid}/pass-recipes?name=Vertical Social")
+    body = client.get(f"/api/projects/{pid}/passes").json()
+    # A deleted builtin stays deleted: migration seeds only fresh projects.
+    assert "Vertical Social" not in [r["name"] for r in body["recipes"]]
+    assert "Clean Longform" in [r["name"] for r in body["recipes"]]

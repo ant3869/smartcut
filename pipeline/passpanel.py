@@ -84,6 +84,7 @@ def default_pass_state() -> dict:
 
 def ensure_project_passes(data: dict) -> dict:
     """Migrate project.json in place: backfill passes + builtin recipes."""
+    fresh = "passes" not in data
     passes = data.setdefault("passes", {})
     defaults = default_pass_state()
     for pass_id, spec in defaults.items():
@@ -94,12 +95,15 @@ def ensure_project_passes(data: dict) -> dict:
     for pass_id in [k for k in passes if k not in defaults]:
         del passes[pass_id]
     recipes = data.setdefault("recipes", [])
-    known = {r.get("name") for r in recipes}
-    for recipe in BUILTIN_RECIPES:
-        if recipe["name"] not in known:
-            recipes.append({"name": recipe["name"], "passes": list(recipe["passes"]),
-                            "settings": {k: dict(v) for k, v in recipe.get("settings", {}).items()},
-                            "builtin": True})
+    if fresh:
+        # Seed built-ins once. Later GETs must not resurrect a builtin the
+        # user deleted or renamed — the Defaults action re-adds them instead.
+        known = {r.get("name") for r in recipes}
+        for recipe in BUILTIN_RECIPES:
+            if recipe["name"] not in known:
+                recipes.append({"name": recipe["name"], "passes": list(recipe["passes"]),
+                                "settings": {k: dict(v) for k, v in recipe.get("settings", {}).items()},
+                                "builtin": True})
     return data
 
 
