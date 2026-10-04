@@ -61,6 +61,13 @@ def test_unknown_pass_rejected():
     assert validate_pass_id("qc") == "qc"
 
 
+def test_intro_accept_matches_backend_suffixes():
+    from pipeline.intro import _SUFFIXES_IMAGE, _SUFFIXES_VIDEO
+    from pipeline.passpanel import catalog
+    entry = next(p for p in catalog() if p["id"] == "intro-outro")
+    assert set(entry["accept"]) == _SUFFIXES_VIDEO | _SUFFIXES_IMAGE
+
+
 def test_builtin_recipes_reference_real_passes_and_render():
     from pipeline.passpanel import BUILTIN_RECIPES, PASSES
     ids = {p["id"] for p in PASSES}

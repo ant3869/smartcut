@@ -6,6 +6,16 @@ existing API route, or the render dialog); `executor: "none"` marks a
 planned pass (captions) with no runner yet.
 """
 
+def _intro_accept() -> list[str]:
+    """Visual formats the intro backend probes (video streams + stills).
+
+    Kept in sync with pipeline.intro suffix sets by test below; the panel
+    reads this instead of hardcoding its own filter.
+    """
+    from .intro import _SUFFIXES_IMAGE, _SUFFIXES_VIDEO
+    return sorted(_SUFFIXES_VIDEO | _SUFFIXES_IMAGE)
+
+
 PASSES = [
     {"id": "ai-edit", "label": "AI Edit / Waste Cleanup", "kind": "timeline",
      "executor": "client", "modifies_timeline": True,
@@ -32,6 +42,7 @@ PASSES = [
     {"id": "intro-outro", "label": "Intro / Outro", "kind": "timeline",
      "executor": "server", "modifies_timeline": True,
      "route": "intro-outro/apply", "clear_route": "intro-outro/remove",
+     "accept": _intro_accept(),
      "description": "Branded intro/outro as editable clips (presets available)."},
     {"id": "captions", "label": "Captions", "kind": "timeline",
      "executor": "none", "modifies_timeline": True,
@@ -50,6 +61,7 @@ PASSES = [
 ]
 
 _BY_ID = {p["id"]: p for p in PASSES}
+
 
 BUILTIN_RECIPES = [
     {"name": "Vertical Social",
