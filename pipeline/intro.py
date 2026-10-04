@@ -134,7 +134,7 @@ def _side_overlays(sequence, spec, start: float, prefix: str, options: dict):
 
 
 def _side_transitions(sequence, video_id: str, start: float, spec, prefix: str,
-                      media_kind: str = "video"):
+                      media_kind: str = "video", audio_id: str | None = None):
     """Edge fades plus the cut transition into/out of the main sequence.
 
     The cut side needs a real adjacent main clip; without one the edge
@@ -170,11 +170,31 @@ def _side_transitions(sequence, video_id: str, start: float, spec, prefix: str,
             outgoing_id, incoming_id = (neighbor.id if neighbor else ""), video_id
         if neighbor:
             cut_id = f"{prefix}-cut-{uuid.uuid4().hex[:8]}"
+            span = min(spec.transition_duration, spec.duration / 2)
             sequence.transitions.append(Transition(
                 id=cut_id, track="V1", cut_time=at, outgoing_id=outgoing_id,
                 incoming_id=incoming_id, edge="cut", type=spec.transition,
-                duration=min(spec.transition_duration, spec.duration / 2)))
+                duration=span))
             ids.append(cut_id)
+            if audio_id:
+                a_at = at  # branded audio sits at the same timeline span
+                if prefix == "intro":
+                    a_neighbor = next((c for c in sequence.clips
+                                       if c.track == "A1" and c.id != audio_id
+                                       and c.start >= a_at - .001), None)
+                    a_out, a_in = audio_id, a_neighbor.id if a_neighbor else ""
+                else:
+                    a_neighbor = next((c for c in reversed(sorted(
+                        [c for c in sequence.clips if c.track == "A1" and c.id != audio_id],
+                        key=lambda c: c.start)) if c.start + c.duration <= a_at + .001), None)
+                    a_out, a_in = (a_neighbor.id if a_neighbor else ""), audio_id
+                if a_neighbor:
+                    a_id = f"{prefix}-acut-{uuid.uuid4().hex[:8]}"
+                    sequence.transitions.append(Transition(
+                        id=a_id, track="A1", cut_time=a_at, outgoing_id=a_out,
+                        incoming_id=a_in, edge="cut", type=spec.transition,
+                        duration=span, audio="crossfade", crossfade_duration=span))
+                    ids.append(a_id)
             return ids, ""
         return ids, "no adjacent main clip for the cut transition"
     return ids, ""
@@ -264,7 +284,8 @@ def build_intro_outro(sequence, options: dict | None = None):
         spec.clip_ids = _insert_clips(sequence, spec, media, start, prefix, options)
         spec.overlay_ids = _side_overlays(sequence, spec, start, prefix, options)
         spec.transition_ids, cut_note = _side_transitions(
-            sequence, spec.clip_ids[0], start, spec, prefix, media["kind"])
+            sequence, spec.clip_ids[0], start, spec, prefix, media["kind"],
+            spec.clip_ids[1] if len(spec.clip_ids) > 1 else None)
         if cut_note:
             summary[f"{prefix}_warning"] = cut_note
         setattr(sequence, prefix, spec)

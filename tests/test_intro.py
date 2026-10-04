@@ -109,8 +109,8 @@ def test_video_transition_reserves_handles(tmp_path):
     assert summary["intro_duration"] == 1.75  # tail .25 reserved as handle
     iclip = next(c for c in built.clips if c.id in built.intro.clip_ids and c.track == "V1")
     assert iclip.source_end == 1.75  # 2.0 - .25 stays available
-    cuts = [t for t in built.transitions if t.edge == "cut"]
-    assert len(cuts) == 1 and cuts[0].type == "cross-dissolve"
+    vcuts = [t for t in built.transitions if t.edge == "cut" and t.track == "V1"]
+    assert len(vcuts) == 1 and vcuts[0].type == "cross-dissolve"
 
 
 def test_still_transition_degrades_to_edges(tmp_path):
@@ -127,6 +127,23 @@ def test_still_transition_degrades_to_edges(tmp_path):
     assert summary["intro_duration"] == 2.0
     assert not [t for t in built.transitions if t.edge == "cut"]
     assert "intro_note" in summary or "intro_warning" in summary
+
+
+def test_intro_transition_mirrors_audio(tmp_path):
+    import sys
+    sys.path.insert(0, "tests")
+    from test_passes import av_media
+    from pipeline.util import source_fingerprint
+    intro = av_media(tmp_path, name="intro.mp4", dur=2.0)
+    sha = source_fingerprint(intro)["sha256"]
+    sequence = intro_sequence()
+    built, _ = build_intro_outro(
+        sequence, {"intro_path": str(intro), "intro_sha": sha,
+                   "intro_transition": "cross-dissolve", "intro_transition_duration": .5})
+    cuts = sorted([t for t in built.transitions if t.edge == "cut"], key=lambda t: t.track)
+    assert [(t.track, t.type) for t in cuts] == [("A1", "cross-dissolve"), ("V1", "cross-dissolve")]
+    a1 = next(c for c in built.clips if c.id in built.intro.clip_ids and c.track == "A1")
+    assert cuts[0].outgoing_id == a1.id
 
 
 def video_only_sequence(path, sha):

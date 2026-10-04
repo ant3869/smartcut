@@ -45,10 +45,27 @@ def run_qc(sequence, *, settings=None, output_folder: str | None = None,
     warnings: list[dict] = []
     infos: list[dict] = []
     checks = 0
+    # Mirror the renderer: QC only inspects what the render toggles export.
+    settings_passes = getattr(settings, "passes", None)
+    passes = settings_passes.model_dump() if settings_passes is not None \
+        else {"transitions": True, "watermark": True, "cleanup": True,
+              "music_bed": True, "intro": True, "outro": True}
     clips = _playable(sequence)
     excluded = {c.id for c in sequence.clips if c not in clips}
+    for spec, key in ((sequence.intro, "intro"), (sequence.outro, "outro"),
+                      (sequence.music_bed, "music_bed")):
+        if spec is not None and not passes.get(key, True):
+            excluded.update(spec.clip_ids)
+    clips = [c for c in clips if c.id not in excluded]
     transitions = [t for t in sequence.transitions
                    if t.outgoing_id not in excluded and t.incoming_id not in excluded]
+    skip_overlays = set()
+    for spec, key in ((sequence.intro, "intro"), (sequence.outro, "outro")):
+        if spec is not None and not passes.get(key, True):
+            skip_overlays.update(spec.overlay_ids)
+    overlays = [o for o in (sequence.overlays or []) if o.id not in skip_overlays]
+    if not passes.get("watermark", True):
+        overlays = [o for o in overlays if o.kind != "watermark"]
 
     durations: dict[str, float | None] = {}
     for clip in clips:
@@ -65,18 +82,18 @@ def run_qc(sequence, *, settings=None, output_folder: str | None = None,
                                    f"Source file is gone: {Path(clip.source).name}",
                                    time=clip.start, clip_id=clip.id))
             continue
-        if clip.kind != "image":
-            try:
-                if source_fingerprint(Path(clip.source))["sha256"] != clip.source_sha256:
-                    errors.append(_finding("error", "media-changed",
-                                           f"Source changed since import: {Path(clip.source).name}",
-                                           time=clip.start, clip_id=clip.id))
-                    continue
-            except Exception:
-                errors.append(_finding("error", "media-unreadable",
-                                       f"Cannot fingerprint: {Path(clip.source).name}",
+        try:
+            if source_fingerprint(Path(clip.source))["sha256"] != clip.source_sha256:
+                errors.append(_finding("error", "media-changed",
+                                       f"Source changed since import: {Path(clip.source).name}",
                                        time=clip.start, clip_id=clip.id))
                 continue
+        except Exception:
+            errors.append(_finding("error", "media-unreadable",
+                                   f"Cannot fingerprint: {Path(clip.source).name}",
+                                   time=clip.start, clip_id=clip.id))
+            continue
+        if clip.kind != "image":
             if known is not None and clip.source_end > known + .05:
                 errors.append(_finding("error", "trim-exceeds-source",
                                        f"Trim {clip.source_end:.2f}s runs past a "
@@ -114,40 +131,44 @@ def run_qc(sequence, *, settings=None, output_folder: str | None = None,
                                          f"{clip.duration:.2f}s — accidental sliver?",
                                          time=clip.start, clip_id=clip.id))
 
-    # Transitions: references + handles.
+    # Transitions: references + handles (half the span each side, like the planner).
     checks += 1
-    ids = {c.id for c in clips}
-    for transition in transitions:
-        for ref in (transition.outgoing_id, transition.incoming_id):
-            if ref and ref not in ids:
-                errors.append(_finding("error", "transition-orphan",
-                                       f"Transition {transition.id} points at "
-                                       f"missing clip {ref}", time=transition.cut_time))
-        if transition.edge != "cut":
-            continue
-        out = next((c for c in clips if c.id == transition.outgoing_id), None)
-        inc = next((c for c in clips if c.id == transition.incoming_id), None)
-        if not out or not inc:
-            continue
-        for clip, side in ((out, "outgoing"), (inc, "incoming")):
-            head, tail = handle_availability(clip, durations)
-            need = (transition.crossfade_duration or transition.duration) \
-                if side == "outgoing" and transition.audio == "crossfade" \
-                else transition.duration
-            have = tail if side == "outgoing" else head
-            if have is None:
-                warnings.append(_finding("warning", "handles-unknown",
-                                         f"Transition {transition.id}: cannot verify "
-                                         f"{side} handles (unprobed source)"))
-            elif have < need - .001:
-                errors.append(_finding("error", "handles-short",
-                                       f"Transition {transition.id}: {side} has "
-                                       f"{have:.2f}s of handle, needs {need:.2f}s",
-                                       time=transition.cut_time))
+    if passes.get("transitions", True):
+        ids = {c.id for c in clips}
+        for transition in transitions:
+            for ref in (transition.outgoing_id, transition.incoming_id):
+                if ref and ref not in ids:
+                    errors.append(_finding("error", "transition-orphan",
+                                           f"Transition {transition.id} points at "
+                                           f"missing clip {ref}", time=transition.cut_time))
+            if transition.edge != "cut":
+                continue
+            out = next((c for c in clips if c.id == transition.outgoing_id), None)
+            inc = next((c for c in clips if c.id == transition.incoming_id), None)
+            if not out or not inc:
+                continue
+            span = transition.crossfade_duration or transition.duration \
+                if transition.audio == "crossfade" else transition.duration
+            for clip, side in ((out, "outgoing"), (inc, "incoming")):
+                head, tail = handle_availability(clip, durations)
+                need = span / 2
+                have = tail if side == "outgoing" else head
+                if have is None:
+                    warnings.append(_finding("warning", "handles-unknown",
+                                             f"Transition {transition.id}: cannot verify "
+                                             f"{side} handles (unprobed source)"))
+                elif have < need - .001:
+                    errors.append(_finding("error", "handles-short",
+                                           f"Transition {transition.id}: {side} has "
+                                           f"{have:.2f}s of handle, needs {need:.2f}s",
+                                           time=transition.cut_time))
+    elif transitions:
+        infos.append(_finding("info", "transitions-skipped",
+                              "Transitions toggle off: transition checks skipped"))
 
     # Overlays: files, frame fit, overruns, text safe area.
     checks += 1
-    for overlay in sequence.overlays:
+    for overlay in overlays:
         if overlay.kind in ("watermark", "logo"):
             if not overlay.path or not Path(overlay.path).is_file():
                 errors.append(_finding("error", "overlay-missing",
@@ -217,20 +238,26 @@ def run_qc(sequence, *, settings=None, output_folder: str | None = None,
 def run_signal_qc(sequence, *, scan_seconds: float = 60.0) -> dict:
     """Decode-level audio/video checks. Bounded scans; slower than run_qc."""
     from .blade import FfmpegBlade
+    from .util import PipelineError
     errors: list[dict] = []
     warnings: list[dict] = []
     infos: list[dict] = []
-    seen_windows: set[tuple] = set()
+    seen_audio: set[tuple] = set()
+    seen_video: set[tuple] = set()
     scanned_audio = 0
     scanned_video = 0
     for clip in _playable(sequence):
-        window = min(clip.duration, scan_seconds)
-        key = (clip.source, round(clip.source_start, 3), round(clip.source_end, 3))
-        if clip.kind == "audio" and key not in seen_windows:
-            seen_windows.add(key)
+        src_span = min(clip.source_end - clip.source_start, scan_seconds * clip.speed)
+        window = (clip.source_start, round(clip.source_start + src_span, 3))
+        key = (clip.source, window[0], window[1])
+        if clip.kind == "audio" and key not in seen_audio:
+            try:
+                levels = FfmpegBlade.audio_levels(clip.source, start=window[0],
+                                                  seconds=window[1] - window[0])
+            except PipelineError:
+                continue  # structural media checks already flagged this source
+            seen_audio.add(key)
             scanned_audio += 1
-            levels = FfmpegBlade.audio_levels(clip.source, start=clip.source_start,
-                                              seconds=window)
             if levels["mean"] is None or levels["mean"] <= -70:
                 warnings.append(_finding("warning", "silent-audio",
                                          f"No audible signal in {clip.id}",
@@ -240,20 +267,27 @@ def run_signal_qc(sequence, *, scan_seconds: float = 60.0) -> dict:
                                          f"{clip.id} peaks at {levels['max']:.1f}dB "
                                          f"(distortion likely)", time=clip.start,
                                          clip_id=clip.id))
-            loud = FfmpegBlade.loudness(clip.source, start=clip.source_start,
-                                        seconds=window)
+            try:
+                loud = FfmpegBlade.loudness(clip.source, start=window[0],
+                                            seconds=window[1] - window[0])
+            except PipelineError:
+                loud = None
             if loud:
                 infos.append(_finding("info", "loudness",
                                       f"{clip.id}: {loud['integrated']:.1f} LUFS "
                                       f"integrated, TP {loud['true_peak']:.1f}dB, "
                                       f"LRA {loud['lra']:.1f}",
                                       time=clip.start, clip_id=clip.id))
-        if clip.track.startswith("V") and clip.kind != "audio" and key not in seen_windows:
-            seen_windows.add(key)
+        if clip.track.startswith("V") and clip.kind != "audio" and key not in seen_video:
+            try:
+                spans = FfmpegBlade.frozen_spans(clip.source, start=window[0],
+                                                 seconds=window[1] - window[0])
+            except PipelineError:
+                continue
+            seen_video.add(key)
             scanned_video += 1
-            for span in FfmpegBlade.frozen_spans(clip.source, start=clip.source_start,
-                                                 seconds=window):
-                at = clip.start + max(0, span["start"] - clip.source_start)
+            for span in spans:
+                at = clip.start + max(0, span["start"] - window[0]) / clip.speed
                 warnings.append(_finding("warning", "frozen-video",
                                          f"Picture stuck {span['end'] - span['start']:.1f}s "
                                          f"in {clip.id}", time=round(at, 3),

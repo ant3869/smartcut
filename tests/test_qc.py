@@ -212,3 +212,94 @@ def test_qc_scans_each_source_window(tmp_path):
     sequence = Sequence(source_sha256=sha, width=64, height=64, fps=10, clips=clips)
     _, warnings, _ = levels(full_report(sequence))
     assert "silent-audio" in warnings  # second window is silence, same file
+
+
+def test_qc_scans_audio_despite_video_first(tmp_path):
+    import sys
+    sys.path.insert(0, "tests")
+    from test_passes import av_media
+    from pipeline.sequence import Sequence, SequenceClip
+    from pipeline.util import source_fingerprint
+    src = av_media(tmp_path, dur=4.0)
+    sha = source_fingerprint(src)["sha256"]
+    base = dict(source=str(src), source_sha256=sha)
+    sequence = Sequence(source_sha256=sha, width=64, height=64, fps=10, clips=[
+        SequenceClip(id="v1", track="V1", start=0, source_start=0, source_end=4, **base),
+        SequenceClip(id="a1", track="A1", start=0, source_start=0, source_end=4,
+                     kind="audio", **base)])
+    _, _, infos = levels(full_report(sequence))
+    assert "loudness" in infos  # audio scanned even though video used the file first
+
+
+def test_qc_signal_survives_missing_source():
+    from pipeline.qc import run_signal_qc
+    sequence = qc_sequence()
+    report = run_signal_qc(sequence)  # s.mp4 does not exist: skip, never 500
+    assert report["summary"]["scanned_audio"] == 0
+
+
+def test_qc_handles_need_half_duration(tmp_path):
+    import sys
+    sys.path.insert(0, "tests")
+    from test_passes import av_media
+    from pipeline.sequence import Sequence, SequenceClip, Transition
+    from pipeline.util import source_fingerprint
+    src = av_media(tmp_path, name="h.mp4", dur=1.0)
+    sha = source_fingerprint(src)["sha256"]
+    base = dict(source=str(src), source_sha256=sha)
+    sequence = Sequence(source_sha256=sha, width=64, height=64, fps=10, clips=[
+        SequenceClip(id="v1", track="V1", start=0, source_start=0, source_end=.75, **base),
+        SequenceClip(id="v2", track="V1", start=.75, source_start=.25, source_end=1.0, **base)])
+    sequence.transitions.append(Transition(
+        id="t1", track="V1", cut_time=.75, outgoing_id="v1", incoming_id="v2",
+        edge="cut", type="cross-dissolve", duration=.5))
+    report = run_qc(sequence)
+    assert "handles-short" not in {f["code"] for f in report["errors"]}
+
+
+def test_qc_honors_disabled_passes(tmp_path):
+    from pipeline.sequence import Overlay, RenderSettings, Transition
+    sequence = qc_sequence()
+    sequence.transitions.append(Transition(
+        id="t1", track="V1", cut_time=2, outgoing_id="v1", incoming_id="ghost",
+        edge="cut", type="fade", duration=.5))
+    sequence.overlays.append(Overlay(id="o1", kind="watermark",
+                                     path=str(tmp_path / "nope.png")))
+    settings = RenderSettings(filename="x.mp4", output_folder=str(tmp_path),
+                              video_codec="libx264", quality="draft",
+                              passes={"transitions": False, "watermark": False})
+    report = run_qc(sequence, settings=settings)
+    codes = {f["code"] for f in report["errors"]}
+    assert "transition-orphan" not in codes and "overlay-missing" not in codes
+
+
+def test_qc_speed_scales_signal_window(tmp_path):
+    from pipeline.sequence import Sequence, SequenceClip
+    from pipeline.util import run_checked, source_fingerprint
+    wav = tmp_path / "late-tone.wav"
+    run_checked(["ffmpeg", "-hide_banner", "-v", "error", "-y", "-f", "lavfi",
+                 "-i", "anullsrc=r=44100:cl=mono:d=3",
+                 "-f", "lavfi", "-i", "sine=frequency=440:duration=1",
+                 "-filter_complex", "[0:a][1:a]concat=n=2:v=0:a=1",
+                 "-c:a", "pcm_s16le", str(wav)])
+    sha = source_fingerprint(wav)["sha256"]
+    sequence = Sequence(source_sha256=sha, width=64, height=64, fps=10, clips=[
+        SequenceClip(id="a1", source=str(wav), source_sha256=sha, kind="audio",
+                     track="A1", start=0, source_start=0, source_end=4, speed=4.0)])
+    _, warnings, _ = levels(full_report(sequence))
+    # Full 4 source-seconds contain the closing tone: not silent. The old
+    # timeline-seconds window (1s from 0) only heard silence and false-flagged.
+    assert "silent-audio" not in warnings
+
+
+def test_qc_fingerprints_images(tmp_path):
+    import sys
+    sys.path.insert(0, "tests")
+    from test_passes import mark_png
+    from pipeline.sequence import Sequence, SequenceClip
+    logo = mark_png(tmp_path)
+    sequence = Sequence(source_sha256="c" * 64, width=64, height=64, fps=10, clips=[
+        SequenceClip(id="pic", source=str(logo), source_sha256="c" * 64,
+                     kind="image", track="V1", start=0, source_start=0, source_end=2)])
+    report = run_qc(sequence)
+    assert "media-changed" in {f["code"] for f in report["errors"]}
