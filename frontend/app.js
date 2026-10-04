@@ -2,6 +2,7 @@ import * as T from './timeline.mjs';
 import * as A from './auto.mjs';
 import * as P from './passes.mjs';
 import * as S from './spotlight.mjs';
+import * as AU from './audio.mjs';
 import * as Theme from './theme.mjs';
 import {icon} from './icons.mjs';
 import * as Tasks from './tasks.mjs';
@@ -82,7 +83,7 @@ function shell(){
         ${menu('Project',[['save-project','Save project · Ctrl+S'],['new-project','New project…'],['open-project','Open project…'],['settings','Pipeline settings…'],['refresh','Refresh media'],['analyze-all','Analyze all…']])}
         ${menu('Sequence',[['sequence-settings','Sequence settings…'],['Add track…',[['add-video-track','Video track'],['add-audio-track','Audio track']]],['save','Save sequence'],['undo','Undo'],['redo','Redo'],['rebuild','Load approved plan'],['reel','Best-of reel…']])}
         ${menu('Markers',[['in','Mark In · I'],['out','Mark Out · O'],['marker','Add sequence marker · M'],['auto-scenes','Markers at scene changes'],['auto-highlights','Markers at AI highlights'],['clear-markers','Clear all markers']])}
-        ${menu('Auto',[['auto-edit','Auto-edit sequence…'],['auto-waste','Remove AI-flagged waste'],['auto-silence','Remove silences…'],['auto-gaps','Close all gaps'],['auto-fill','Fill frame'],['transitions','Add transitions…'],['clear-transitions','Clear transitions'],['watermark','Add watermark…'],['remove-watermark','Remove watermark'],['highlights','Generate highlights…'],['shorts','Generate shorts…'],['next-proposal','Next AI proposal · N']])}
+        ${menu('Auto',[['auto-edit','Auto-edit sequence…'],['auto-waste','Remove AI-flagged waste'],['auto-silence','Remove silences…'],['auto-gaps','Close all gaps'],['auto-fill','Fill frame'],['transitions','Add transitions…'],['clear-transitions','Clear transitions'],['watermark','Add watermark…'],['remove-watermark','Remove watermark'],['audio-cleanup','Audio Cleanup…'],['beat-cuts','Beat Cuts…'],['music-bed','Music Bed…'],['highlights','Generate highlights…'],['shorts','Generate shorts…'],['next-proposal','Next AI proposal · N']])}
         ${menu('Export',[['export-edl','EDL cut list'],['export-csv','CSV edit list'],['export-otio','OpenTimelineIO'],['export-srt','Captions for this edit (.srt)'],['export-mp4','Render video…']])}
         ${menu('View',[...Theme.MODES.map(mode=>[`theme-${mode}`,`Theme · ${Theme.label(mode)}`,`role="menuitemradio" data-theme-option="${mode}" aria-checked="${mode===state.themeMode}"`]),['-'],['toggle-lanes','AI lanes on timeline','role="menuitemcheckbox"'],['toggle-cc','Live captions','role="menuitemcheckbox"'],['toggle-hud','AI verdict overlay','role="menuitemcheckbox"']])}
         ${menu('Help',[['shortcuts','Keyboard shortcuts · ?']])}
@@ -601,6 +602,122 @@ async function applyWatermark(form){
   const box=`${result.overlay.position}${result.overlay.position==='custom'?` at ${result.overlay.x},${result.overlay.y}`:''}`;
   toast(`Watermark · ${box} · render bakes it in`,'ok');
 }
+// ---- Audio passes: cleanup, beat cuts, music bed. No AI analysis runs. ----
+let audioBeats=null; // last analyzed {source, tempo, beats, downbeats}
+function cleanupOptions(form){
+  const f=new FormData(form);
+  return {normalize:f.has('normalize'),target_lufs:Number(f.get('target_lufs'))||-16,
+    noise_reduce:f.has('noise_reduce'),noise_amount:Number(f.get('noise_amount'))||12,
+    highpass:f.has('highpass'),highpass_freq:Number(f.get('highpass_freq'))||80,
+    compress:f.has('compress'),limiter:f.has('limiter'),deesser:f.has('deesser'),
+    voice_preset:f.has('voice_preset'),scope:f.get('scope')||'mix'};
+}
+function cleanupDialog(){
+  needSequence();const cur=state.sequence.cleanup||{};
+  const proc=(key,title,detail)=>`<label class="toggle-row">${title}<input type="checkbox" name="${key}" ${cur[key]??key==='normalize'?'checked':''}><small>${detail}</small></label>`;
+  openDialog(`${dialogHead('AUTO','Audio Cleanup')}<form id="cleanup-form"><div class="dialog-body"><p>Chains standard FFmpeg processors. Saved on the sequence, honored by render. Nothing is re-analyzed.</p>`
+    +proc('normalize','Loudness normalization','EBU R128 to the target below.')
+    +`<div class="export-grid"><label class="stacked">Target LUFS<input name="target_lufs" type="number" min="-30" max="-8" step="1" value="${cur.target_lufs??-16}"></label>`
+    +`<label class="stacked">Apply to<select name="scope"><option value="mix" ${cur.scope!=='clips'?'selected':''}>Entire mix</option><option value="clips" ${cur.scope==='clips'?'selected':''}>Individual clips</option></select></label></div>`
+    +proc('noise_reduce','Noise reduction','FFT denoise, amount below.')
+    +`<div class="export-grid"><label class="stacked">Denoise amount<input name="noise_amount" type="number" min="0" max="30" step="1" value="${cur.noise_amount??12}"></label></div>`
+    +proc('highpass','High-pass / low-cut','Rolls off rumble.')
+    +`<div class="export-grid"><label class="stacked">Cutoff Hz<input name="highpass_freq" type="number" min="20" max="500" step="5" value="${cur.highpass_freq??80}"></label></div>`
+    +proc('compress','Compression','Gentle 3:1 voice leveling.')
+    +proc('limiter','Limiter','Ceiling just under clipping.')
+    +proc('voice_preset','Voice enhancement preset','High-pass + denoise + compression together.')
+    +proc('deesser','De-esser','Not in this FFmpeg build — warns and skips.')
+    +`</div><output id="cleanup-preview" class="auto-preview" aria-live="polite">Calculating…</output><footer class="dialog-footer"><span>Undo restores the current sequence.</span>${button('close-dialog','Cancel')}${button('clear-cleanup','Clear','quiet')}<button class="primary" type="submit">Apply cleanup</button></footer></form>`,'cleanup');
+  updateCleanupPreview();
+}
+async function updateCleanupPreview(){
+  const form=$('#cleanup-form'),out=$('#cleanup-preview');if(!form||!out)return;const token=++previewToken;out.classList.add('busy');
+  try{
+    const plan=await post(projectURL('audio/cleanup/plan'),{sequence:state.sequence,options:cleanupOptions(form)});
+    if(token!==previewToken)return;
+    out.innerHTML=`<p>${esc(AU.cleanupSummary(plan))}</p>`;
+  }catch(e){if(token!==previewToken)return;out.innerHTML=`<p class="error-text">${esc(e.message)}</p>`;}
+  finally{out.classList.remove('busy');}
+}
+async function applyCleanup(form){
+  needSequence();
+  const result=await post(projectURL('audio/cleanup/apply'),{sequence:state.sequence,options:cleanupOptions(form)});
+  closeDialog();commit('Audio cleanup applied',result.sequence);
+  toast(`Cleanup · ${result.warnings?.length?esc(result.warnings.join(' · ')):'ready for render'}`,'ok');
+}
+function audioAssetOptions(selected=''){
+  const audios=(state.project?.assets||[]).map(a=>a.path).filter(p=>/\.(mp3|wav|flac|m4a|aac|ogg)$/i.test(p));
+  const clips=[...new Set((state.sequence?.clips||[]).filter(c=>c.track[0]==='A').map(c=>c.source))];
+  const all=[...new Set([...(selected?[selected]:[]),...audios,...clips])];
+  return all.map(p=>`<option value="${esc(p)}" ${p===selected?'selected':''}>${esc(basename(p))}</option>`).join('');
+}
+function beatsDialog(){
+  needSequence();
+  openDialog(`${dialogHead('AUTO','Beat Cuts')}<form id="beats-form"><div class="dialog-body"><p>Detect beats in a music track, then snap cuts, mark beats, or cut footage on them. Locked tracks never move.</p>`
+    +`<label class="stacked">Music / audio source<select name="path">${audioAssetOptions(state.source)}</select></label>`
+    +`<div class="export-grid"><label class="stacked">Sensitivity<input name="sensitivity" type="number" min="1" max="8" step=".5" value="3"></label>`
+    +`<label class="stacked">Every N beats<select name="every"><option>1</option><option>2</option><option selected>4</option><option>8</option></select></label>`
+    +`<label class="stacked">Max cut move (s)<input name="max_distance" type="number" min=".02" max="2" step=".01" value=".15"></label></div>`
+    +`<div class="stacked"><span>Action</span><label class="toggle-row">Snap nearby cuts to beats<input type="radio" name="mode" value="snap" checked></label><label class="toggle-row">Add markers at beats<input type="radio" name="mode" value="markers"></label><label class="toggle-row">Cut footage on beats<input type="radio" name="mode" value="cut"></label></div>`
+    +`<div class="export-grid"><label class="stacked">Range start (blank = all)<input name="range_start" type="number" min="0" step=".1" placeholder="all"></label><label class="stacked">Range end<input name="range_end" type="number" min="0" step=".1" placeholder="all"></label></div>`
+    +`</div><output id="beats-preview" class="auto-preview" aria-live="polite">Analyze a track to see its tempo.</output><footer class="dialog-footer"><span>Undo restores the current sequence.</span>${button('close-dialog','Cancel')}${button('analyze-beats','Analyze','quiet')}<button class="primary" type="submit">Apply to sequence</button></footer></form>`,'beats');
+}
+async function analyzeBeats(form){
+  const f=new FormData(form),out=$('#beats-preview');
+  const result=await post(projectURL('audio/beats/analyze'),{path:String(f.get('path')),sensitivity:Number(f.get('sensitivity'))||3});
+  audioBeats={source:result.source,tempo:result.tempo,beats:result.beats,downbeats:result.downbeats};
+  if(out)out.innerHTML=`<p>${esc(AU.beatsSummary(result))}</p>`;
+  toast(`Beats · ${result.tempo} BPM`,'ok');
+}
+function beatRange(form){
+  const f=new FormData(form),rs=f.get('range_start'),re=f.get('range_end');
+  return {every:Number(f.get('every'))||4,max_distance:Number(f.get('max_distance'))||.15,
+    range_start:rs===''||rs===null?null:Number(rs),range_end:re===''||re===null?null:Number(re)};
+}
+async function applyBeats(form){
+  needSequence();
+  if(!audioBeats?.beats?.length)throw new Error('Analyze a track first');
+  const mode=new FormData(form).get('mode'),options=beatRange(form);
+  const body={sequence:state.sequence,beats:audioBeats.beats,downbeats:audioBeats.downbeats,options};
+  const endpoint=mode==='snap'?'audio/beats/snap':mode==='cut'?'audio/beats/cut':'audio/beats/markers';
+  const result=await post(projectURL(endpoint),body);
+  closeDialog();commit(`Beat ${mode} · ${JSON.stringify(result.summary)}`,result.sequence);
+  toast(`Beat ${mode} applied`,'ok');
+}
+function bedDialog(){
+  needSequence();const cur=state.sequence.music_bed||{},dur=Math.round(T.sequenceDuration(state.sequence)*10)/10;
+  openDialog(`${dialogHead('AUTO','Music Bed')}<form id="bed-form"><div class="dialog-body"><p>Loops a music file across the sequence as editable audio clips. Ducking is a render-time sidechain.</p>`
+    +`<label class="stacked">Music file<select name="music_path">${audioAssetOptions(cur.music_path)}</select></label>`
+    +`<div class="export-grid"><label class="stacked">Target track<select name="track">${['A1','A2','A3','A4','A5','A6','A7','A8'].map(t=>`<option ${(cur.track??'A2')===t?'selected':''}>${t}</option>`).join('')}</select></label>`
+    +`<label class="stacked">Start<input name="start" type="number" min="0" step=".1" value="${cur.start??0}"></label>`
+    +`<label class="stacked">End<input name="end" type="number" min="0" step=".1" value="${cur.end??dur}"></label></div>`
+    +`<label class="toggle-row">Loop to fill<input type="checkbox" name="loop" ${cur.loop===false?'':'checked'}></label>`
+    +`<div class="export-grid"><label class="stacked">Volume<input name="volume" type="number" min="0" max="1" step=".05" value="${cur.volume??.25}"></label>`
+    +`<label class="stacked">Fade in<input name="fade_in" type="number" min="0" max="30" step=".5" value="${cur.fade_in??1}"></label>`
+    +`<label class="stacked">Fade out<input name="fade_out" type="number" min="0" max="30" step=".5" value="${cur.fade_out??2}"></label></div>`
+    +`<label class="toggle-row">Duck under dialogue<input type="checkbox" name="duck" ${cur.duck?'checked':''}></label>`
+    +`<div class="export-grid"><label class="stacked">Duck amount<input name="duck_amount" type="number" min="0" max="1" step=".05" value="${cur.duck_amount??.4}"></label>`
+    +`<label class="stacked">Attack (s)<input name="duck_attack" type="number" min=".005" max="1" step=".005" value="${cur.duck_attack??.02}"></label>`
+    +`<label class="stacked">Release (s)<input name="duck_release" type="number" min=".05" max="3" step=".05" value="${cur.duck_release??.4}"></label></div>`
+    +`<label class="toggle-row">Fit ending to nearest beat<input type="checkbox" name="beat_align" ${cur.beat_align?'checked':''}><small>uses the last analyzed beats</small></label>`
+    +`</div><footer class="dialog-footer"><span>Undo restores the current sequence.</span>${button('close-dialog','Cancel')}${button('remove-bed','Remove','quiet')}<button class="primary" type="submit">Apply bed</button></footer></form>`,'bed');
+}
+function bedOptions(form){
+  const f=new FormData(form);
+  return {track:f.get('track'),start:Number(f.get('start'))||0,end:Number(f.get('end'))||null,
+    loop:f.has('loop'),volume:Number(f.get('volume'))||0,fade_in:Number(f.get('fade_in'))||0,
+    fade_out:Number(f.get('fade_out'))||0,duck:f.has('duck'),
+    duck_amount:Number(f.get('duck_amount'))||0,duck_attack:Number(f.get('duck_attack'))||0,
+    duck_release:Number(f.get('duck_release'))||0,beat_align:f.has('beat_align')};
+}
+async function applyBed(form){
+  needSequence();
+  const music_path=String(new FormData(form).get('music_path'));
+  const result=await post(projectURL('audio/bed/apply'),{sequence:state.sequence,music_path,
+    beats:audioBeats?.beats||[],options:bedOptions(form)});
+  closeDialog();commit(`Music bed · ${result.summary.clips_added} clips`,result.sequence);
+  toast(`Music bed · end ${result.summary.end}s`,'ok');
+}
 // ---- Spotlight: highlight + shorts generation over saved AI evidence. ----
 function spotlightSourceFields(){
   const analyzed=S.projectMedia((state.jobs||[]).filter(j=>j.clips?.length&&j.source_available),state.project?.assets||[]);
@@ -871,7 +988,7 @@ async function renderDialog(){
   if(!capabilities.video_codecs.length)throw new Error('No supported FFmpeg video encoder was found');
   const seq=state.sequence,folder=pathKey(state.config.output_dir||'vault')+'/projects/'+state.project.id;
   const codecs=capabilities.video_codecs.map(v=>`<option value="${v}">${{libx264:'MP4 / H.264',libx265:'MP4 / H.265','libvpx-vp9':'WebM / VP9'}[v]}</option>`).join('');
-  openDialog(`${dialogHead('EXPORT','Render video')}<form id="render-form"><div class="dialog-body"><label class="stacked">Preset<select name="preset">${Object.entries({sequence:'Match sequence','youtube-1080':'YouTube 1080p','youtube-4k':'YouTube 4K',shorts:'TikTok / Reels / Shorts',instagram:'Instagram Feed',square:'Square',custom:'Custom'}).map(([v,l])=>`<option value="${v}">${l}</option>`).join('')}</select></label><label class="stacked">File name<input name="filename" value="timeline_sequence.mp4" required></label><label class="stacked">Output folder on this computer<input name="output_folder" value="${esc(folder)}" required></label><label class="stacked">Video format<select name="video_codec">${codecs}</select></label><div class="export-grid"><label class="stacked">Width<input name="width" type="number" min="64" max="4096" step="2" value="${seq.width}" required></label><label class="stacked">Height<input name="height" type="number" min="64" max="4096" step="2" value="${seq.height}" required></label><label class="stacked">Frame rate<select name="fps">${[23.976,24,25,29.97,30,50,59.94,60].map(f=>`<option value="${f}" ${f===seq.fps?'selected':''}>${f}</option>`).join('')}${![23.976,24,25,29.97,30,50,59.94,60].includes(seq.fps)?`<option value="${seq.fps}" selected>${seq.fps}</option>`:''}</select></label><label class="stacked">Quality<select name="quality">${[['draft','Draft'],['standard','Standard'],['high','High'],['very-high','Very High'],['custom','Custom']].map(([v,l])=>`<option value="${v}" ${v==='high'?'selected':''}>${l}</option>`).join('')}</select></label></div><div id="export-custom" class="export-grid" hidden><label class="stacked">CRF<input name="crf" type="number" min="0" max="51" value="20"></label><label class="stacked">Encoder preset<select name="encoder_preset">${['ultrafast','superfast','veryfast','faster','fast','medium','slow','slower'].map(v=>`<option ${v==='fast'?'selected':''}>${v}</option>`).join('')}</select></label></div><label class="stacked">Audio bitrate<select name="audio_bitrate">${[128,192,256,320].map(v=>`<option value="${v}" ${v===320?'selected':''}>${v} kbps</option>`).join('')}</select></label><fieldset class="pass-fieldset"><legend>Render passes</legend><label class="toggle-row">Timeline edits<input type="checkbox" checked disabled><small>always rendered</small></label><label class="toggle-row">Transitions<input type="checkbox" name="pass_transitions" ${seq.transitions?.length?'checked':''} ${seq.transitions?.length?'':'disabled'}><small>${seq.transitions?.length?seq.transitions.length+' applied · Auto ▸ Add transitions to change':'no transitions applied'}</small></label><label class="toggle-row">Watermark<input type="checkbox" name="pass_watermark" ${seq.overlays?.length?'checked':''} ${seq.overlays?.length?'':'disabled'}><small>${seq.overlays?.length?esc(seq.overlays.map(o=>o.position).join(', '))+' · Auto ▸ Add watermark to change':'no watermark applied'}</small></label></fieldset><div id="export-summary" class="export-summary"></div></div><footer class="dialog-footer">${button('apply-output-sequence','Apply size to sequence','quiet','id="apply-output-sequence" hidden')}${button('close-dialog','Cancel')}<button type="submit" class="primary">Start render</button></footer></form>`,'render');
+  openDialog(`${dialogHead('EXPORT','Render video')}<form id="render-form"><div class="dialog-body"><label class="stacked">Preset<select name="preset">${Object.entries({sequence:'Match sequence','youtube-1080':'YouTube 1080p','youtube-4k':'YouTube 4K',shorts:'TikTok / Reels / Shorts',instagram:'Instagram Feed',square:'Square',custom:'Custom'}).map(([v,l])=>`<option value="${v}">${l}</option>`).join('')}</select></label><label class="stacked">File name<input name="filename" value="timeline_sequence.mp4" required></label><label class="stacked">Output folder on this computer<input name="output_folder" value="${esc(folder)}" required></label><label class="stacked">Video format<select name="video_codec">${codecs}</select></label><div class="export-grid"><label class="stacked">Width<input name="width" type="number" min="64" max="4096" step="2" value="${seq.width}" required></label><label class="stacked">Height<input name="height" type="number" min="64" max="4096" step="2" value="${seq.height}" required></label><label class="stacked">Frame rate<select name="fps">${[23.976,24,25,29.97,30,50,59.94,60].map(f=>`<option value="${f}" ${f===seq.fps?'selected':''}>${f}</option>`).join('')}${![23.976,24,25,29.97,30,50,59.94,60].includes(seq.fps)?`<option value="${seq.fps}" selected>${seq.fps}</option>`:''}</select></label><label class="stacked">Quality<select name="quality">${[['draft','Draft'],['standard','Standard'],['high','High'],['very-high','Very High'],['custom','Custom']].map(([v,l])=>`<option value="${v}" ${v==='high'?'selected':''}>${l}</option>`).join('')}</select></label></div><div id="export-custom" class="export-grid" hidden><label class="stacked">CRF<input name="crf" type="number" min="0" max="51" value="20"></label><label class="stacked">Encoder preset<select name="encoder_preset">${['ultrafast','superfast','veryfast','faster','fast','medium','slow','slower'].map(v=>`<option ${v==='fast'?'selected':''}>${v}</option>`).join('')}</select></label></div><label class="stacked">Audio bitrate<select name="audio_bitrate">${[128,192,256,320].map(v=>`<option value="${v}" ${v===320?'selected':''}>${v} kbps</option>`).join('')}</select></label><fieldset class="pass-fieldset"><legend>Render passes</legend><label class="toggle-row">Timeline edits<input type="checkbox" checked disabled><small>always rendered</small></label><label class="toggle-row">Transitions<input type="checkbox" name="pass_transitions" ${seq.transitions?.length?'checked':''} ${seq.transitions?.length?'':'disabled'}><small>${seq.transitions?.length?seq.transitions.length+' applied · Auto ▸ Add transitions to change':'no transitions applied'}</small></label><label class="toggle-row">Watermark<input type="checkbox" name="pass_watermark" ${seq.overlays?.length?'checked':''} ${seq.overlays?.length?'':'disabled'}><small>${seq.overlays?.length?esc(seq.overlays.map(o=>o.position).join(', '))+' · Auto ▸ Add watermark to change':'no watermark applied'}</small></label><label class="toggle-row">Audio cleanup<input type="checkbox" name="pass_cleanup" ${seq.cleanup?'checked':''} ${seq.cleanup?'':'disabled'}><small>${seq.cleanup?'Auto ▸ Audio Cleanup to change':'no cleanup applied'}</small></label><label class="toggle-row">Music bed<input type="checkbox" name="pass_music_bed" ${seq.music_bed?'checked':''} ${seq.music_bed?'':'disabled'}><small>${seq.music_bed?seq.music_bed.clip_ids.length+' clips · Auto ▸ Music Bed to change':'no bed applied'}</small></label></fieldset><div id="export-summary" class="export-summary"></div></div><footer class="dialog-footer">${button('apply-output-sequence','Apply size to sequence','quiet','id="apply-output-sequence" hidden')}${button('close-dialog','Cancel')}<button type="submit" class="primary">Start render</button></footer></form>`,'render');
   try{const saved=JSON.parse(localStorage.getItem('smartcut.export.'+state.project.id)||'{}'),form=$('#render-form');
     for(const [key,value] of Object.entries({output_folder:saved.output_folder,video_codec:saved.video_codec,quality:saved.quality,crf:saved.crf,encoder_preset:saved.preset,audio_bitrate:saved.audio_bitrate})){
       const field=form.elements.namedItem(key);
@@ -885,7 +1002,7 @@ async function renderDialog(){
   }catch{}
   updateRenderSummary();
 }
-function renderSettings(form){const f=new FormData(form),video_codec=f.get('video_codec'),container=video_codec==='libvpx-vp9'?'webm':'mp4';return {filename:String(f.get('filename')).trim(),output_folder:String(f.get('output_folder')).trim(),video_codec,container,width:Number(f.get('width')),height:Number(f.get('height')),fps:Number(f.get('fps')),quality:f.get('quality'),crf:f.get('quality')==='custom'?Number(f.get('crf')):null,preset:f.get('quality')==='custom'?f.get('encoder_preset'):null,audio_bitrate:Number(f.get('audio_bitrate')),passes:{transitions:f.has('pass_transitions'),watermark:f.has('pass_watermark')}};}
+function renderSettings(form){const f=new FormData(form),video_codec=f.get('video_codec'),container=video_codec==='libvpx-vp9'?'webm':'mp4';return {filename:String(f.get('filename')).trim(),output_folder:String(f.get('output_folder')).trim(),video_codec,container,width:Number(f.get('width')),height:Number(f.get('height')),fps:Number(f.get('fps')),quality:f.get('quality'),crf:f.get('quality')==='custom'?Number(f.get('crf')):null,preset:f.get('quality')==='custom'?f.get('encoder_preset'):null,audio_bitrate:Number(f.get('audio_bitrate')),passes:{transitions:f.has('pass_transitions'),watermark:f.has('pass_watermark'),cleanup:f.has('pass_cleanup'),music_bed:f.has('pass_music_bed')}};}
 function updateRenderSummary(){
   const form=$('#render-form');if(!form)return;
   const s=renderSettings(form),seq=state.sequence,shape=s.width*seq.height!==s.height*seq.width;
@@ -894,7 +1011,7 @@ function updateRenderSummary(){
   if(shape)errors.push('Canvas aspect ratio differs. Apply size to sequence for an accurate preview.');
   if(!s.output_folder)errors.push('Choose an output folder.');
   const ratio=s.width/s.height,aspect=Math.abs(ratio-16/9)<.01?'16:9 Landscape':Math.abs(ratio-9/16)<.01?'9:16 Vertical':Math.abs(ratio-4/5)<.01?'4:5 Social':Math.abs(ratio-1)<.01?'1:1 Square':'Custom';
-  $('#export-summary').innerHTML=`<strong>Export summary</strong><dl><dt>Format</dt><dd>${esc(s.container.toUpperCase())} / ${esc(s.video_codec)}</dd><dt>Video</dt><dd>${s.width} × ${s.height} · ${esc(aspect)} · ${s.fps} fps</dd><dt>Quality</dt><dd>${esc(s.quality)}</dd><dt>Audio</dt><dd>${s.container==='webm'?'Opus':'AAC'} · 48 kHz · ${s.audio_bitrate} kbps</dd><dt>Passes</dt><dd>edits${s.passes.transitions?' · transitions':''}${s.passes.watermark?' · watermark':''}</dd><dt>Duration</dt><dd>${tc(T.sequenceDuration(seq))}</dd><dt>Output</dt><dd>${esc(s.output_folder+'/'+s.filename)}</dd></dl>${errors.map(e=>`<p class="error-text">${esc(e)}</p>`).join('')}`;
+  $('#export-summary').innerHTML=`<strong>Export summary</strong><dl><dt>Format</dt><dd>${esc(s.container.toUpperCase())} / ${esc(s.video_codec)}</dd><dt>Video</dt><dd>${s.width} × ${s.height} · ${esc(aspect)} · ${s.fps} fps</dd><dt>Quality</dt><dd>${esc(s.quality)}</dd><dt>Audio</dt><dd>${s.container==='webm'?'Opus':'AAC'} · 48 kHz · ${s.audio_bitrate} kbps</dd><dt>Passes</dt><dd>edits${s.passes.transitions?' · transitions':''}${s.passes.watermark?' · watermark':''}${s.passes.cleanup?' · cleanup':''}${s.passes.music_bed?' · bed':''}</dd><dt>Duration</dt><dd>${tc(T.sequenceDuration(seq))}</dd><dt>Output</dt><dd>${esc(s.output_folder+'/'+s.filename)}</dd></dl>${errors.map(e=>`<p class="error-text">${esc(e)}</p>`).join('')}`;
   form.querySelector('[type="submit"]').disabled=!!errors.length;
 }
 async function renderCut(settings){needSequence();await saveSequence(true);await post(projectURL('render'),{settings,dry_run:true});const id=state.project.id;try{localStorage.setItem('smartcut.export.'+id,JSON.stringify(settings));}catch{}closeDialog();await startTask(projectURL('render'),{settings},async()=>{await load();if(state.project?.id!==id)return;state.programMode='final';$('#program-mode').value='final';state.time=0;renderProgram();});}
@@ -961,6 +1078,17 @@ const actions={
     needSequence();if(!state.sequence.overlays?.length)return toast('No watermark to remove');
     const result=await api(projectURL('watermark'),{method:'DELETE',body:JSON.stringify({sequence:state.sequence})});
     commit('Watermark removed',result.sequence);toast(`Removed ${result.removed} watermark`);}),
+  'audio-cleanup':()=>cleanupDialog(),
+  'beat-cuts':()=>beatsDialog(),
+  'music-bed':()=>bedDialog(),
+  'analyze-beats':()=>operation('Analyze beats',async()=>{
+    const form=$('#beats-form');if(!form)throw new Error('Open Beat Cuts first');await analyzeBeats(form);}),
+  'clear-cleanup':()=>operation('Clear cleanup',async()=>{
+    needSequence();const result=await post(projectURL('audio/cleanup/clear'),{sequence:state.sequence});
+    closeDialog();commit('Cleanup cleared',result.sequence);}),
+  'remove-bed':()=>operation('Remove bed',async()=>{
+    needSequence();const result=await api(projectURL('audio/bed'),{method:'DELETE',body:JSON.stringify({sequence:state.sequence})});
+    closeDialog();commit('Music bed removed',result.sequence);toast(`Removed ${result.removed} clips`);}),
   'next-proposal':()=>stepProposal(1),'accept-proposal':t=>{focusProposal(Number(t.dataset.index));return decideCurrent('accept');},'reject-proposal':t=>{focusProposal(Number(t.dataset.index));return decideCurrent('reject');},
   'accept-all':()=>decideProposals(aiProposals().filter(p=>p.status==='pending'),'accept'),'accept-strong':()=>decideProposals(aiProposals().filter(p=>p.status==='pending'&&p.strength==='strong'),'accept'),'reject-all':()=>decideProposals(aiProposals().filter(p=>p.status==='pending'),'reject'),
   'toggle-lanes':()=>{state.prefs.lanes=!state.prefs.lanes;savePrefs();syncToggles();renderTimeline();},
@@ -1095,7 +1223,7 @@ function bind(){
     if(e.target.dataset.keyInterpolation){const key=e.target.dataset.keyInterpolation,at=Number(e.target.dataset.at);operation('Keyframe interpolation',()=>edit('Interpolation updated',s=>{s.clips.find(c=>c.id===state.selected).keyframes[key].find(k=>k.time===at).interpolation=e.target.value;}));}
     if(e.target.id==='review-in'){state.in=Number(e.target.value);syncTransport();}if(e.target.id==='review-out'){state.out=Number(e.target.value);syncTransport();}
   });
-  document.addEventListener('input',e=>{if(e.target.closest('#auto-form'))updateAutoPreview();if(e.target.closest('#transitions-form'))updateTransitionsPreview();if(e.target.closest('#highlights-form'))updateHighlightsPreview();if(e.target.closest('#shorts-form'))updateShortsPreview();if(e.target.closest('#render-form'))updateRenderSummary();if(e.target.name==='includeAnalyzed'&&e.target.closest('#analyze-all-form'))renderAnalyzeAllList();if(e.target.dataset.settingRange){const input=$(`[name="${e.target.dataset.settingRange}"]`);input.value=e.target.value;}if(e.target.name&&state.schema[e.target.name]){const r=$(`[data-setting-range="${e.target.name}"]`);if(r)r.value=e.target.value;}});
+  document.addEventListener('input',e=>{if(e.target.closest('#auto-form'))updateAutoPreview();if(e.target.closest('#transitions-form'))updateTransitionsPreview();if(e.target.closest('#cleanup-form'))updateCleanupPreview();if(e.target.closest('#highlights-form'))updateHighlightsPreview();if(e.target.closest('#shorts-form'))updateShortsPreview();if(e.target.closest('#render-form'))updateRenderSummary();if(e.target.name==='includeAnalyzed'&&e.target.closest('#analyze-all-form'))renderAnalyzeAllList();if(e.target.dataset.settingRange){const input=$(`[name="${e.target.dataset.settingRange}"]`);input.value=e.target.value;}if(e.target.name&&state.schema[e.target.name]){const r=$(`[data-setting-range="${e.target.name}"]`);if(r)r.value=e.target.value;}});
   document.addEventListener('submit',e=>{e.preventDefault();operation('Submit',async()=>{
     if(e.target.id==='new-project-form')await createProject(String(new FormData(e.target).get('name')).trim());
     if(e.target.id==='existing-media-form'){const paths=new FormData(e.target).getAll('paths');if(!paths.length)throw new Error('Select media to add');await addAssets(paths);closeDialog();await selectAsset(paths[0]);}
@@ -1108,6 +1236,9 @@ function bind(){
     if(e.target.id==='auto-form')await applyAuto(e.target);
     if(e.target.id==='transitions-form')await applyTransitions(e.target);
     if(e.target.id==='watermark-form')await applyWatermark(e.target);
+    if(e.target.id==='cleanup-form')await applyCleanup(e.target);
+    if(e.target.id==='beats-form')await applyBeats(e.target);
+    if(e.target.id==='bed-form')await applyBed(e.target);
     if(e.target.id==='highlights-form')await applyHighlights(e.target);
     if(e.target.id==='shorts-form')await applyShorts(e.target);
     if(e.target.id==='marker-form'){const f=new FormData(e.target),id=e.target.dataset.markerForm;closeDialog();edit('Marker updated',s=>{const m=s.markers.find(x=>x.id===id);if(!m)throw new Error('Marker no longer exists');m.label=String(f.get('label')).trim().slice(0,200)||'Marker';m.time=Math.max(0,Number(f.get('time'))||0);});}

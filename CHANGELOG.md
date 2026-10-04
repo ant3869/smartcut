@@ -212,7 +212,8 @@ All notable changes to this project are documented here. The project follows
 - Vision prompt v7: the banter check now gives the model a mechanical two-voice test
   for the AUDIO (one line responding to another, casual small talk, boredom, laughing
   together) instead of a vague "conversing" judgment, with explicit exclusions for
-  moaning, dirty talk about the act, and talking straight to the camera. The frame
+  sexual vocalizations and explicit talk about the act, and talking straight to
+  the camera. The frame
   description must call out the performer conversing with another person present so the
   consistency rule fires. Fixes 008@123–130s, where v6 quoted the banter audio
   ("Try to be good." / "No way." / "You do.") yet kept the frames.
