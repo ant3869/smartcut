@@ -76,6 +76,30 @@ class FfmpegBlade:
         return expression.replace(",", r"\,")
 
     @staticmethod
+    def decode_mono(source, rate: int = 22050):
+        """Decode any media to mono float32. The single FFmpeg decode helper for
+        analysis paths (beat detection); rendering decodes inline in the graph."""
+        import tempfile
+        import wave
+        from pathlib import Path
+
+        import numpy as np
+
+        from .util import PipelineError, run_checked
+        with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmp:
+            wav = Path(tmp.name)
+        try:
+            run_checked(["ffmpeg", "-hide_banner", "-v", "error", "-y", "-i", str(source),
+                         "-map", "0:a:0", "-ac", "1", "-ar", str(rate), "-f", "wav", str(wav)])
+            with wave.open(str(wav), "rb") as handle:
+                raw = handle.readframes(handle.getnframes())
+            return np.frombuffer(raw, dtype=np.int16).astype(np.float32) / 32768.0, rate
+        except PipelineError:
+            raise PipelineError(f"No decodable audio in {Path(source).name}")
+        finally:
+            wav.unlink(missing_ok=True)
+
+    @staticmethod
     def available_video_codecs() -> list[str]:
         encoders = run_checked(["ffmpeg", "-hide_banner", "-encoders"]).stdout
         return [name for name in ("libx264", "libx265", "libvpx-vp9") if any(line.split()[1:2] == [name] for line in encoders.splitlines())]
@@ -111,7 +135,7 @@ class FfmpegBlade:
         passes = {"transitions": True, "watermark": True, "cleanup": True, "music_bed": True,
                   **(passes or {})}
         render_warnings = warnings if warnings is not None else []
-        from .audio import cleanup_chain, duck_chain
+        from .audio import bed_fades, cleanup_chain, duck_chain
         cleanup_spec = sequence.cleanup
         if not (passes["cleanup"] and cleanup_spec and cleanup_spec.enabled):
             cleanup_spec = None
@@ -232,14 +256,13 @@ class FfmpegBlade:
         bed_set = set(bed_labels)
         main_labels = ["[silence]"] + [label for label in audio_labels if label not in bed_set]
         duck = bed_spec.duck if bed_spec else False
-        if duck and bed_labels:
+        bed_fx = ""
+        if bed_labels:
             bed_end = bed_spec.end if bed_spec.end is not None else duration
-            fade_in = (f"afade=t=in:st=0:d={bed_spec.fade_in:g}" if bed_spec.fade_in else "")
-            fade_out = (f"afade=t=out:st={max(0, bed_end - bed_spec.fade_out):g}:d={bed_spec.fade_out:g}"
-                        if bed_spec.fade_out else "")
+            bed_fx = bed_fades(bed_spec.model_dump(), bed_end)
             filters.append(f"{''.join(bed_labels)}amix=inputs={len(bed_labels)}:normalize=0[bedmix]")
-            bed_fx = ",".join(f for f in (fade_in, fade_out) if f)
             filters.append(f"[bedmix]{bed_fx}[bedready]" if bed_fx else "[bedmix]anull[bedready]")
+        if duck and bed_labels:
             filters.append(f"{''.join(main_labels)}amix=inputs={len(main_labels)}:normalize=0[mainmix]")
             filters.append(f"[mainmix]asplit[mainkey][mainout]")
             filters.append(f"[bedready][mainkey]{duck_chain(bed_spec.model_dump())}[bedducked]")
@@ -247,7 +270,8 @@ class FfmpegBlade:
         else:
             if duck and bed_spec:
                 render_warnings.append("Ducking on but no music bed clips rendered; bed plays flat")
-            filters.append(f"{''.join(main_labels + bed_labels)}amix=inputs={len(main_labels) + len(bed_labels)}:normalize=0:duration=first[aoutraw]")
+            mixed = main_labels + (["[bedready]"] if bed_labels else [])
+            filters.append(f"{''.join(mixed)}amix=inputs={len(mixed)}:normalize=0:duration=first[aoutraw]")
         if mix_cleanup:
             filters.append(f"[aoutraw]{mix_cleanup}[aout]")
         else:

@@ -15,9 +15,11 @@ def cleanup_chain(settings: dict | None, *, warnings: bool = False):
     compression, loudness normalize, limiter. Empty string when all disabled."""
     settings = dict(settings or {})
     if settings.get("voice_preset"):
-        settings = {"highpass": True, "highpass_freq": settings.get("highpass_freq", 80),
-                    "noise_reduce": True, "noise_amount": settings.get("noise_amount", 12),
-                    "compress": True, **settings}
+        # Preset wins over unchecked boxes: the UI submits explicit falses
+        # for every unticked processor alongside the preset flag.
+        settings.update(highpass=True, noise_reduce=True, compress=True)
+        settings.setdefault("highpass_freq", 80)
+        settings.setdefault("noise_amount", 12)
     parts: list[str] = []
     notes: list[str] = []
     if settings.get("highpass"):
@@ -37,25 +39,10 @@ def cleanup_chain(settings: dict | None, *, warnings: bool = False):
 
 
 def _decode_mono(source, rate=22050):
-    """Decode any media to mono float32 via ffmpeg. Raises PipelineError without audio."""
-    import tempfile
-    from pathlib import Path
+    """Decode any media to mono float32. FFmpeg itself lives on the blade."""
+    from .blade import FfmpegBlade
 
-    from .util import PipelineError, run_checked
-    with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmp:
-        wav = Path(tmp.name)
-    try:
-        run_checked(["ffmpeg", "-hide_banner", "-v", "error", "-y", "-i", str(source),
-                     "-map", "0:a:0", "-ac", "1", "-ar", str(rate), "-f", "wav", str(wav)])
-        import wave
-        with wave.open(str(wav), "rb") as handle:
-            raw = handle.readframes(handle.getnframes())
-        import numpy as np
-        return np.frombuffer(raw, dtype=np.int16).astype(np.float32) / 32768.0, rate
-    except PipelineError:
-        raise PipelineError(f"No decodable audio in {Path(source).name}")
-    finally:
-        wav.unlink(missing_ok=True)
+    return FfmpegBlade.decode_mono(source, rate)
 
 
 def detect_beats(source, *, sensitivity: float = 3.0, min_bpm: float = 60,
@@ -162,8 +149,9 @@ def snap_cuts_to_beats(sequence, beats: list, *, max_distance: float = .15,
 
 def cut_on_beats(sequence, beats: list, *, every: int = 4,
                  range_start: float | None = None, range_end: float | None = None):
-    """Split clips at every-Nth beat. Linked groups split together; locked tracks
-    untouched; beats within .05s of an existing boundary are skipped."""
+    """Split link groups at every-Nth beat. Left halves keep the original link,
+    right halves share one fresh link per group; groups touching a locked track
+    are never split half-way. Beats within .05s of an existing boundary skip."""
     import copy
     import uuid
 
@@ -171,30 +159,32 @@ def cut_on_beats(sequence, beats: list, *, every: int = 4,
     locked = _locked_tracks(sequence)
     sequence = copy.deepcopy(sequence)
     used: set = set()
-    for track in sorted({c.track for c in sequence.clips}):
-        if track in locked:
+    for beat in grid:
+        if range_start is not None and beat < range_start:
             continue
-        for beat in grid:
-            if range_start is not None and beat < range_start:
+        if range_end is not None and beat > range_end:
+            continue
+        groups: dict = {}
+        for clip in sequence.clips:
+            groups.setdefault(clip.link_id or clip.id, []).append(clip)
+        for key, members in groups.items():
+            spanning = [c for c in members
+                        if c.start < beat < c.start + c.duration
+                        and min(abs(beat - c.start), abs(c.start + c.duration - beat)) >= .05]
+            if not spanning:
                 continue
-            if range_end is not None and beat > range_end:
-                continue
-            for clip in [c for c in sequence.clips if c.track == track]:
-                if not (clip.start < beat < clip.start + clip.duration):
-                    continue
-                if min(abs(beat - clip.start), abs(clip.start + clip.duration - beat)) < .05:
-                    continue
+            if any(c.track in locked for c in members):
+                continue  # never split one side of a locked partnership
+            link = uuid.uuid4().hex[:12]
+            for clip in spanning:
                 offset = beat - clip.start
-                link = uuid.uuid4().hex[:12]
                 tail = clip.model_copy(update={
                     "id": f"{clip.id}-b{len(used)}", "start": round(beat, 3),
                     "source_start": round(clip.source_start + offset * clip.speed, 3),
                     "link_id": link})
                 sequence.clips.append(tail)
                 clip.source_end = round(clip.source_start + offset * clip.speed, 3)
-                clip.link_id = link
-                used.add(beat)
-                break
+            used.add(beat)
     sequence.clips.sort(key=lambda c: (c.track, c.start))
     sequence.revision += 1
     return sequence, {"cuts_added": len(used), "every": every}
@@ -211,6 +201,18 @@ def add_beat_markers(sequence, beats: list, *, downbeats: list | None = None):
         sequence.markers.append(Marker(id=uuid.uuid4().hex[:8], time=round(beat, 3),
                                        label="Downbeat" if beat in downs else "Beat"))
     return sequence, {"markers_added": len(beats)}
+
+
+def bed_fades(settings: dict | None, bed_end: float) -> str:
+    """afade in/out stage for a music bed. Empty when both are zero."""
+    settings = dict(settings or {})
+    parts: list[str] = []
+    if float(settings.get("fade_in", 0)):
+        parts.append(f"afade=t=in:st=0:d={float(settings['fade_in']):g}")
+    if float(settings.get("fade_out", 0)):
+        parts.append(f"afade=t=out:st={max(0, bed_end - float(settings['fade_out'])):g}"
+                     f":d={float(settings['fade_out']):g}")
+    return ",".join(parts)
 
 
 def duck_chain(settings: dict | None) -> str:

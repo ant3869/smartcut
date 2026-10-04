@@ -130,6 +130,33 @@ def test_cut_on_beats_splits_clips():
     assert len(split.clips) == 8  # split pairs stay linked
 
 
+def test_cut_on_beats_preserves_cross_track_links():
+    from pipeline.audio import cut_on_beats
+    sequence = beat_sequence()
+    split, _ = cut_on_beats(sequence, [1.0], every=1)
+    v1 = next(c for c in split.clips if c.id == "v1")
+    a1 = next(c for c in split.clips if c.id == "a1")
+    v_tail = next(c for c in split.clips if c.track == "V1" and c.start == 1.0)
+    a_tail = next(c for c in split.clips if c.track == "A1" and c.start == 1.0)
+    assert (v1.link_id, a1.link_id) == ("L1", "L1")  # left halves keep original
+    assert v_tail.link_id == a_tail.link_id != "L1"  # right halves share one new link
+
+
+def test_cut_on_beats_skips_group_with_locked_partner():
+    from pipeline.audio import cut_on_beats
+    sequence = beat_sequence()
+    next(t for t in sequence.tracks if t.id == "A1").locked = True
+    split, summary = cut_on_beats(sequence, [1.0], every=1)
+    assert summary["cuts_added"] == 0 and len(split.clips) == 4
+
+
+def test_bed_fades_filter():
+    from pipeline.audio import bed_fades
+    assert bed_fades({"fade_in": 1, "fade_out": 2}, 6.0) == \
+        "afade=t=in:st=0:d=1,afade=t=out:st=4:d=2"
+    assert bed_fades({"fade_in": 0, "fade_out": 0}, 6.0) == ""
+
+
 def test_beat_markers_added():
     from pipeline.audio import add_beat_markers
     sequence = beat_sequence()
@@ -182,6 +209,21 @@ def test_duck_chain_maps_amount_to_ratio():
     assert "sidechaincompress" in chain and "attack=20" in chain and "release=400" in chain
 
 
+def test_voice_preset_enables_processors_despite_explicit_off():
+    from pipeline.audio import cleanup_chain
+    chain = cleanup_chain({"voice_preset": True, "highpass": False,
+                           "noise_reduce": False, "compress": False,
+                           "normalize": False})
+    assert "highpass" in chain and "afftdn" in chain and "acompressor" in chain
+
+
+def test_decode_mono_lives_on_blade(tmp_path):
+    from pipeline.blade import FfmpegBlade
+    track = click_track(tmp_path / "clicks.wav", bpm=120)
+    samples, rate = FfmpegBlade.decode_mono(track)
+    assert rate == 22050 and len(samples) == 8 * 22050 and abs(samples.max()) > .5
+
+
 def bed_sequence(tmp_path):
     import sys
     sys.path.insert(0, "tests")
@@ -202,6 +244,16 @@ def test_duck_bed_renders(tmp_path):
     sequence = bed_sequence(tmp_path)
     out = FfmpegBlade(preset="ultrafast", output_fps=10).render_sequence(
         sequence, tmp_path / "duck.mp4", passes={"music_bed": True})
+    assert abs(media_duration(out) - 6.0) < .3
+
+
+def test_flat_bed_renders_with_fades(tmp_path):
+    from pipeline.blade import FfmpegBlade
+    from pipeline.util import media_duration
+    sequence = bed_sequence(tmp_path)
+    sequence.music_bed.duck = False
+    out = FfmpegBlade(preset="ultrafast", output_fps=10).render_sequence(
+        sequence, tmp_path / "flat.mp4", passes={"music_bed": True})
     assert abs(media_duration(out) - 6.0) < .3
 
 

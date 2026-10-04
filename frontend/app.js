@@ -688,7 +688,7 @@ function bedDialog(){
   needSequence();const cur=state.sequence.music_bed||{},dur=Math.round(T.sequenceDuration(state.sequence)*10)/10;
   openDialog(`${dialogHead('AUTO','Music Bed')}<form id="bed-form"><div class="dialog-body"><p>Loops a music file across the sequence as editable audio clips. Ducking is a render-time sidechain.</p>`
     +`<label class="stacked">Music file<select name="music_path">${audioAssetOptions(cur.music_path)}</select></label>`
-    +`<div class="export-grid"><label class="stacked">Target track<select name="track">${['A1','A2','A3','A4','A5','A6','A7','A8'].map(t=>`<option ${cur.track===t?'selected':''}>${t}</option>`).join('')}</select></label>`
+    +`<div class="export-grid"><label class="stacked">Target track<select name="track">${['A1','A2','A3','A4','A5','A6','A7','A8'].map(t=>`<option ${(cur.track??'A2')===t?'selected':''}>${t}</option>`).join('')}</select></label>`
     +`<label class="stacked">Start<input name="start" type="number" min="0" step=".1" value="${cur.start??0}"></label>`
     +`<label class="stacked">End<input name="end" type="number" min="0" step=".1" value="${cur.end??dur}"></label></div>`
     +`<label class="toggle-row">Loop to fill<input type="checkbox" name="loop" ${cur.loop===false?'':'checked'}></label>`
