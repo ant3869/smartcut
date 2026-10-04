@@ -50,7 +50,7 @@ class SequenceClip(StrictModel):
     x: float = Field(default=0, ge=-8192, le=8192)
     y: float = Field(default=0, ge=-8192, le=8192)
     rotation: float = Field(default=0, ge=-360, le=360)
-    fit: Literal["fit", "fill", "original"] = "fit"
+    fit: Literal["fit", "fill", "stretch", "original"] = "fit"
     keyframes: dict[Literal["x", "y", "scale", "rotation", "opacity"], list[Keyframe]] = Field(default_factory=dict)
     volume: float = Field(default=1, ge=0, le=4)
     enabled: bool = True
@@ -138,8 +138,9 @@ class Overlay(StrictModel):
     """A persistent image overlay (watermark). `start`/`end` of None means the whole sequence."""
 
     id: str = Field(min_length=1, max_length=100)
-    kind: Literal["watermark"] = "watermark"
-    path: str = Field(min_length=1)
+    kind: Literal["watermark", "logo", "title", "cta"] = "watermark"
+    path: str = Field(default="", min_length=0)
+    text: str | None = Field(default=None, max_length=200)
     position: Literal["top-left", "top-center", "top-right", "center-left", "center",
                       "center-right", "bottom-left", "bottom-center", "bottom-right", "custom"] = "bottom-right"
     x: float | None = Field(default=None, ge=0, le=8192)
@@ -165,7 +166,33 @@ class Overlay(StrictModel):
         window = (self.end or 86400) - (self.start or 0)
         if self.fade_in + self.fade_out > window:
             raise ValueError("Overlay fades must fit inside its time range")
+        if self.kind in ("watermark", "logo") and not self.path:
+            raise ValueError("Image overlays need a file path")
+        if self.kind in ("title", "cta") and not (self.text or "").strip():
+            raise ValueError("Text overlays need text")
         return self
+
+
+class IntroOutro(StrictModel):
+    """Intro/outro segment spec. Clips are first-class timeline content;
+    transitions/overlays reuse the existing models; ids allow re-apply."""
+
+    enabled: bool = True
+    media_path: str
+    media_sha: str = Field(pattern=r"^[a-fA-F0-9]{64}$")
+    duration: float = Field(gt=0, le=86400)
+    volume: float = Field(default=1, ge=0, le=4)
+    fit: Literal["fit", "fill", "stretch"] = "fit"
+    keep_aspect: bool = True
+    background: str | None = Field(default=None, pattern=r"^#[0-9a-fA-F]{6}$")
+    fade_in: float = Field(default=0, ge=0, le=60)
+    fade_out: float = Field(default=0, ge=0, le=60)
+    transition: str = "none"
+    transition_duration: float = Field(default=.5, ge=.05, le=5)
+    preset: str = ""
+    clip_ids: list[str] = Field(default_factory=list)
+    transition_ids: list[str] = Field(default_factory=list)
+    overlay_ids: list[str] = Field(default_factory=list)
 
 
 class RenderPasses(StrictModel):
@@ -175,6 +202,8 @@ class RenderPasses(StrictModel):
     watermark: bool = True
     cleanup: bool = True
     music_bed: bool = True
+    intro: bool = True
+    outro: bool = True
 
 
 class RenderSettings(StrictModel):
@@ -256,6 +285,8 @@ class Sequence(StrictModel):
     overlays: list[Overlay] = Field(default_factory=list, max_length=25)
     cleanup: AudioCleanup | None = None
     music_bed: MusicBed | None = None
+    intro: IntroOutro | None = None
+    outro: IntroOutro | None = None
 
     @property
     def duration(self):

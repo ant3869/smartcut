@@ -36,6 +36,11 @@ from .audio import cut_on_beats as audio_cut
 from .audio import detect_beats as audio_beats
 from .audio import remove_music_bed as audio_bed_remove
 from .audio import snap_cuts_to_beats as audio_snap
+from .intro import PRESETS as INTRO_PRESETS
+from .intro import build_intro_outro as intro_build
+from .intro import remove_intro_outro as intro_remove
+from .qc import run_qc as qc_structural
+from .qc import run_signal_qc as qc_signal
 from .sequence import AudioCleanup
 from .sequence import Sequence, RenderSettings, from_plan, export_sequence
 try:  # Live when the transitions/watermark pass work merges; shorts degrade honestly without it.
@@ -160,6 +165,25 @@ class BedRequest(BaseModel):
     music_path: str
     beats: list[float] = []
     options: dict[str, Any] = {}
+
+
+class IntroOutroRequest(BaseModel):
+    sequence: Sequence
+    options: dict[str, Any] = {}
+
+
+class IntroRemoveRequest(BaseModel):
+    sequence: Sequence
+    side: str = "both"
+
+
+class QcRequest(BaseModel):
+    sequence: Sequence
+    settings: RenderSettings | None = None
+    output_folder: str | None = None
+    filename: str | None = None
+    deep: bool = True
+    scan_seconds: float = 60.0
 class SpotlightRequest(BaseModel):
     source_kind: str = "media"
     job_ids: list[str] = []
@@ -908,6 +932,59 @@ def create_app(config_path: str | Path = DEFAULT_CONFIG) -> FastAPI:
         project_path(project_id)
         sequence, removed = audio_bed_remove(request.sequence)
         return {"sequence": sequence.model_dump(), "removed": removed}
+
+    @app.get("/api/projects/{project_id}/intro-outro/presets")
+    def intro_presets(project_id: str):
+        project_path(project_id)
+        return {"presets": INTRO_PRESETS}
+
+    @app.post("/api/projects/{project_id}/intro-outro/apply")
+    def intro_apply(project_id: str, request: IntroOutroRequest):
+        project_path(project_id)
+        assets = {str(Path(a["path"]).resolve()) for a in project_view(project_id)["assets"]}
+        options = dict(request.options)
+        for prefix in ("intro", "outro"):
+            for key in ("path", "logo_path"):
+                value = options.get(f"{prefix}_{key}")
+                if value and str(Path(value).resolve()) not in assets:
+                    raise HTTPException(400, f"{prefix} {key} is not media in this project")
+            media = options.get(f"{prefix}_path")
+            if media:
+                try:
+                    from .util import source_fingerprint
+                    options[f"{prefix}_sha"] = source_fingerprint(
+                        Path(media).resolve())["sha256"]
+                except PipelineError as exc:
+                    raise HTTPException(400, f"Cannot fingerprint {prefix} media")
+        try:
+            sequence, summary = intro_build(request.sequence, options)
+        except PipelineError as exc:
+            raise HTTPException(400, str(exc))
+        return {"sequence": sequence.model_dump(), "summary": summary}
+
+    @app.post("/api/projects/{project_id}/intro-outro/remove")
+    def intro_delete(project_id: str, request: IntroRemoveRequest):
+        project_path(project_id)
+        try:
+            sequence, removed = intro_remove(request.sequence, request.side)
+        except PipelineError as exc:
+            raise HTTPException(400, str(exc))
+        return {"sequence": sequence.model_dump(), "removed": removed}
+
+    @app.post("/api/projects/{project_id}/qc/run")
+    def qc_run(project_id: str, request: QcRequest):
+        project_path(project_id)
+        structural = qc_structural(request.sequence, settings=request.settings,
+                                   output_folder=request.output_folder,
+                                   filename=request.filename)
+        if request.deep:
+            signal = qc_signal(request.sequence, scan_seconds=request.scan_seconds)
+            merged = {key: structural[key] + signal[key]
+                      for key in ("errors", "warnings", "infos")}
+        else:
+            merged = {key: structural[key] for key in ("errors", "warnings", "infos")}
+        merged["summary"] = {key: len(merged[key]) for key in ("errors", "warnings", "infos")}
+        return merged
     def spotlight_inputs(project_id: str, request: SpotlightRequest):
         """Evidence + hashes for highlight/shorts sources. Reads only; masters untouched.
 

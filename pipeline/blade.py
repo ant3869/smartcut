@@ -76,6 +76,65 @@ class FfmpegBlade:
         return expression.replace(",", r"\,")
 
     @staticmethod
+    def text_font() -> str | None:
+        """A drawtext-usable font file, or None when the host provides none."""
+        from pathlib import Path
+
+        for candidate in ("C:/Windows/Fonts/arial.ttf",
+                          "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+                          "/System/Library/Fonts/Helvetica.ttc"):
+            if Path(candidate).is_file():
+                return candidate
+        return None
+
+    def _render_text_overlays(self, sequence, video_label: str, width: int, height: int,
+                              duration: float, filters: list, render_warnings: list,
+                              enabled: bool, skip: set | None = None) -> str:
+        """drawtext pass for title/cta overlays. Warns (no text) when the host
+        has no usable font; text fades are stored but not rendered."""
+        if not enabled:
+            return video_label
+        texts = [o for o in (getattr(sequence, "overlays", None) or [])
+                 if o.kind in ("title", "cta") and o.id not in (skip or set())]
+        if not texts:
+            return video_label
+        font = self.text_font()
+        if not font:
+            render_warnings.append("No usable font on this host; title/CTA text skipped")
+            return video_label
+        font_esc = font.replace("\\", "/").replace(":", r"\:")
+        for overlay in texts:
+            text = (overlay.text or "").replace("\\", "\\\\").replace("'", "\\'") \
+                .replace(":", "\\:").replace(",", "\\,").replace("\n", " ")
+            size = max(8, round(height * overlay.scale))
+            mx, my = overlay.margin_x, overlay.margin_y
+            pos = overlay.position
+            if pos == "custom":
+                x, y = str(overlay.x or 0), str(overlay.y or 0)
+            else:
+                vertical, _, horizontal = pos.partition("-")
+                if pos == "center":
+                    x, y = "(w-text_w)/2", "(h-text_h)/2"
+                else:
+                    x = {"left": str(mx), "right": f"w-text_w-{mx}"}.get(
+                        horizontal if horizontal in ("left", "right") else "center",
+                        "(w-text_w)/2")
+                    y = {"top": str(my), "bottom": f"h-text_h-{my}"}.get(vertical, "(h-text_h)/2")
+            start = overlay.start or 0
+            end = overlay.end if overlay.end is not None else duration
+            if overlay.fade_in or overlay.fade_out:
+                render_warnings.append(
+                    f"Text overlay fades are stored but not rendered ({overlay.id})")
+            filters.append(
+                f"[{video_label}]drawtext=fontfile='{font_esc}':text='{text}'"
+                f":fontsize={size}:fontcolor=white:alpha={overlay.opacity:g}"
+                f":shadowcolor=black:shadowx=2:shadowy=2:x={x}:y={y}"
+                f":enable='between(t,{start:g},{end:g})'"
+                f"[{video_label}txt]")
+            video_label = f"{video_label}txt"
+        return video_label
+
+    @staticmethod
     def decode_mono(source, rate: int = 22050):
         """Decode any media to mono float32. The single FFmpeg decode helper for
         analysis paths (beat detection); rendering decodes inline in the graph."""
@@ -98,6 +157,81 @@ class FfmpegBlade:
             raise PipelineError(f"No decodable audio in {Path(source).name}")
         finally:
             wav.unlink(missing_ok=True)
+
+    @staticmethod
+    def audio_levels(source, *, start: float = 0, seconds: float = 60) -> dict:
+        """Peak/mean volume of a source range via volumedetect. None when silent."""
+        import re
+        from pathlib import Path
+
+        from .util import PipelineError, run_checked
+        proc = run_checked(["ffmpeg", "-hide_banner", "-v", "info", "-y",
+                            "-ss", f"{max(0, start):.3f}", "-t", f"{max(.1, seconds):.3f}",
+                            "-i", str(source), "-map", "0:a", "-af", "volumedetect",
+                            "-f", "null", "-"])
+        levels: dict[str, float | None] = {"max": None, "mean": None}
+        for key in ("max_volume", "mean_volume"):
+            match = re.search(rf"{key}:\s+([-\d.]+|n/a)", proc.stderr)
+            if match and match.group(1) != "n/a":
+                levels["max" if key == "max_volume" else "mean"] = float(match.group(1))
+        return levels
+
+    @staticmethod
+    def loudness(source, *, start: float = 0, seconds: float = 60) -> dict | None:
+        """Single-pass loudnorm measurement (integrated LUFS, true peak, LRA)."""
+        import json
+        from pathlib import Path
+
+        from .util import PipelineError, run_checked
+        try:
+            proc = run_checked(["ffmpeg", "-hide_banner", "-v", "info", "-y",
+                                "-ss", f"{max(0, start):.3f}", "-t", f"{max(.1, seconds):.3f}",
+                                "-i", str(source), "-map", "0:a",
+                                "-af", "loudnorm=print_format=json", "-f", "null", "-"])
+        except PipelineError:
+            return None
+        try:
+            measured = json.loads(proc.stderr[proc.stderr.index("{"):proc.stderr.rindex("}") + 1])
+        except (ValueError, IndexError):
+            return None
+        try:
+            return {"integrated": float(measured["input_i"]),
+                    "true_peak": float(measured["input_tp"]),
+                    "lra": float(measured["input_lra"])}
+        except (KeyError, TypeError, ValueError):
+            return None
+
+    @staticmethod
+    def frozen_spans(source, *, start: float = 0, seconds: float = 60,
+                     freeze_seconds: float = 2.0) -> list[dict]:
+        """Ranges where the picture does not change (freezedetect). Bounded scan."""
+        import re
+        from pathlib import Path
+
+        from .util import PipelineError, run_checked
+        try:
+            proc = run_checked(["ffmpeg", "-hide_banner", "-v", "info", "-y",
+                                "-ss", f"{max(0, start):.3f}", "-t", f"{max(.1, seconds):.3f}",
+                                "-i", str(source), "-map", "0:v",
+                                "-vf", f"freezedetect=d={freeze_seconds:.1f}",
+                                "-f", "null", "-"])
+        except PipelineError:
+            return []
+        spans: list[dict] = []
+        pending: float | None = None
+        for line in proc.stderr.splitlines():
+            start_match = re.search(r"freeze_start:\s+([\d.]+)", line)
+            end_match = re.search(r"freeze_end:\s+([\d.]+)", line)
+            if start_match:
+                pending = float(start_match.group(1))
+            elif end_match and pending is not None:
+                spans.append({"start": round(start + pending, 3),
+                              "end": round(start + float(end_match.group(1)), 3)})
+                pending = None
+        if pending is not None:
+            spans.append({"start": round(start + pending, 3),
+                          "end": round(start + seconds, 3)})
+        return spans
 
     @staticmethod
     def available_video_codecs() -> list[str]:
@@ -133,7 +267,7 @@ class FfmpegBlade:
         audio_labels = []
         video_label = "base0"
         passes = {"transitions": True, "watermark": True, "cleanup": True, "music_bed": True,
-                  **(passes or {})}
+                  "intro": True, "outro": True, **(passes or {})}
         render_warnings = warnings if warnings is not None else []
         from .audio import bed_fades, cleanup_chain, duck_chain
         cleanup_spec = sequence.cleanup
@@ -154,6 +288,29 @@ class FfmpegBlade:
                 raise PipelineError("No enabled clips on unmuted tracks")
         bed_ids = set(bed_spec.clip_ids) if bed_spec else set()
         bed_labels: list[str] = []
+        intro_spec = sequence.intro
+        if not (passes["intro"] and intro_spec and intro_spec.enabled):
+            intro_spec = None
+        outro_spec = sequence.outro
+        if not (passes["outro"] and outro_spec and outro_spec.enabled):
+            outro_spec = None
+        skipped = set()
+        for spec in (sequence.intro, sequence.outro):
+            if spec and (spec is not intro_spec and spec is not outro_spec):
+                skipped.update(spec.clip_ids)
+        if skipped:
+            clips = [c for c in clips if c.id not in skipped]
+            if not clips:
+                raise PipelineError("No enabled clips on unmuted tracks")
+        framing: dict[str, tuple[str, str]] = {}
+        for spec in (intro_spec, outro_spec):
+            if spec and spec.background:
+                for clip_id in spec.clip_ids:
+                    framing[clip_id] = (spec.background, spec.fit)
+        skip_overlays: set[str] = set()
+        for spec in (sequence.intro, sequence.outro):
+            if spec and (spec is not intro_spec and spec is not outro_spec):
+                skip_overlays.update(spec.overlay_ids)
         probes = {}
         input_index = 0
         cuts, edges = self._transition_lookup(sequence, passes["transitions"])
@@ -164,7 +321,7 @@ class FfmpegBlade:
                     unit, sequence, output, width, height, fps, duration, edges,
                     cmd, filters, probes, input_index, video_label, audio_labels,
                     render_warnings, clip_cleanup=clip_cleanup,
-                    bed_ids=bed_ids, bed_labels=bed_labels)
+                    bed_ids=bed_ids, bed_labels=bed_labels, framing=framing)
                 continue
             clip = unit["clips"][0]
             edge = edges.get(clip.id)
@@ -205,8 +362,13 @@ class FfmpegBlade:
                 if clip.id in bed_ids:
                     bed_labels.append(f"[a{index}]")
             else:
+                bg = framing.get(clip.id)
+                pad = ""
+                if bg and bg[1] == "fit":
+                    pad = f",pad={width}:{height}:(ow-iw)/2:(oh-ih)/2:color={bg[0]}"
                 fit = (f"scale={width}:{height}:force_original_aspect_ratio=decrease" if clip.fit == "fit" else
-                       f"scale={width}:{height}:force_original_aspect_ratio=increase,crop={width}:{height}" if clip.fit == "fill" else "null")
+                       f"scale={width}:{height}:force_original_aspect_ratio=increase,crop={width}:{height}" if clip.fit == "fill" else
+                       f"scale={width}:{height}" if clip.fit == "stretch" else "null")
                 scale = self._escape_expression(self._animated(clip, "scale"))
                 rotation = self._escape_expression(self._animated(clip, "rotation") + "*PI/180")
                 opacity = self._escape_expression(self._animated(clip, "opacity", clock="T"))
@@ -214,7 +376,7 @@ class FfmpegBlade:
                 alpha = (f",format=yuva444p,geq=lum='lum(X,Y)':cb='cb(X,Y)':cr='cr(X,Y)':a='alpha(X,Y)*{opacity}'"
                          if clip.keyframes.get("opacity") else f",colorchannelmixer=aa={clip.opacity:g}")
                 filters.append(f"[{index}:v]setpts=(PTS-STARTPTS)/{clip.speed},fps={fps},"
-                               f"{fit},setsar=1,format=rgba,scale=w='max(2\\,trunc(iw*{scale}/2)*2)':"
+                               f"{fit}{pad},setsar=1,format=rgba,scale=w='max(2\\,trunc(iw*{scale}/2)*2)':"
                                f"h='max(2\\,trunc(ih*{scale}/2)*2)':eval=frame"
                                f"{rotate}{alpha}{fade_v},"
                                f"trim=duration={clip.duration:.6f},setpts=PTS+{clip.start}/TB[v{index}]")
@@ -225,6 +387,10 @@ class FfmpegBlade:
                 video_label = f"base{index}"
         sequence_overlays = list(getattr(sequence, "overlays", None) or []) if passes["watermark"] else []
         for overlay in sequence_overlays:
+            if overlay.kind in ("title", "cta"):
+                continue  # text pass below; image branch requires a file
+            if overlay.id in skip_overlays:
+                continue  # branded overlay of a disabled intro/outro
             try:
                 image = Path(overlay.path)
                 if not image.is_file():
@@ -243,6 +409,9 @@ class FfmpegBlade:
                 render_warnings += overlay_notes
             except PipelineError as exc:
                 render_warnings.append(str(exc))
+        video_label = self._render_text_overlays(
+            sequence, video_label, width, height, duration, filters, render_warnings,
+            passes["watermark"], skip_overlays)
         if watermark and passes["watermark"] and not sequence_overlays:
             if not watermark.is_file():
                 raise PipelineError(f"Watermark is missing: {watermark}")
@@ -387,12 +556,14 @@ class FfmpegBlade:
         return units
 
     def _segment_chain(self, clip, *, width, height, fps, head: float = 0,
-                       fade_in: float = 0, fade_out: float = 0, seg_duration: float = 0) -> str:
+                       fade_in: float = 0, fade_out: float = 0, seg_duration: float = 0,
+                       background: str | None = None) -> str:
         """Per-clip picture chain for a transition member. Keyframe clocks are shifted
         by the head extension so animation stays glued to the source content."""
         local = f"(t-{head:g})"
         fit = (f"scale={width}:{height}:force_original_aspect_ratio=decrease" if clip.fit == "fit" else
-               f"scale={width}:{height}:force_original_aspect_ratio=increase,crop={width}:{height}" if clip.fit == "fill" else "null")
+               f"scale={width}:{height}:force_original_aspect_ratio=increase,crop={width}:{height}" if clip.fit == "fill" else
+               f"scale={width}:{height}" if clip.fit == "stretch" else "null")
         scale = self._escape_expression(self._animated(clip, "scale", clock=local))
         rotation = self._escape_expression(self._animated(clip, "rotation", clock=local) + "*PI/180")
         opacity = self._escape_expression(self._animated(clip, "opacity", clock=local))
@@ -408,11 +579,12 @@ class FfmpegBlade:
                 f"{fit},setsar=1,format=rgba,scale=w='max(2\\,trunc(iw*{scale}/2)*2)':"
                 f"h='max(2\\,trunc(ih*{scale}/2)*2)':eval=frame"
                 f"{rotate}{alpha}{fade},"
-                f"pad={width}:{height}:(ow-iw)/2:(oh-ih)/2:color=black@0,format=rgba")
+                f"pad={width}:{height}:(ow-iw)/2:(oh-ih)/2:color={background or 'black@0'},format=rgba")
 
     def _render_group(self, unit, sequence, output: Path, width, height, fps, seq_duration, edges,
                       cmd, filters, probes, input_index, video_label, audio_labels,
-                      render_warnings, clip_cleanup="", bed_ids=frozenset(), bed_labels=None):
+                      render_warnings, clip_cleanup="", bed_ids=frozenset(), bed_labels=None,
+                      framing=None):
         """Blend one transition group and composite it as a single timeline unit."""
         members, links = unit["clips"], unit["links"]
         video = members[0].track.startswith("V")
@@ -450,7 +622,8 @@ class FfmpegBlade:
                     cmd += ["-ss", f"{src_ss:.6f}", "-t", f"{src_t:.6f}", "-i", str(source)]
                 member_fade_in = fade_in if pos == 0 else 0
                 member_fade_out = fade_out if pos == len(members) - 1 else 0
-                filters.append(f"[{index}:v]{self._segment_chain(clip, width=width, height=height, fps=fps, head=head[pos], fade_in=member_fade_in, fade_out=member_fade_out, seg_duration=ext[pos])},trim=duration={ext[pos]:.6f}[gs{index}]")
+                member_bg = (framing or {}).get(clip.id)
+                filters.append(f"[{index}:v]{self._segment_chain(clip, width=width, height=height, fps=fps, head=head[pos], fade_in=member_fade_in, fade_out=member_fade_out, seg_duration=ext[pos], background=member_bg[0] if member_bg and member_bg[1] == 'fit' else None)},trim=duration={ext[pos]:.6f}[gs{index}]")
                 x = self._escape_expression(self._animated(clip, "x", clock=f"(t-{head[pos]:g})"))
                 y = self._escape_expression(self._animated(clip, "y", clock=f"(t-{head[pos]:g})"))
                 filters.append(f"[canvas{canvas}][gs{index}]overlay=x='(W-w)/2+{x}':y='(H-h)/2+{y}':eof_action=pass[full{index}]")

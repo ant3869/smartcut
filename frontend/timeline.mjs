@@ -10,9 +10,9 @@ export const uid = () => crypto.randomUUID().slice(0, 12);
 export const locked = (sequence, track) => sequence.tracks.find(t => t.id === track)?.locked;
 export const visualTracks = sequence => sequence.tracks.map(t=>t.id).filter(id=>id.startsWith('V')).sort((a,b)=>Number(b.slice(1))-Number(a.slice(1)));
 export function visualGeometry(sourceWidth,sourceHeight,canvasWidth,canvasHeight,fit='fit'){
-  const ratio=fit==='original'?1:fit==='fill'?Math.max(canvasWidth/sourceWidth,canvasHeight/sourceHeight):Math.min(canvasWidth/sourceWidth,canvasHeight/sourceHeight);
-  const mediaWidth=sourceWidth*ratio,mediaHeight=sourceHeight*ratio;
-  return {mediaWidth,mediaHeight,boxWidth:fit==='fill'?canvasWidth:mediaWidth,boxHeight:fit==='fill'?canvasHeight:mediaHeight};
+  const ratio=fit==='original'?1:fit==='fill'?Math.max(canvasWidth/sourceWidth,canvasHeight/sourceHeight):fit==='stretch'?0:Math.min(canvasWidth/sourceWidth,canvasHeight/sourceHeight);
+  const mediaWidth=fit==='stretch'?canvasWidth:sourceWidth*ratio,mediaHeight=fit==='stretch'?canvasHeight:sourceHeight*ratio;
+  return {mediaWidth,mediaHeight,boxWidth:fit==='fit'?mediaWidth:canvasWidth,boxHeight:fit==='fit'?mediaHeight:canvasHeight};
 }
 export function placementTracks(kind,hasAudio,track){
   if(kind==='audio'&&track[0]!=='A'||kind==='image'&&track[0]!=='V')throw new Error('Drop images on video tracks and audio on audio tracks');
