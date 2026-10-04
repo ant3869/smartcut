@@ -894,8 +894,8 @@ async function runSinglePass(id){
 async function runAllPasses(){
   if(passBusy){toast('A pass is already running','warn');return;}
   passBusy=true;passProject=state.project?.id;const epoch=state.editVersion;
-  if($('#passes-rows'))await refreshPassesPanel();
   try{
+  if($('#passes-rows'))await refreshPassesPanel();
   const stopOnError=$('#passes-stop')?.checked!==false;
   const report=await PP.runEnabled(state.passes.state,{runners:passRunners,stopOnError,job:state.job,epoch,version:()=>state.editVersion,
     onStatus:(id,status,summary)=>{if(passAlive())savePasses({[id]:{status,summary:String(summary??'')}}).catch(()=>{});}});

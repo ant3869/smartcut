@@ -211,3 +211,25 @@ test('runEnabled rebases the epoch after each editing pass', async () => {
   assert.deepEqual(seen, [0, 1]);
   assert.equal(report.stopped, null);
 });
+
+test('jobBlocked gates ai-edit steps, not gaps-only setups', async () => {
+  const { jobBlocked } = await import('../frontend/passes-panel.mjs');
+  const def = PASS_DEFS.find(p => p.id === 'ai-edit');
+  assert.equal(jobBlocked(def, {}, { id: 'j1' }), null);
+  assert.equal(jobBlocked(def, {}, null), 'skipped — analyze a source to enable');
+  assert.equal(jobBlocked(def, { waste: false, gaps: true }, null), null);
+  assert.equal(jobBlocked({ id: 'qc' }, {}, null), null);
+});
+
+test('runEnabled runs gaps-only ai-edit without a job', async () => {
+  const calls = [];
+  const st = state({
+    'audio-cleanup': { enabled: false, order: 9, settings: {}, status: 'x', summary: '' },
+    silence: { enabled: false, order: 9, settings: {}, status: 'x', summary: '' },
+    'ai-edit': { enabled: true, order: 0, settings: { waste: false, gaps: true }, status: 'ready', summary: '' },
+  });
+  const runners = { quickWaste: async () => { calls.push('waste'); return 'gaps closed'; } };
+  const report = await runEnabled(st, { runners, stopOnError: true, job: null });
+  assert.deepEqual(calls, ['waste']);
+  assert.equal(report.stopped, null);
+});

@@ -84,6 +84,19 @@ export function epochMismatch(epoch, current) {
   if (epoch == null || epoch === current) return null;
   return 'Timeline changed during the run — result discarded, your edits kept';
 }
+// Granular analysis gate: null when the pass may run, reason when it must
+// skip. ai-edit only needs a job for its AI steps — a gaps-only setup runs
+// free on manual projects.
+export function jobBlocked(def, settings = {}, job) {
+  if (def.requires !== 'job' || job) return null;
+  if (def.id === 'ai-edit') {
+    const s = settings || {};
+    if (s.waste !== false || s.scenes || s.highlights)
+      return 'skipped — analyze a source to enable';
+    return null;
+  }
+  return 'skipped — analyze a source to enable';
+}
 // Run one pass through its registered runner. Runners are injected by app.js
 // and are the exact functions the Auto menu uses — never panel-local copies.
 export async function runPass(id, state, ctx = {}) {
@@ -119,8 +132,9 @@ export async function runEnabled(state, ctx = {}) {
     }
     // Analysis-gated passes stay enabled but skip cleanly in batch when the
     // project has no analysis job; an explicit single run still errors.
-    if (passDef(id).requires === 'job' && !ctx.job) {
-      results[id] = { ok: true, skipped: true, summary: 'skipped — analyze a source to enable' };
+    const blocked = jobBlocked(passDef(id), state[id]?.settings, ctx.job);
+    if (blocked) {
+      results[id] = { ok: true, skipped: true, summary: blocked };
       continue;
     }
     if (passDef(id).executor === 'none') {
