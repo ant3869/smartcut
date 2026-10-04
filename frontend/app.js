@@ -539,7 +539,7 @@ async function applyAuto(form){
   const {next,lines,before,after}=await runAuto(options);if(!lines.length)return toast('Nothing to change with these options','warn');
   closeDialog();commit(`Auto-edit · ${tc(before.duration)} → ${tc(after.duration)} · ${lines.length} step${lines.length>1?'s':''}`,next);
 }
-async function quickAuto(options){const {next,lines}=await runAuto({...Object.fromEntries(Object.keys(state.prefs.auto).map(k=>[k,false])),threshold:state.prefs.auto.threshold,minSilence:state.prefs.auto.minSilence,pad:state.prefs.auto.pad,highlightCount:state.prefs.auto.highlightCount,...options});if(!lines.length){toast('Nothing to change','warn');return lines;}const stale=PP.epochMismatch(options.epoch,state.editVersion);if(stale)throw new Error(stale);commit(lines.join(' · '),next);return lines;}
+async function quickAuto(options){const {next,lines}=await runAuto({...Object.fromEntries(Object.keys(state.prefs.auto).map(k=>[k,false])),threshold:state.prefs.auto.threshold,minSilence:state.prefs.auto.minSilence,pad:state.prefs.auto.pad,highlightCount:state.prefs.auto.highlightCount,...options});if(!lines.length){toast('Nothing to change','warn');return lines;}if(!passAlive())throw new Error('Project changed during the run — result discarded');const stale=PP.epochMismatch(options.epoch,state.editVersion);if(stale)throw new Error(stale);commit(lines.join(' · '),next);return lines;}
 // ---- Standalone processing passes: transitions + watermark. No analysis runs. ----
 function transitionOptions(form){
   const f=new FormData(form),scope=f.get('scope');
@@ -744,7 +744,7 @@ function passCommit(label,next,epoch){
   commit(label,next);
 }
 const passRunners={
-  quickWaste:async(s,ctx)=>{const lines=await quickAuto({waste:true,epoch:ctx?.epoch});return lines.length?lines.join(' · '):'nothing to change';},
+  quickWaste:async(s,ctx)=>{const lines=await quickAuto({waste:s.waste!==false,gaps:!!s.gaps,scenes:!!s.scenes,highlights:!!s.highlights,highlightCount:s.highlightCount||state.prefs.auto.highlightCount,threshold:state.prefs.auto.threshold,minSilence:state.prefs.auto.minSilence,pad:state.prefs.auto.pad,epoch:ctx?.epoch});return lines.length?lines.join(' · '):'nothing to change';},
   quickSilence:async(s,ctx)=>{const lines=await quickAuto({silence:true,threshold:s.threshold??state.prefs.auto.threshold,minSilence:s.minSilence??state.prefs.auto.minSilence,pad:s.pad??state.prefs.auto.pad,epoch:ctx?.epoch});return lines.length?lines.join(' · '):'nothing to change';},
   applyCleanup:async(s,ctx)=>{needSequence();const result=await post(projectURL('audio/cleanup/apply'),{sequence:state.sequence,options:s});passCommit('Audio cleanup applied',result.sequence,ctx?.epoch);return result.warnings?.length?result.warnings.join(' · '):'cleanup saved · honored at render';},
   applyBed:async(s,ctx)=>{needSequence();if(!s.music_path)throw new Error('Configure the music file first');const result=await post(projectURL('audio/bed/apply'),{sequence:state.sequence,music_path:s.music_path,beats:[],options:s});passCommit(`Music bed · ${result.summary.clips_added} clips`,result.sequence,ctx?.epoch);return `bed to ${result.summary.end}s`;},
@@ -756,7 +756,7 @@ const passRunners={
   openRender:async(s)=>{await renderDialog(s.preset);return s.preset?`render dialog · ${s.preset}`:'render dialog opened';},
 };
 const passConfigure={
-  'ai-edit':()=>autoEditDialog(),'silence':()=>passesSilenceDialog(),
+  'ai-edit':()=>passesAiDialog(),'silence':()=>passesSilenceDialog(),
   'transitions':()=>passesTransitionsDialog(),'watermark':()=>passesWatermarkDialog(),
   'audio-cleanup':()=>passesCleanupDialog(),'beat-cuts':()=>passesBeatDialog(),'music-bed':()=>passesBedDialog(),
   'render':()=>renderDialog(),'intro-outro':()=>passesIntroDialog(),'qc':()=>passesQcDialog(),
@@ -801,6 +801,16 @@ function passesWatermarkDialog(){
 function passesTransitionsDialog(){
   needSequence();const s=state.passes?.state.transitions?.settings||{};
   openDialog(`${dialogHead('PASSES','Transitions settings')}<form id="passes-transitions-form"><div class="dialog-body"><div class="export-grid"><label class="stacked">Type<select name="type">${['cross-dissolve','dip-black','dip-white','fade','wipe','slide'].map(t=>`<option ${(s.type||'cross-dissolve')===t?'selected':''}>${t}</option>`).join('')}</select></label><label class="stacked">Duration<input name="duration" type="number" min=".1" max="2" step=".1" value="${s.duration??.5}"></label></div><label class="toggle-row">Trim clips for handles<input type="checkbox" name="trim_for_handles" ${s.trim_for_handles===false?'':'checked'}></label></div><footer class="dialog-footer">${button('close-dialog','Cancel')}<button class="primary" type="submit">Save settings</button></footer></form>`,'passes');
+}
+function passesAiDialog(){
+  needSequence();const s=state.passes?.state['ai-edit']?.settings||{};
+  const step=(key,title,detail)=>`<label class="toggle-row">${title}<input type="checkbox" name="${key}" ${s[key]??key==='waste'?'checked':''}><small>${detail}</small></label>`;
+  openDialog(`${dialogHead('PASSES','AI Edit settings')}<form id="passes-ai-form"><div class="dialog-body"><p>Saved on the pass. Run applies these through the same auto-edit engine; AI steps need an analyzed source.</p>`
+    +step('waste','Remove AI-flagged waste','Uses approved-plan cuts and your Keep decisions.')
+    +step('gaps','Close all gaps','Joins timeline gaps, no analysis needed.')
+    +step('scenes','Scene markers','Needs analysis.')
+    +step('highlights','Highlight markers','Needs analysis.')
+    +`</div><footer class="dialog-footer">${button('close-dialog','Cancel')}<button class="primary" type="submit">Save settings</button></footer></form>`,'passes');
 }
 function passesSilenceDialog(){
   needSequence();const s=state.passes?.state.silence?.settings||{};
@@ -884,6 +894,7 @@ async function runSinglePass(id){
 async function runAllPasses(){
   if(passBusy){toast('A pass is already running','warn');return;}
   passBusy=true;passProject=state.project?.id;const epoch=state.editVersion;
+  if($('#passes-rows'))await refreshPassesPanel();
   try{
   const stopOnError=$('#passes-stop')?.checked!==false;
   const report=await PP.runEnabled(state.passes.state,{runners:passRunners,stopOnError,job:state.job,epoch,version:()=>state.editVersion,
@@ -1278,7 +1289,7 @@ const actions={
   'beat-cuts':()=>beatsDialog(),
   'music-bed':()=>bedDialog(),
   passes:()=>passesDialog(),
-  'pass-configure':t=>passConfigure[t.dataset.id]?.(),
+  'pass-configure':t=>{if(passBusy){toast('A pass is running — wait for it to finish','warn');return;}passConfigure[t.dataset.id]?.();},
   'pass-run':t=>operation(`Run ${t.dataset.id}`,()=>runSinglePass(t.dataset.id)),
   'pass-run-all':()=>operation('Run enabled passes',()=>runAllPasses()),
   'pass-clear':t=>operation(`Clear ${t.dataset.id}`,()=>withPassLock(async(epoch)=>{const summary=await passClear[t.dataset.id]?.(epoch);if(!passAlive()){toast('Project changed — status not saved','warn');return;}await savePasses({[t.dataset.id]:{status:'unconfigured',summary:summary||''}});await refreshPassesPanel();toast(`${t.dataset.id} cleared`,'ok');})),
@@ -1452,6 +1463,7 @@ document.addEventListener('change',e=>{
     if(e.target.id==='highlights-form')await applyHighlights(e.target);
     if(e.target.id==='shorts-form')await applyShorts(e.target);
     if(e.target.id==='passes-cleanup-form'){const f=new FormData(e.target);await savePasses({'audio-cleanup':{settings:{normalize:f.has('normalize'),target_lufs:Number(f.get('target_lufs'))||-16,noise_reduce:f.has('noise_reduce'),noise_amount:Number(f.get('noise_amount'))||12,highpass:f.has('highpass'),highpass_freq:Number(f.get('highpass_freq'))||80,compress:f.has('compress'),limiter:f.has('limiter'),voice_preset:f.has('voice_preset'),scope:String(f.get('scope')||'mix')},status:'ready'}});closeDialog();toast('Audio Cleanup settings saved on the pass','ok');}
+    if(e.target.id==='passes-ai-form'){const f=new FormData(e.target);await savePasses({'ai-edit':{settings:{waste:f.has('waste'),gaps:f.has('gaps'),scenes:f.has('scenes'),highlights:f.has('highlights')},status:'ready'}});closeDialog();toast('AI Edit settings saved on the pass','ok');}
     if(e.target.id==='passes-silence-form'){const f=new FormData(e.target);await savePasses({silence:{settings:{threshold:Number(f.get('threshold')),minSilence:Number(f.get('minSilence')),pad:Number(f.get('pad'))},status:'ready'}});closeDialog();toast('Silence settings saved on the pass','ok');}
     if(e.target.id==='passes-transitions-form'){const f=new FormData(e.target);await savePasses({transitions:{settings:{type:String(f.get('type')),duration:Number(f.get('duration')),trim_for_handles:f.has('trim_for_handles')},status:'ready'}});closeDialog();toast('Transitions settings saved on the pass','ok');}
     if(e.target.id==='passes-watermark-form'){const f=new FormData(e.target);await savePasses({watermark:{settings:{path:String(f.get('path')).trim(),position:String(f.get('position'))},status:'ready'}});closeDialog();toast('Watermark settings saved on the pass','ok');}
