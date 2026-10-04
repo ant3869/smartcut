@@ -7,7 +7,7 @@
 // injects the real runners and renders the UI.
 
 export const PASS_DEFS = [
-  { id: 'ai-edit', label: 'AI Edit / Waste Cleanup', kind: 'timeline', modifies: true, executor: 'client', reuses: 'quickWaste' },
+  { id: 'ai-edit', label: 'AI Edit / Waste Cleanup', kind: 'timeline', modifies: true, executor: 'client', reuses: 'quickWaste', requires: 'job' },
   { id: 'audio-cleanup', label: 'Audio Cleanup', kind: 'render', modifies: false, executor: 'server', reuses: 'applyCleanup', route: 'audio/cleanup/apply', clear: 'audio/cleanup/clear' },
   { id: 'silence', label: 'Silence Cleanup', kind: 'timeline', modifies: true, executor: 'client', reuses: 'quickSilence' },
   { id: 'music-bed', label: 'Music Bed', kind: 'timeline', modifies: true, executor: 'server', reuses: 'applyBed', route: 'audio/bed/apply', clear: 'audio/bed' },
@@ -109,6 +109,12 @@ export async function runEnabled(state, ctx = {}) {
   for (const { id } of orderedPasses(state)) {
     if (terminated) {
       results[id] = { ok: true, skipped: true, summary: 'skipped — render is terminal' };
+      continue;
+    }
+    // Analysis-gated passes stay enabled but skip cleanly in batch when the
+    // project has no analysis job; an explicit single run still errors.
+    if (passDef(id).requires === 'job' && !ctx.job) {
+      results[id] = { ok: true, skipped: true, summary: 'skipped — analyze a source to enable' };
       continue;
     }
     if (passDef(id).executor === 'none') {

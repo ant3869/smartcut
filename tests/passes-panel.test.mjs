@@ -169,3 +169,22 @@ test('runEnabled stops after terminal render and skips later passes', async () =
   assert.equal(report.terminated, 'render');
   assert.equal(report.results.silence.skipped, true);
 });
+
+test('runEnabled skips analysis-gated passes without a job', async () => {
+  const calls = [];
+  const st = state({
+    'audio-cleanup': { enabled: false, order: 9, settings: {}, status: 'x', summary: '' },
+    'ai-edit': { enabled: true, order: 0, settings: {}, status: 'ready', summary: '' },
+    silence: { enabled: true, order: 1, settings: {}, status: 'ready', summary: '' },
+  });
+  const runners = {
+    quickWaste: async () => { calls.push('waste'); return 'waste cut'; },
+    quickSilence: async () => { calls.push('silence'); return 'cut 3'; },
+  };
+  const skipped = await runEnabled(st, { runners, stopOnError: true, job: null });
+  assert.deepEqual(calls, ['silence']);
+  assert.equal(skipped.results['ai-edit'].skipped, true);
+  assert.equal(skipped.stopped, null);
+  const ran = await runEnabled(st, { runners, stopOnError: true, job: { id: 'j1' } });
+  assert.deepEqual(calls, ['silence', 'waste', 'silence']);
+});
