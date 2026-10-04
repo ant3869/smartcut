@@ -17,7 +17,7 @@ export const PASS_DEFS = [
   { id: 'captions', label: 'Captions', kind: 'timeline', modifies: true, executor: 'none', reuses: null },
   { id: 'watermark', label: 'Watermark', kind: 'timeline', modifies: true, executor: 'server', reuses: 'applyWatermark', route: 'watermark', clear: 'watermark' },
   { id: 'qc', label: 'QC', kind: 'verify', modifies: false, executor: 'server', reuses: 'runQc', route: 'qc/run' },
-  { id: 'render', label: 'Render', kind: 'export', modifies: false, executor: 'client', reuses: 'openRender' },
+  { id: 'render', label: 'Render', kind: 'export', modifies: false, executor: 'client', reuses: 'openRender', terminal: true },
 ];
 
 const BY_ID = Object.fromEntries(PASS_DEFS.map(p => [p.id, p]));
@@ -56,6 +56,7 @@ export function allOrdered(ids, state) {
 // Pre-run settings check so a pass with nothing configured fails with a
 // clear message instead of running against defaults that delete content
 // (e.g. an intro/outro preset with no media paths removes both sides).
+const IMAGE_EXT = /\.(png|jpe?g|webp|bmp)$/i;
 export function validatePassSettings(id, settings = {}) {
   passDef(id);
   const need = {
@@ -67,8 +68,13 @@ export function validatePassSettings(id, settings = {}) {
     const label = { 'music-bed': 'the music file', 'beat-cuts': 'the audio source', 'watermark': 'the watermark image' }[id];
     return `Configure ${label} first`;
   }
-  if (id === 'intro-outro' && !settings.intro_path && !settings.outro_path)
-    return 'Set an intro or outro file first (a preset alone has no media)';
+  if (id === 'intro-outro') {
+    if (!settings.intro_path && !settings.outro_path)
+      return 'Set an intro or outro file first (a preset alone has no media)';
+    for (const [key, dur] of [['intro_path', 'intro_duration'], ['outro_path', 'outro_duration']])
+      if (settings[key] && IMAGE_EXT.test(settings[key]) && !(Number(settings[dur]) > 0))
+        return `Still ${key === 'intro_path' ? 'intro' : 'outro'} needs a duration in seconds`;
+  }
   return null;
 }
 
@@ -99,8 +105,12 @@ export async function runPass(id, state, ctx = {}) {
 export async function runEnabled(state, ctx = {}) {
   const { stopOnError = true } = ctx;
   const results = {};
-  let stopped = null;
+  let stopped = null, terminated = null;
   for (const { id } of orderedPasses(state)) {
+    if (terminated) {
+      results[id] = { ok: true, skipped: true, summary: 'skipped — render is terminal' };
+      continue;
+    }
     if (passDef(id).executor === 'none') {
       results[id] = { ok: true, skipped: true, summary: 'planned pass — skipped' };
       continue;
@@ -108,6 +118,7 @@ export async function runEnabled(state, ctx = {}) {
     try {
       const summary = await runPass(id, state, ctx);
       results[id] = { ok: true, summary: summary ?? '' };
+      if (passDef(id).terminal) terminated = id;
       if (id === 'qc' && typeof summary === 'string' && /[1-9]\d* error/.test(summary)
         && (state[id]?.settings?.block !== false) && stopOnError) {
         stopped = id;
@@ -121,5 +132,5 @@ export async function runEnabled(state, ctx = {}) {
       }
     }
   }
-  return { results, stopped };
+  return { results, stopped, terminated };
 }

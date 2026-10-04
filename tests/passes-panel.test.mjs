@@ -146,3 +146,26 @@ test('runEnabled stops on qc errors when block is set', async () => {
   assert.deepEqual(calls, ['qc']);
   assert.equal(report.stopped, 'qc');
 });
+
+test('validatePassSettings requires durations for still intro/outro', () => {
+  assert.match(validatePassSettings('intro-outro', { intro_path: 'logo.png' }), /duration in seconds/i);
+  assert.equal(validatePassSettings('intro-outro', { intro_path: 'logo.png', intro_duration: 3 }), null);
+  assert.equal(validatePassSettings('intro-outro', { intro_path: 'clip.mp4' }), null);
+});
+
+test('runEnabled stops after terminal render and skips later passes', async () => {
+  const calls = [];
+  const st = state({
+    'audio-cleanup': { enabled: false, order: 9, settings: {}, status: 'x', summary: '' },
+    render: { enabled: true, order: 0, settings: {}, status: 'ready', summary: '' },
+    silence: { enabled: true, order: 1, settings: {}, status: 'ready', summary: '' },
+  });
+  const runners = {
+    openRender: async () => { calls.push('render'); return 'dialog opened'; },
+    quickSilence: async () => { calls.push('silence'); return 'cut 3'; },
+  };
+  const report = await runEnabled(st, { runners, stopOnError: true });
+  assert.deepEqual(calls, ['render']);
+  assert.equal(report.terminated, 'render');
+  assert.equal(report.results.silence.skipped, true);
+});
