@@ -199,6 +199,7 @@ class RecipeRequest(BaseModel):
     name: str = ""
     passes: list[str] = []
     settings: dict[str, dict[str, Any]] = {}
+    disabled: list[str] = []
 class SpotlightRequest(BaseModel):
     source_kind: str = "media"
     job_ids: list[str] = []
@@ -1049,8 +1050,14 @@ def create_app(config_path: str | Path = DEFAULT_CONFIG) -> FastAPI:
                     validate_pass_id(pass_id)
                 except KeyError:
                     raise HTTPException(400, f"Unknown pass: {pass_id}")
+            for pass_id in request.disabled:
+                try:
+                    validate_pass_id(pass_id)
+                except KeyError:
+                    raise HTTPException(400, f"Unknown pass: {pass_id}")
             recipe = {"name": name, "passes": list(request.passes),
-                      "settings": dict(request.settings or {})}
+                      "settings": dict(request.settings or {}),
+                      "disabled": list(request.disabled or [])}
             names = [r["name"] for r in data["recipes"]]
             if name in names:
                 data["recipes"][names.index(name)] = recipe

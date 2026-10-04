@@ -51,8 +51,14 @@ has block enabled. `false` collects every result and keeps going.
 ```
 
 `ensure_project_passes()` backfills missing passes/recipes on read, drops
-state for retired pass ids, and seeds built-ins once. Applying a recipe
-sets enabled/order from its list (others disabled) plus its settings.
+state for retired pass ids, and seeds built-ins once (deletes survive
+refresh; Defaults re-adds). Applying a recipe sets enabled/order from its
+list (others disabled) plus its settings; a recipe `disabled` list keeps
+entries visible but off until configured (captions has no runner yet; an
+unconfigured watermark would halt the batch on validation).
+`validatePassSettings()` blocks runs with no media before anything
+destructive. The render runner opens the export dialog with the recipe's
+preset dimensions applied.
 
 ## Files
 

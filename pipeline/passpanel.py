@@ -54,9 +54,13 @@ _BY_ID = {p["id"]: p for p in PASSES}
 BUILTIN_RECIPES = [
     {"name": "Vertical Social",
      "passes": ["audio-cleanup", "silence", "transitions", "captions", "watermark", "qc", "render"],
+     # Listed but off until configured: captions has no runner yet and a
+     # watermark with no image would halt the batch on validation.
+     "disabled": ["captions", "watermark"],
      "settings": {"render": {"preset": "shorts"}}},
     {"name": "Clean Longform",
      "passes": ["audio-cleanup", "transitions", "watermark", "qc", "render"],
+     "disabled": ["watermark"],
      "settings": {"render": {"preset": "youtube-1080"}}},
 ]
 
@@ -103,6 +107,7 @@ def ensure_project_passes(data: dict) -> dict:
             if recipe["name"] not in known:
                 recipes.append({"name": recipe["name"], "passes": list(recipe["passes"]),
                                 "settings": {k: dict(v) for k, v in recipe.get("settings", {}).items()},
+                                "disabled": list(recipe.get("disabled", [])),
                                 "builtin": True})
     return data
 

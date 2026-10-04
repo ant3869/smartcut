@@ -108,7 +108,8 @@ export async function runEnabled(state, ctx = {}) {
     try {
       const summary = await runPass(id, state, ctx);
       results[id] = { ok: true, summary: summary ?? '' };
-      if (id === 'qc' && typeof summary === 'string' && /[1-9]\d* error/.test(summary) && stopOnError) {
+      if (id === 'qc' && typeof summary === 'string' && /[1-9]\d* error/.test(summary)
+        && (state[id]?.settings?.block !== false) && stopOnError) {
         stopped = id;
         break;
       }

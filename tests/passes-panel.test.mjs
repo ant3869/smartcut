@@ -114,3 +114,35 @@ test('runPass refuses an unconfigured intro/outro instead of wiping sides', asyn
   const st = state({ 'intro-outro': { enabled: true, order: 0, settings: { preset: 'Nexco Standard' }, status: 'ready', summary: '' } });
   await assert.rejects(runPass('intro-outro', st, { runners: { applyIntroOutro: async () => 'never' } }), /intro or outro file/i);
 });
+
+test('runEnabled honors qc block=false and keeps going', async () => {
+  const calls = [];
+  const st = state({
+    'audio-cleanup': { enabled: false, order: 9, settings: {}, status: 'x', summary: '' },
+    qc: { enabled: true, order: 0, settings: { block: false }, status: 'ready', summary: '' },
+    silence: { enabled: true, order: 1, settings: {}, status: 'ready', summary: '' },
+  });
+  const runners = {
+    runQc: async () => { calls.push('qc'); return '2 errors · 1 warnings'; },
+    quickSilence: async () => { calls.push('silence'); return 'cut 3'; },
+  };
+  const report = await runEnabled(st, { runners, stopOnError: true });
+  assert.deepEqual(calls, ['qc', 'silence']);
+  assert.equal(report.stopped, null);
+});
+
+test('runEnabled stops on qc errors when block is set', async () => {
+  const calls = [];
+  const st = state({
+    'audio-cleanup': { enabled: false, order: 9, settings: {}, status: 'x', summary: '' },
+    qc: { enabled: true, order: 0, settings: { block: true }, status: 'ready', summary: '' },
+    silence: { enabled: true, order: 1, settings: {}, status: 'ready', summary: '' },
+  });
+  const runners = {
+    runQc: async () => { calls.push('qc'); return '2 errors · 1 warnings'; },
+    quickSilence: async () => { calls.push('silence'); return 'cut 3'; },
+  };
+  const report = await runEnabled(st, { runners, stopOnError: true });
+  assert.deepEqual(calls, ['qc']);
+  assert.equal(report.stopped, 'qc');
+});

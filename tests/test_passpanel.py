@@ -67,6 +67,7 @@ def test_builtin_recipes_reference_real_passes_and_render():
     for recipe in BUILTIN_RECIPES:
         assert recipe["passes"], recipe["name"]
         assert set(recipe["passes"]) <= ids
+        assert set(recipe.get("disabled", [])) <= set(recipe["passes"])
         assert recipe["passes"][-1] == "render"
     names = [r["name"] for r in BUILTIN_RECIPES]
     assert "Vertical Social" in names and "Clean Longform" in names
@@ -128,3 +129,8 @@ def test_builtin_deletion_survives_refresh(tmp_path):
     # A deleted builtin stays deleted: migration seeds only fresh projects.
     assert "Vertical Social" not in [r["name"] for r in body["recipes"]]
     assert "Clean Longform" in [r["name"] for r in body["recipes"]]
+    seeded = client.post("/api/projects", json={"name": "Fresh"}).json()["id"]
+    fresh = client.get(f"/api/projects/{seeded}/passes").json()
+    vertical = next(r for r in fresh["recipes"] if r["name"] == "Vertical Social")
+    assert vertical["disabled"] == ["captions", "watermark"]
+    assert vertical["settings"]["render"]["preset"] == "shorts"
