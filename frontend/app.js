@@ -6,6 +6,7 @@ import * as AU from './audio.mjs';
 import * as Theme from './theme.mjs';
 import {icon} from './icons.mjs';
 import * as Tasks from './tasks.mjs';
+import * as PP from './passes-panel.mjs';
 
 const $ = (q, root=document) => root.querySelector(q);
 const $$ = (q, root=document) => [...root.querySelectorAll(q)];
@@ -22,7 +23,8 @@ const state = {jobs:[],inbox:[],config:{},schema:{},job:null,source:null,sourceI
   in:0,out:2,zoom:1,snap:true,linked:true,tool:'select',dirty:false,editVersion:0,undo:[],redo:[],saving:null,
   gateway:'untested',tasks:[],taskCallbacks:new Map(),handled:new Set(),programMode:'sequence',playing:false,shuttle:0,
   error:null,retry:null,reviewEditing:null,loading:false,meta:new Map(),waves:new Map(),proposal:-1,
-  prefs:{lanes:true,cc:true,hud:true,auto:{fromPlan:false,waste:true,silence:true,threshold:-40,minSilence:.6,pad:.12,gaps:true,scenes:false,highlights:true,highlightCount:5}}};
+  prefs:{lanes:true,cc:true,hud:true,auto:{fromPlan:false,waste:true,silence:true,threshold:-40,minSilence:.6,pad:.12,gaps:true,scenes:false,highlights:true,highlightCount:5}},
+  passes:null};
 try{const saved=JSON.parse(localStorage.getItem('anna.cutroom.prefs')||'{}');state.prefs={...state.prefs,...saved,auto:{...state.prefs.auto,...saved.auto}};}catch{}
 const savePrefs=()=>{try{localStorage.setItem('anna.cutroom.prefs',JSON.stringify(state.prefs));}catch{}};
 let saveTimer, reverseTimer, previewTimer, previewToken=0, overlayKey='', clockLast=0, dialogFocus=null;
@@ -93,7 +95,7 @@ function shell(){
       ${button('settings',icon('settings'),'icon-button','aria-label="Pipeline settings" title="Pipeline settings"')}
     </header>
     <div id="error-banner" class="error-banner" role="alert" hidden>${icon('triangle-alert')}<span id="error-message"></span>${button('retry',withIcon('refresh-cw','Retry'),'danger','id="retry-error"')}${button('dismiss-error',icon('x'),'icon-button','aria-label="Dismiss error"')}</div>
-    <div class="workspace-bar"><div class="page-title"><span class="page-icon" aria-hidden="true">${icon('clapperboard')}</span><div><span class="workspace-name">Editing</span><div class="page-heading"><h1 id="project-name">Untitled project</h1><span id="save-state"></span></div></div></div><div class="pipeline-actions">${button('import',withIcon('upload','Import'))}${button('analyze',withIcon('sparkles','Analyze'),'accent')}${button('analyze-all',withIcon('layers','Analyze all'))}${button('auto-edit',withIcon('zap','Auto-edit'),'accent','title="Apply AI cuts, silence removal and markers as one undoable edit"')}${button('replan',withIcon('refresh-cw','Re-plan with my decisions'))}${button('preview',withIcon('film','Preview reel…'))}${button('render',withIcon('circle-check','Export / Render'),'primary')}</div></div>
+    <div class="workspace-bar"><div class="page-title"><span class="page-icon" aria-hidden="true">${icon('clapperboard')}</span><div><span class="workspace-name">Editing</span><div class="page-heading"><h1 id="project-name">Untitled project</h1><span id="save-state"></span></div></div></div><div class="pipeline-actions">${button('import',withIcon('upload','Import'))}${button('passes',withIcon('layers','Passes'),'accent','title="Ordered processing passes"')}${button('analyze',withIcon('sparkles','Analyze'),'accent')}${button('analyze-all',withIcon('layers','Analyze all'))}${button('auto-edit',withIcon('zap','Auto-edit'),'accent','title="Apply AI cuts, silence removal and markers as one undoable edit"')}${button('replan',withIcon('refresh-cw','Re-plan with my decisions'))}${button('preview',withIcon('film','Preview reel…'))}${button('render',withIcon('circle-check','Export / Render'),'primary')}</div></div>
     <main class="workspace" id="review">
       <aside class="panel project-panel" aria-label="Project panel"><div class="project-switcher">${button('new-project',withIcon('plus','New project'),'primary')}${button('open-project',withIcon('folder-open','Open…'))}</div>
         <div class="panel-title"><h2>${icon('folder')}Project assets</h2><span id="asset-count"></span></div>
@@ -176,6 +178,7 @@ async function openProject(id){
   $('#media-search').value='';$('#timeline-zoom').value=0;$('#program-mode').value='sequence';$('#timeline-scroll').scrollLeft=0;
   try{localStorage.setItem('smartcut.project',id);}catch{}
   renderProject();renderSource();renderProgram();renderTimeline();renderInspector();renderSourceEvidence();updateTitles();
+  await loadPasses();
   if(project.assets[0])await selectAsset(project.assets[0].path);
 }
 async function createProject(name,job_id){await saveSequence();const payload={name,...(job_id?{job_id}:{})};await post('/api/projects?dry_run=true',payload);const project=await post('/api/projects',payload);closeDialog();await load();await openProject(project.id);}
@@ -536,7 +539,7 @@ async function applyAuto(form){
   const {next,lines,before,after}=await runAuto(options);if(!lines.length)return toast('Nothing to change with these options','warn');
   closeDialog();commit(`Auto-edit · ${tc(before.duration)} → ${tc(after.duration)} · ${lines.length} step${lines.length>1?'s':''}`,next);
 }
-async function quickAuto(options){const {next,lines}=await runAuto({...Object.fromEntries(Object.keys(state.prefs.auto).map(k=>[k,false])),threshold:state.prefs.auto.threshold,minSilence:state.prefs.auto.minSilence,pad:state.prefs.auto.pad,highlightCount:state.prefs.auto.highlightCount,...options});if(!lines.length)return toast('Nothing to change','warn');commit(lines.join(' · '),next);}
+async function quickAuto(options){const {next,lines}=await runAuto({...Object.fromEntries(Object.keys(state.prefs.auto).map(k=>[k,false])),threshold:state.prefs.auto.threshold,minSilence:state.prefs.auto.minSilence,pad:state.prefs.auto.pad,highlightCount:state.prefs.auto.highlightCount,...options});if(!lines.length){toast('Nothing to change','warn');return lines;}commit(lines.join(' · '),next);return lines;}
 // ---- Standalone processing passes: transitions + watermark. No analysis runs. ----
 function transitionOptions(form){
   const f=new FormData(form),scope=f.get('scope');
@@ -717,6 +720,148 @@ async function applyBed(form){
     beats:audioBeats?.beats||[],options:bedOptions(form)});
   closeDialog();commit(`Music bed · ${result.summary.clips_added} clips`,result.sequence);
   toast(`Music bed · end ${result.summary.end}s`,'ok');
+}
+// ---- Passes panel: first-class orchestration over the Auto menu features. ----
+// Every runner below calls the SAME function or endpoint the Auto menu uses.
+// Nothing here reimplements a pass; the panel only orders, configures and runs.
+async function loadPasses(){
+  if(!state.project){state.passes=null;return;}
+  try{state.passes=await api(projectURL('passes'));}
+  catch(e){state.passes=null;toast(`Passes unavailable: ${e.message}`,'warn');}
+}
+async function savePasses(patch){
+  needSequence();
+  const body=await api(projectURL('passes'),{method:'PUT',body:JSON.stringify({passes:patch})});
+  state.passes.state=body.passes;
+  return body.passes;
+}
+const passRunners={
+  quickWaste:async()=>{const lines=await quickAuto({waste:true});return lines.length?lines.join(' · '):'nothing to change';},
+  quickSilence:async(s)=>{const lines=await quickAuto({silence:true,threshold:s.threshold??state.prefs.auto.threshold,minSilence:s.minSilence??state.prefs.auto.minSilence,pad:s.pad??state.prefs.auto.pad});return lines.length?lines.join(' · '):'nothing to change';},
+  applyCleanup:async(s)=>{needSequence();const result=await post(projectURL('audio/cleanup/apply'),{sequence:state.sequence,options:s});commit('Audio cleanup applied',result.sequence);return result.warnings?.length?result.warnings.join(' · '):'cleanup saved · honored at render';},
+  applyBed:async(s)=>{needSequence();if(!s.music_path)throw new Error('Configure the music file first');const result=await post(projectURL('audio/bed/apply'),{sequence:state.sequence,music_path:s.music_path,beats:[],options:s});commit(`Music bed · ${result.summary.clips_added} clips`,result.sequence);return `bed to ${result.summary.end}s`;},
+  applyBeatCuts:async(s)=>{needSequence();if(!s.path)throw new Error('Configure the audio source first');const analysis=await post(projectURL('audio/beats/analyze'),{path:s.path,sensitivity:s.sensitivity||3});const mode=s.mode||'cut',endpoint=mode==='snap'?'audio/beats/snap':mode==='markers'?'audio/beats/markers':'audio/beats/cut';const result=await post(projectURL(endpoint),{sequence:state.sequence,beats:analysis.beats,downbeats:analysis.downbeats,options:{every:s.every||4,max_distance:s.max_distance??.15}});commit(`Beat ${mode} · ${analysis.tempo} BPM`,result.sequence);return `${mode} at ${analysis.tempo} BPM`;},
+  applyTransitions:async(s)=>{needSequence();const result=await post(projectURL('transitions/apply'),{sequence:state.sequence,options:{type:'cross-dissolve',duration:.5,scope:'all',audio:'crossfade',crossfade_duration:.25,trim_for_handles:true,...s}});commit(`Transitions · ${result.summary.will_apply} applied`,result.sequence);return `${result.summary.will_apply} applied${result.summary.skipped?` · ${result.summary.skipped} skipped`:''}`;},
+  applyIntroOutro:async(s)=>{needSequence();if(!s.preset&&!s.intro_path&&!s.outro_path)throw new Error('Pick a preset first');const result=await post(projectURL('intro-outro/apply'),{sequence:state.sequence,options:s});commit('Intro / outro applied',result.sequence);return `intro ${result.summary.intro_duration??0}s · outro ${result.summary.outro_duration??0}s`;},
+  applyWatermark:async(s)=>{needSequence();if(!s.path)throw new Error('Configure the watermark image first');const result=await api(projectURL('watermark'),{method:'PUT',body:JSON.stringify({sequence:state.sequence,overlay:{position:'bottom-right',scale:.15,opacity:.85,keep_aspect:true,replace_existing:true,...s}})});commit('Watermark applied',result.sequence);return `watermark · ${result.overlay.position}`;},
+  runQc:async(s)=>{needSequence();const result=await post(projectURL('qc/run'),{sequence:state.sequence,deep:s.deep!==false});const summary=`${result.summary.errors} errors · ${result.summary.warnings} warnings`;if(result.summary.errors&&s.block!==false)throw new Error(summary);return summary;},
+  openRender:async()=>{await renderDialog();return 'render dialog opened';},
+};
+const passConfigure={
+  'ai-edit':()=>autoEditDialog(),'silence':()=>passesSilenceDialog(),
+  'transitions':()=>passesTransitionsDialog(),'watermark':()=>passesWatermarkDialog(),
+  'audio-cleanup':()=>cleanupDialog(),'beat-cuts':()=>passesBeatDialog(),'music-bed':()=>passesBedDialog(),
+  'render':()=>renderDialog(),'intro-outro':()=>passesIntroDialog(),'qc':()=>passesQcDialog(),
+};
+const passClear={
+  'transitions':async()=>{needSequence();const r=await post(projectURL('transitions/clear'),{sequence:state.sequence});commit('Transitions cleared',r.sequence);return `cleared ${r.removed}`;},
+  'watermark':async()=>{needSequence();const r=await api(projectURL('watermark'),{method:'DELETE',body:JSON.stringify({sequence:state.sequence})});commit('Watermark removed',r.sequence);return `removed ${r.removed}`;},
+  'audio-cleanup':async()=>{needSequence();const r=await post(projectURL('audio/cleanup/clear'),{sequence:state.sequence});commit('Cleanup cleared',r.sequence);return 'cleanup cleared';},
+  'music-bed':async()=>{needSequence();const r=await api(projectURL('audio/bed'),{method:'DELETE',body:JSON.stringify({sequence:state.sequence})});commit('Music bed removed',r.sequence);return `removed ${r.removed} clips`;},
+  'intro-outro':async()=>{needSequence();let n=0;for(const side of ['intro','outro']){try{const r=await post(projectURL('intro-outro/remove'),{sequence:state.sequence,side});state.sequence=r.sequence;n+=r.removed;}catch{}}commit('Intro / outro removed',state.sequence);return `removed ${n} clips`;},
+};
+function passStatus(id){
+  const entry=state.passes?.state[id];
+  if(!entry)return 'unconfigured';
+  if(entry.status==='running'||entry.status==='complete'||entry.status==='warning'||entry.status==='error')return entry.status;
+  return state.passes.derived?.[id]==='ready'?'ready':'unconfigured';
+}
+function passesIntroDialog(){
+  needSequence();
+  openDialog(`${dialogHead('PASSES','Intro / Outro settings')}<form id="passes-intro-form"><div class="dialog-body"><p>Saved on this pass. Run applies the preset through the same endpoint as the intro/outro feature.</p><label class="stacked">Preset<select name="preset"><option value="">Custom (set paths via API)</option>${['Nexco Standard','Social Promo','No Intro / Branded Outro'].map(p=>`<option ${state.passes?.state['intro-outro']?.settings?.preset===p?'selected':''}>${p}</option>`).join('')}</select></label></div><footer class="dialog-footer">${button('close-dialog','Cancel')}<button class="primary" type="submit">Save settings</button></footer></form>`,'passes');
+}
+function passesQcDialog(){
+  needSequence();const s=state.passes?.state.qc?.settings||{};
+  openDialog(`${dialogHead('PASSES','QC settings')}<form id="passes-qc-form"><div class="dialog-body"><label class="toggle-row">Deep scan (decode audio/video)<input type="checkbox" name="deep" ${s.deep===false?'':'checked'}></label><label class="toggle-row">Block on errors<input type="checkbox" name="block" ${s.block===false?'':'checked'}><small>Errors stop Run Enabled Passes</small></label></div><footer class="dialog-footer">${button('close-dialog','Cancel')}<button class="primary" type="submit">Save settings</button></footer></form>`,'passes');
+}
+function passesBeatDialog(){
+  needSequence();const s=state.passes?.state['beat-cuts']?.settings||{};
+  openDialog(`${dialogHead('PASSES','Beat Cuts settings')}<form id="passes-beat-form"><div class="dialog-body"><p>Run analyzes the source, then applies through the same beat endpoints.</p><label class="stacked">Audio source<select name="path">${audioAssetOptions(s.path||state.source)}</select></label><div class="export-grid"><label class="stacked">Sensitivity<input name="sensitivity" type="number" min="1" max="8" step=".5" value="${s.sensitivity||3}"></label><label class="stacked">Action<select name="mode"><option value="cut" ${s.mode!=='snap'&&s.mode!=='markers'?'selected':''}>Cut footage</option><option value="snap" ${s.mode==='snap'?'selected':''}>Snap cuts</option><option value="markers" ${s.mode==='markers'?'selected':''}>Markers</option></select></label><label class="stacked">Every N beats<input name="every" type="number" min="1" max="8" step="1" value="${s.every||4}"></label></div></div><footer class="dialog-footer">${button('close-dialog','Cancel')}<button class="primary" type="submit">Save settings</button></footer></form>`,'passes');
+}
+function passesBedDialog(){
+  needSequence();const s=state.passes?.state['music-bed']?.settings||{};
+  openDialog(`${dialogHead('PASSES','Music Bed settings')}<form id="passes-bed-form"><div class="dialog-body"><label class="stacked">Music file<select name="music_path">${audioAssetOptions(s.music_path)}</select></label><div class="export-grid"><label class="stacked">Volume<input name="volume" type="number" min="0" max="1" step=".05" value="${s.volume??.25}"></label><label class="stacked">Duck under dialogue<input type="checkbox" name="duck" ${s.duck?'checked':''}></label></div></div><footer class="dialog-footer">${button('close-dialog','Cancel')}<button class="primary" type="submit">Save settings</button></footer></form>`,'passes');
+}
+function passesWatermarkDialog(){
+  needSequence();const s=state.passes?.state.watermark?.settings||{};
+  const images=(state.project?.assets||[]).map(a=>a.path).filter(p=>/\.(png|jpe?g|webp|bmp)$/i.test(p));
+  openDialog(`${dialogHead('PASSES','Watermark settings')}<form id="passes-watermark-form"><div class="dialog-body"><label class="stacked">Image file<input name="path" list="passes-watermark-assets" value="${esc(s.path||images[0]||'')}" required><datalist id="passes-watermark-assets">${images.map(p=>`<option value="${esc(p)}"></option>`).join('')}</datalist></label><label class="stacked">Position<select name="position">${['top-left','top-right','bottom-left','bottom-right','center'].map(p=>`<option ${(s.position||'bottom-right')===p?'selected':''}>${p}</option>`).join('')}</select></label></div><footer class="dialog-footer">${button('close-dialog','Cancel')}<button class="primary" type="submit">Save settings</button></footer></form>`,'passes');
+}
+function passesTransitionsDialog(){
+  needSequence();const s=state.passes?.state.transitions?.settings||{};
+  openDialog(`${dialogHead('PASSES','Transitions settings')}<form id="passes-transitions-form"><div class="dialog-body"><div class="export-grid"><label class="stacked">Type<select name="type">${['cross-dissolve','dip-black','dip-white','fade','wipe','slide'].map(t=>`<option ${(s.type||'cross-dissolve')===t?'selected':''}>${t}</option>`).join('')}</select></label><label class="stacked">Duration<input name="duration" type="number" min=".1" max="2" step=".1" value="${s.duration??.5}"></label></div><label class="toggle-row">Trim clips for handles<input type="checkbox" name="trim_for_handles" ${s.trim_for_handles===false?'':'checked'}></label></div><footer class="dialog-footer">${button('close-dialog','Cancel')}<button class="primary" type="submit">Save settings</button></footer></form>`,'passes');
+}
+function passesSilenceDialog(){
+  needSequence();const s=state.passes?.state.silence?.settings||{};
+  openDialog(`${dialogHead('PASSES','Silence Cleanup settings')}<form id="passes-silence-form"><div class="dialog-body"><div class="export-grid"><label class="stacked">Threshold dB<input name="threshold" type="number" min="-70" max="-10" step="1" value="${s.threshold??state.prefs.auto.threshold}"></label><label class="stacked">Longer than (s)<input name="minSilence" type="number" min=".2" max="10" step=".1" value="${s.minSilence??state.prefs.auto.minSilence}"></label><label class="stacked">Padding<input name="pad" type="number" min="0" max="1" step=".02" value="${s.pad??state.prefs.auto.pad}"></label></div></div><footer class="dialog-footer">${button('close-dialog','Cancel')}<button class="primary" type="submit">Save settings</button></footer></form>`,'passes');
+}
+function passRow(def){
+  const entry=state.passes?.state[def.id]||{enabled:true,settings:{},summary:''};
+  const status=passStatus(def.id);
+  const kindBadge=def.kind==='timeline'?'<span class="pass-badge timeline">timeline</span>':'<span class="pass-badge render">render-only</span>';
+  const canRun=def.executor!=='none',canClear=!!passClear[def.id];
+  return `<div class="pass-row" draggable="true" data-pass-row="${def.id}">
+    <span class="pass-grip" title="Drag to reorder">⋮⋮</span>
+    <input type="checkbox" data-pass-enabled="${def.id}" ${entry.enabled===false?'':'checked'} aria-label="Enable ${esc(def.label)}">
+    <span class="pass-main"><strong>${esc(def.label)}</strong><small>${esc(def.description)} ${kindBadge}</small>
+    ${entry.summary?`<small class="pass-summary">${esc(entry.summary)}</small>`:''}</span>
+    <span class="pass-status ${status}">${status}</span>
+    <span class="pass-actions">${button('pass-configure','Settings','quiet',`data-id="${def.id}" ${passConfigure[def.id]?'':'disabled title="No settings yet"'}`)}${button('pass-run','Run','accent',`data-id="${def.id}" ${canRun?'':'disabled title="Planned pass — no runner yet"'}`)}${canClear?button('pass-clear','Clear','quiet',`data-id="${def.id}"`):''}</span>
+  </div>`;
+}
+function passesDialog(){
+  needSequence();
+  if(!state.passes)throw new Error('Passes not loaded yet');
+  const rows=PP.orderedPasses(Object.fromEntries(Object.entries(state.passes.state).map(([id,s])=>[id,{enabled:s.enabled!==false,order:s.order??0}])))
+    .map(({id})=>passRow(state.passes.catalog.find(c=>c.id===id))).join('');
+  const recipes=(state.passes.recipes||[]).map(r=>`<option value="${esc(r.name)}">${esc(r.name)}${r.builtin?' · built-in':''}</option>`).join('');
+  openDialog(`${dialogHead('PIPELINE','Passes')}<div class="dialog-body">
+    <p>Runs the same features as the Auto menu, in order. <b>Timeline</b> passes edit your sequence (undoable); <b>render-only</b> passes bake in at export.</p>
+    <div class="pass-recipes"><label class="stacked">Recipe<select id="passes-recipe">${recipes}</select></label>
+    <span class="pass-recipe-actions">${button('pass-recipe-apply','Apply','accent')}${button('pass-recipe-save','Save','quiet')}${button('pass-recipe-duplicate','Duplicate','quiet')}${button('pass-recipe-rename','Rename','quiet')}${button('pass-recipe-delete','Delete','quiet')}${button('pass-recipe-reset','Defaults','quiet')}</span></div>
+    <div id="passes-rows">${rows}</div>
+    <label class="toggle-row">Stop on first failure<input type="checkbox" id="passes-stop" checked><small>Uncheck to run every pass and collect all results</small></label>
+    </div><footer class="dialog-footer"><span id="passes-note">Drag rows to reorder · single Run never touches other passes.</span>${button('close-dialog','Close')}<button class="primary" data-action="pass-run-all">Run Enabled Passes</button></footer>`,'passes');
+}
+async function refreshPassesPanel(){
+  if(!state.project)return;
+  state.passes=await api(projectURL('passes'));
+  if($('#passes-rows'))passesDialog();
+}
+async function runSinglePass(id){
+  await savePasses({[id]:{status:'running'}});
+  if($('#passes-rows'))await refreshPassesPanel();
+  try{
+    const summary=await PP.runPass(id,state.passes.state,{runners:passRunners});
+    await savePasses({[id]:{status:'complete',summary:String(summary??'')}});
+    toast(`${id} · ${summary}`,'ok');
+  }catch(e){
+    await savePasses({[id]:{status:'error',summary:String(e.message||e)}});
+    throw e;
+  }finally{if($('#passes-rows'))await refreshPassesPanel();}
+}
+async function runAllPasses(){
+  const stopOnError=$('#passes-stop')?.checked!==false;
+  const report=await PP.runEnabled(state.passes.state,{runners:passRunners,stopOnError,
+    onStatus:(id,status,summary)=>savePasses({[id]:{status,summary:String(summary??'')}}).catch(()=>{})});
+  for(const [id,r] of Object.entries(report.results))
+    await savePasses({[id]:r.ok?{status:id==='qc'&&/[1-9]\d* error/.test(r.summary||'')?'error':'complete',summary:r.summary}:{status:'error',summary:r.error}});
+  await refreshPassesPanel();
+  toast(report.stopped?`Stopped at ${report.stopped}`:`All enabled passes ran`,'ok');
+}
+async function applyRecipe(name){
+  const recipe=(state.passes.recipes||[]).find(r=>r.name===name);
+  if(!recipe)throw new Error('Pick a recipe first');
+  const patch={};
+  state.passes.catalog.forEach((c,i)=>{
+    const at=recipe.passes.indexOf(c.id);
+    patch[c.id]={enabled:at>=0,order:at>=0?at:PP.PASS_DEFS.length+i};
+  });
+  for(const [id,settings] of Object.entries(recipe.settings||{}))
+    if(patch[id])patch[id].settings=settings;
+  await savePasses(patch);
+  await refreshPassesPanel();
+  toast(`Recipe ${name} applied`,'ok');
 }
 // ---- Spotlight: highlight + shorts generation over saved AI evidence. ----
 function spotlightSourceFields(){
@@ -1081,6 +1226,17 @@ const actions={
   'audio-cleanup':()=>cleanupDialog(),
   'beat-cuts':()=>beatsDialog(),
   'music-bed':()=>bedDialog(),
+  passes:()=>passesDialog(),
+  'pass-configure':t=>passConfigure[t.dataset.id]?.(),
+  'pass-run':t=>operation(`Run ${t.dataset.id}`,()=>runSinglePass(t.dataset.id)),
+  'pass-run-all':()=>operation('Run enabled passes',()=>runAllPasses()),
+  'pass-clear':t=>operation(`Clear ${t.dataset.id}`,async()=>{const summary=await passClear[t.dataset.id]?.();await savePasses({[t.dataset.id]:{status:'unconfigured',summary:summary||''}});await refreshPassesPanel();}),
+  'pass-recipe-apply':()=>operation('Apply recipe',()=>applyRecipe($('#passes-recipe')?.value)),
+  'pass-recipe-save':()=>operation('Save recipe',async()=>{const name=window.prompt('Recipe name:',$('#passes-recipe')?.value||'');if(!name?.trim())return;const ordered=PP.orderedPasses(state.passes.state).map(p=>p.id);const settings=Object.fromEntries(Object.entries(state.passes.state).filter(([,s])=>Object.keys(s.settings||{}).length).map(([id,s])=>[id,s.settings]));const body=await post(projectURL('pass-recipes'),{name:name.trim(),passes:ordered,settings});state.passes.recipes=body.recipes;await refreshPassesPanel();toast(`Recipe ${name.trim()} saved`,'ok');}),
+  'pass-recipe-duplicate':()=>operation('Duplicate recipe',async()=>{const src=$('#passes-recipe')?.value;const recipe=(state.passes.recipes||[]).find(r=>r.name===src);if(!recipe)throw new Error('Pick a recipe first');const name=window.prompt('Duplicate as:',src+' copy');if(!name?.trim())return;const body=await post(projectURL('pass-recipes'),{name:name.trim(),passes:recipe.passes,settings:recipe.settings||{}});state.passes.recipes=body.recipes;await refreshPassesPanel();}),
+  'pass-recipe-rename':()=>operation('Rename recipe',async()=>{const src=$('#passes-recipe')?.value;if(!src)throw new Error('Pick a recipe first');const name=window.prompt('Rename to:',src);if(!name?.trim()||name.trim()===src)return;const recipe=(state.passes.recipes||[]).find(r=>r.name===src);const body=await post(projectURL('pass-recipes'),{name:name.trim(),passes:recipe?.passes||[],settings:recipe?.settings||{}});state.passes.recipes=body.recipes;await api(projectURL('pass-recipes')+'?name='+encodeURIComponent(src),{method:'DELETE'}).then(b=>{state.passes.recipes=b.recipes;});await refreshPassesPanel();}),
+  'pass-recipe-delete':()=>operation('Delete recipe',async()=>{const src=$('#passes-recipe')?.value;if(!src)throw new Error('Pick a recipe first');if(!window.confirm(`Delete recipe ${src}?`))return;const body=await api(projectURL('pass-recipes')+'?name='+encodeURIComponent(src),{method:'DELETE'});state.passes.recipes=body.recipes;await refreshPassesPanel();}),
+  'pass-recipe-reset':()=>operation('Restore defaults',async()=>{for(const name of ['Vertical Social','Clean Longform']){if(!(state.passes.recipes||[]).some(r=>r.name===name)){const passes=name==='Vertical Social'?['audio-cleanup','silence','transitions','captions','watermark','qc','render']:['audio-cleanup','transitions','watermark','qc','render'];const settings=name==='Vertical Social'?{render:{preset:'shorts'}}:{render:{preset:'youtube-1080'}};const body=await post(projectURL('pass-recipes'),{name,passes,settings});state.passes.recipes=body.recipes;}}await refreshPassesPanel();toast('Built-in recipes restored','ok');}),
   'analyze-beats':()=>operation('Analyze beats',async()=>{
     const form=$('#beats-form');if(!form)throw new Error('Open Beat Cuts first');await analyzeBeats(form);}),
   'clear-cleanup':()=>operation('Clear cleanup',async()=>{
@@ -1241,8 +1397,41 @@ function bind(){
     if(e.target.id==='bed-form')await applyBed(e.target);
     if(e.target.id==='highlights-form')await applyHighlights(e.target);
     if(e.target.id==='shorts-form')await applyShorts(e.target);
+    if(e.target.id==='passes-silence-form'){const f=new FormData(e.target);await savePasses({silence:{settings:{threshold:Number(f.get('threshold')),minSilence:Number(f.get('minSilence')),pad:Number(f.get('pad'))},status:'ready'}});closeDialog();toast('Silence settings saved on the pass','ok');}
+    if(e.target.id==='passes-transitions-form'){const f=new FormData(e.target);await savePasses({transitions:{settings:{type:String(f.get('type')),duration:Number(f.get('duration')),trim_for_handles:f.has('trim_for_handles')},status:'ready'}});closeDialog();toast('Transitions settings saved on the pass','ok');}
+    if(e.target.id==='passes-watermark-form'){const f=new FormData(e.target);await savePasses({watermark:{settings:{path:String(f.get('path')).trim(),position:String(f.get('position'))},status:'ready'}});closeDialog();toast('Watermark settings saved on the pass','ok');}
+    if(e.target.id==='passes-beat-form'){const f=new FormData(e.target);await savePasses({'beat-cuts':{settings:{path:String(f.get('path')),sensitivity:Number(f.get('sensitivity')),mode:String(f.get('mode')),every:Number(f.get('every'))},status:'ready'}});closeDialog();toast('Beat Cuts settings saved on the pass','ok');}
+    if(e.target.id==='passes-bed-form'){const f=new FormData(e.target);await savePasses({'music-bed':{settings:{music_path:String(f.get('music_path')),volume:Number(f.get('volume')),duck:f.has('duck')},status:'ready'}});closeDialog();toast('Music Bed settings saved on the pass','ok');}
+    if(e.target.id==='passes-intro-form'){const f=new FormData(e.target);await savePasses({'intro-outro':{settings:{preset:String(f.get('preset'))},status:'ready'}});closeDialog();toast('Intro / Outro settings saved on the pass','ok');}
+    if(e.target.id==='passes-qc-form'){const f=new FormData(e.target);await savePasses({qc:{settings:{deep:f.has('deep'),block:f.has('block')},status:'ready'}});closeDialog();toast('QC settings saved on the pass','ok');}
     if(e.target.id==='marker-form'){const f=new FormData(e.target),id=e.target.dataset.markerForm;closeDialog();edit('Marker updated',s=>{const m=s.markers.find(x=>x.id===id);if(!m)throw new Error('Marker no longer exists');m.label=String(f.get('label')).trim().slice(0,200)||'Marker';m.time=Math.max(0,Number(f.get('time'))||0);});}
   });});
+  document.addEventListener('change',e=>{
+    const toggle=e.target.closest('[data-pass-enabled]');
+    if(toggle){operation('Toggle pass',async()=>{await savePasses({[toggle.dataset.passEnabled]:{enabled:toggle.checked}});await refreshPassesPanel();});return;}
+  });
+  let passDragId=null;
+  document.addEventListener('dragstart',e=>{
+    const row=e.target.closest?.('[data-pass-row]');
+    if(!row)return;passDragId=row.dataset.passRow;e.dataTransfer.effectAllowed='move';
+  });
+  document.addEventListener('dragover',e=>{
+    const row=e.target.closest?.('[data-pass-row]');
+    if(!row||!passDragId||row.dataset.passRow===passDragId)return;e.preventDefault();e.dataTransfer.dropEffect='move';
+  });
+  document.addEventListener('drop',e=>{
+    const row=e.target.closest?.('[data-pass-row]');
+    if(!row||!passDragId)return;e.preventDefault();
+    operation('Reorder passes',async()=>{
+      const rows=$$('#passes-rows [data-pass-row]').map(r=>r.dataset.passRow);
+      const from=rows.indexOf(passDragId),to=rows.indexOf(row.dataset.passRow);
+      if(from<0||to<0||from===to)return;
+      rows.splice(to,0,...rows.splice(from,1));
+      await savePasses(Object.fromEntries(rows.map((id,order)=>[id,{order}])));
+      await refreshPassesPanel();
+    });
+    passDragId=null;
+  });
   document.addEventListener('keydown',e=>{
     if(e.target.closest('input,textarea,select,[contenteditable="true"]')||$('#dialog').open)return;
     const key=e.key.toLowerCase();
