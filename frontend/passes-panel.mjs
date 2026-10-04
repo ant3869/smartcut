@@ -78,6 +78,12 @@ export function validatePassSettings(id, settings = {}) {
   return null;
 }
 
+// Fail when a pass result is older than the latest timeline edit, so an
+// in-flight run never overwrites intervening work. Returns null when fresh.
+export function epochMismatch(epoch, current) {
+  if (epoch == null || epoch === current) return null;
+  return 'Timeline changed during the run — result discarded, your edits kept';
+}
 // Run one pass through its registered runner. Runners are injected by app.js
 // and are the exact functions the Auto menu uses — never panel-local copies.
 export async function runPass(id, state, ctx = {}) {

@@ -539,7 +539,7 @@ async function applyAuto(form){
   const {next,lines,before,after}=await runAuto(options);if(!lines.length)return toast('Nothing to change with these options','warn');
   closeDialog();commit(`Auto-edit · ${tc(before.duration)} → ${tc(after.duration)} · ${lines.length} step${lines.length>1?'s':''}`,next);
 }
-async function quickAuto(options){const {next,lines}=await runAuto({...Object.fromEntries(Object.keys(state.prefs.auto).map(k=>[k,false])),threshold:state.prefs.auto.threshold,minSilence:state.prefs.auto.minSilence,pad:state.prefs.auto.pad,highlightCount:state.prefs.auto.highlightCount,...options});if(!lines.length){toast('Nothing to change','warn');return lines;}commit(lines.join(' · '),next);return lines;}
+async function quickAuto(options){const {next,lines}=await runAuto({...Object.fromEntries(Object.keys(state.prefs.auto).map(k=>[k,false])),threshold:state.prefs.auto.threshold,minSilence:state.prefs.auto.minSilence,pad:state.prefs.auto.pad,highlightCount:state.prefs.auto.highlightCount,...options});if(!lines.length){toast('Nothing to change','warn');return lines;}const stale=PP.epochMismatch(options.epoch,state.editVersion);if(stale)throw new Error(stale);commit(lines.join(' · '),next);return lines;}
 // ---- Standalone processing passes: transitions + watermark. No analysis runs. ----
 function transitionOptions(form){
   const f=new FormData(form),scope=f.get('scope');
@@ -718,7 +718,7 @@ async function applyBed(form){
   const music_path=String(new FormData(form).get('music_path'));
   const result=await post(projectURL('audio/bed/apply'),{sequence:state.sequence,music_path,
     beats:audioBeats?.beats||[],options:bedOptions(form)});
-  closeDialog();commit(`Music bed · ${result.summary.clips_added} clips`,result.sequence);
+  closeDialog();passCommit(`Music bed · ${result.summary.clips_added} clips`,result.sequence,ctx?.epoch);
   toast(`Music bed · end ${result.summary.end}s`,'ok');
 }
 // ---- Passes panel: first-class orchestration over the Auto menu features. ----
@@ -735,15 +735,21 @@ async function savePasses(patch){
   state.passes.state=body.passes;
   return body.passes;
 }
+let passBusy=false;
+function passCommit(label,next,epoch){
+  const stale=PP.epochMismatch(epoch,state.editVersion);
+  if(stale)throw new Error(stale);
+  commit(label,next);
+}
 const passRunners={
-  quickWaste:async()=>{const lines=await quickAuto({waste:true});return lines.length?lines.join(' · '):'nothing to change';},
-  quickSilence:async(s)=>{const lines=await quickAuto({silence:true,threshold:s.threshold??state.prefs.auto.threshold,minSilence:s.minSilence??state.prefs.auto.minSilence,pad:s.pad??state.prefs.auto.pad});return lines.length?lines.join(' · '):'nothing to change';},
-  applyCleanup:async(s)=>{needSequence();const result=await post(projectURL('audio/cleanup/apply'),{sequence:state.sequence,options:s});commit('Audio cleanup applied',result.sequence);return result.warnings?.length?result.warnings.join(' · '):'cleanup saved · honored at render';},
-  applyBed:async(s)=>{needSequence();if(!s.music_path)throw new Error('Configure the music file first');const result=await post(projectURL('audio/bed/apply'),{sequence:state.sequence,music_path:s.music_path,beats:[],options:s});commit(`Music bed · ${result.summary.clips_added} clips`,result.sequence);return `bed to ${result.summary.end}s`;},
-  applyBeatCuts:async(s)=>{needSequence();if(!s.path)throw new Error('Configure the audio source first');const analysis=await post(projectURL('audio/beats/analyze'),{path:s.path,sensitivity:s.sensitivity||3});const mode=s.mode||'cut',endpoint=mode==='snap'?'audio/beats/snap':mode==='markers'?'audio/beats/markers':'audio/beats/cut';const result=await post(projectURL(endpoint),{sequence:state.sequence,beats:analysis.beats,downbeats:analysis.downbeats,options:{every:s.every||4,max_distance:s.max_distance??.15}});commit(`Beat ${mode} · ${analysis.tempo} BPM`,result.sequence);return `${mode} at ${analysis.tempo} BPM`;},
-  applyTransitions:async(s)=>{needSequence();const result=await post(projectURL('transitions/apply'),{sequence:state.sequence,options:{type:'cross-dissolve',duration:.5,scope:'all',audio:'crossfade',crossfade_duration:.25,trim_for_handles:true,...s}});commit(`Transitions · ${result.summary.will_apply} applied`,result.sequence);return `${result.summary.will_apply} applied${result.summary.skipped?` · ${result.summary.skipped} skipped`:''}`;},
-  applyIntroOutro:async(s)=>{needSequence();if(!s.preset&&!s.intro_path&&!s.outro_path)throw new Error('Pick a preset first');const result=await post(projectURL('intro-outro/apply'),{sequence:state.sequence,options:s});commit('Intro / outro applied',result.sequence);return `intro ${result.summary.intro_duration??0}s · outro ${result.summary.outro_duration??0}s`;},
-  applyWatermark:async(s)=>{needSequence();if(!s.path)throw new Error('Configure the watermark image first');const result=await api(projectURL('watermark'),{method:'PUT',body:JSON.stringify({sequence:state.sequence,overlay:{position:'bottom-right',scale:.15,opacity:.85,keep_aspect:true,replace_existing:true,...s}})});commit('Watermark applied',result.sequence);return `watermark · ${result.overlay.position}`;},
+  quickWaste:async(s,ctx)=>{const lines=await quickAuto({waste:true,epoch:ctx?.epoch});return lines.length?lines.join(' · '):'nothing to change';},
+  quickSilence:async(s,ctx)=>{const lines=await quickAuto({silence:true,threshold:s.threshold??state.prefs.auto.threshold,minSilence:s.minSilence??state.prefs.auto.minSilence,pad:s.pad??state.prefs.auto.pad,epoch:ctx?.epoch});return lines.length?lines.join(' · '):'nothing to change';},
+  applyCleanup:async(s,ctx)=>{needSequence();const result=await post(projectURL('audio/cleanup/apply'),{sequence:state.sequence,options:s});passCommit('Audio cleanup applied',result.sequence,ctx?.epoch);return result.warnings?.length?result.warnings.join(' · '):'cleanup saved · honored at render';},
+  applyBed:async(s,ctx)=>{needSequence();if(!s.music_path)throw new Error('Configure the music file first');const result=await post(projectURL('audio/bed/apply'),{sequence:state.sequence,music_path:s.music_path,beats:[],options:s});passCommit(`Music bed · ${result.summary.clips_added} clips`,result.sequence,ctx?.epoch);return `bed to ${result.summary.end}s`;},
+  applyBeatCuts:async(s,ctx)=>{needSequence();if(!s.path)throw new Error('Configure the audio source first');const analysis=await post(projectURL('audio/beats/analyze'),{path:s.path,sensitivity:s.sensitivity||3});const mode=s.mode||'cut',endpoint=mode==='snap'?'audio/beats/snap':mode==='markers'?'audio/beats/markers':'audio/beats/cut';const result=await post(projectURL(endpoint),{sequence:state.sequence,beats:analysis.beats,downbeats:analysis.downbeats,options:{every:s.every||4,max_distance:s.max_distance??.15}});passCommit(`Beat ${mode} · ${analysis.tempo} BPM`,result.sequence,ctx?.epoch);return `${mode} at ${analysis.tempo} BPM`;},
+  applyTransitions:async(s,ctx)=>{needSequence();const result=await post(projectURL('transitions/apply'),{sequence:state.sequence,options:{type:'cross-dissolve',duration:.5,scope:'all',audio:'crossfade',crossfade_duration:.25,trim_for_handles:true,...s}});passCommit(`Transitions · ${result.summary.will_apply} applied`,result.sequence,ctx?.epoch);return `${result.summary.will_apply} applied${result.summary.skipped?` · ${result.summary.skipped} skipped`:''}`;},
+  applyIntroOutro:async(s,ctx)=>{needSequence();if(!s.preset&&!s.intro_path&&!s.outro_path)throw new Error('Pick a preset first');const result=await post(projectURL('intro-outro/apply'),{sequence:state.sequence,options:s});passCommit('Intro / outro applied',result.sequence,ctx?.epoch);return `intro ${result.summary.intro_duration??0}s · outro ${result.summary.outro_duration??0}s`;},
+  applyWatermark:async(s,ctx)=>{needSequence();if(!s.path)throw new Error('Configure the watermark image first');const result=await api(projectURL('watermark'),{method:'PUT',body:JSON.stringify({sequence:state.sequence,overlay:{position:'bottom-right',scale:.15,opacity:.85,keep_aspect:true,replace_existing:true,...s}})});passCommit('Watermark applied',result.sequence,ctx?.epoch);return `watermark · ${result.overlay.position}`;},
   runQc:async(s)=>{needSequence();const result=await post(projectURL('qc/run'),{sequence:state.sequence,deep:s.deep!==false});const summary=`${result.summary.errors} errors · ${result.summary.warnings} warnings`;if(result.summary.errors&&s.block!==false)throw new Error(summary);return summary;},
   openRender:async(s)=>{await renderDialog(s.preset);return s.preset?`render dialog · ${s.preset}`:'render dialog opened';},
 };
@@ -819,13 +825,14 @@ function passRow(def){
   const status=passStatus(def.id);
   const kindBadge=def.kind==='timeline'?'<span class="pass-badge timeline">timeline</span>':'<span class="pass-badge render">render-only</span>';
   const canRun=def.executor!=='none',canClear=!!passClear[def.id];
+  const runTitle=passBusy?'A pass is running':canRun?'Run this pass now':'Planned pass — no runner yet';
   return `<div class="pass-row" draggable="true" data-pass-row="${def.id}">
     <span class="pass-grip" title="Drag to reorder">⋮⋮</span>
     <input type="checkbox" data-pass-enabled="${def.id}" ${entry.enabled===false?'':'checked'} aria-label="Enable ${esc(def.label)}">
     <span class="pass-main"><strong>${esc(def.label)}</strong><small>${esc(def.description)} ${kindBadge}</small>
     ${entry.summary?`<small class="pass-summary">${esc(entry.summary)}</small>`:''}</span>
     <span class="pass-status ${status}">${status}</span>
-    <span class="pass-actions">${button('pass-configure','Settings','quiet',`data-id="${def.id}" ${passConfigure[def.id]?'':'disabled title="No settings yet"'}`)}${button('pass-run','Run','accent',`data-id="${def.id}" ${canRun?'':'disabled title="Planned pass — no runner yet"'}`)}${canClear?button('pass-clear','Clear','quiet',`data-id="${def.id}"`):''}</span>
+    <span class="pass-actions">${button('pass-configure','Settings','quiet',`data-id="${def.id}" ${passConfigure[def.id]?'':'disabled title="No settings yet"'}`)}${button('pass-run','Run','accent',`data-id="${def.id}" title="${runTitle}" ${canRun&&!passBusy?'':'disabled'}`)}${canClear?button('pass-clear','Clear','quiet',`data-id="${def.id}" ${passBusy?'disabled':''}`):''}</span>
   </div>`;
 }
 function passesDialog(){
@@ -840,7 +847,7 @@ function passesDialog(){
     <span class="pass-recipe-actions">${button('pass-recipe-apply','Apply','accent')}${button('pass-recipe-save','Save','quiet')}${button('pass-recipe-duplicate','Duplicate','quiet')}${button('pass-recipe-rename','Rename','quiet')}${button('pass-recipe-delete','Delete','quiet')}${button('pass-recipe-reset','Defaults','quiet')}</span></div>
     <div id="passes-rows">${rows}</div>
     <label class="toggle-row">Stop on first failure<input type="checkbox" id="passes-stop" checked><small>Uncheck to run every pass and collect all results</small></label>
-    </div><footer class="dialog-footer"><span id="passes-note">Drag rows to reorder · single Run never touches other passes.</span>${button('close-dialog','Close')}<button class="primary" data-action="pass-run-all">Run Enabled Passes</button></footer>`,'passes');
+    </div><footer class="dialog-footer"><span id="passes-note">Drag rows to reorder · single Run never touches other passes.</span>${button('close-dialog','Close')}<button class="primary" data-action="pass-run-all" ${passBusy?'disabled':''}>Run Enabled Passes</button></footer>`,'passes');
 }
 async function refreshPassesPanel(){
   if(!state.project)return;
@@ -848,26 +855,31 @@ async function refreshPassesPanel(){
   if($('#passes-rows'))passesDialog();
 }
 async function runSinglePass(id){
+  if(passBusy){toast('A pass is already running','warn');return;}
+  passBusy=true;const epoch=state.editVersion;
   await savePasses({[id]:{status:'running'}});
   if($('#passes-rows'))await refreshPassesPanel();
   try{
-    const summary=await PP.runPass(id,state.passes.state,{runners:passRunners});
+    const summary=await PP.runPass(id,state.passes.state,{runners:passRunners,epoch});
     await savePasses({[id]:{status:'complete',summary:String(summary??'')}});
     toast(`${id} · ${summary}`,'ok');
   }catch(e){
     await savePasses({[id]:{status:'error',summary:String(e.message||e)}});
     throw e;
-  }finally{if($('#passes-rows'))await refreshPassesPanel();}
+  }finally{passBusy=false;if($('#passes-rows'))await refreshPassesPanel();}
 }
 async function runAllPasses(){
+  if(passBusy){toast('A pass is already running','warn');return;}
+  passBusy=true;const epoch=state.editVersion;
+  try{
   const stopOnError=$('#passes-stop')?.checked!==false;
-  const report=await PP.runEnabled(state.passes.state,{runners:passRunners,stopOnError,job:state.job,
+  const report=await PP.runEnabled(state.passes.state,{runners:passRunners,stopOnError,job:state.job,epoch,
     onStatus:(id,status,summary)=>savePasses({[id]:{status,summary:String(summary??'')}}).catch(()=>{})});
   for(const [id,r] of Object.entries(report.results))
     await savePasses({[id]:r.skipped?{summary:r.summary}:r.ok?{status:id==='qc'&&/[1-9]\d* error/.test(r.summary||'')?'error':'complete',summary:r.summary}:{status:'error',summary:r.error}});
   await refreshPassesPanel();
   toast(report.terminated?`Render is terminal · later passes skipped`:report.stopped?`Stopped at ${report.stopped}`:`All enabled passes ran`,'ok');
-}
+  }finally{passBusy=false;await refreshPassesPanel();}}
 async function applyRecipe(name){
   const recipe=(state.passes.recipes||[]).find(r=>r.name===name);
   if(!recipe)throw new Error('Pick a recipe first');
@@ -1197,7 +1209,7 @@ const actions={
   settings:()=>openSettings(),connection:()=>testConnection(),refresh:async()=>{await load();toast('Project refreshed');},
   analyze:analyzeDialog,'analyze-all':analyzeAllDialog,preview:()=>previewDialog(),reel:()=>previewDialog(true),render:renderDialog,replan,transcribe,rebuild:rebuildSequence,
   folder:async()=>{await post('/api/open-folder?path='+encodeURIComponent(state.project?.final_output?.path||state.config.output_dir));toast('Output folder opened');},
-  'close-dialog':closeDialog,'dismiss-error':clearError,retry:()=>state.retry?.(),'retry-media':()=>{renderSource();renderProgram();},
+  'close-dialog':()=>{if(passBusy){toast('A pass is running — wait for it to finish','warn');return;}closeDialog();},'dismiss-error':clearError,retry:()=>state.retry?.(),'retry-media':()=>{renderSource();renderProgram();},
   'settings-test':()=>testConnection(settingsValues()),'clear-key':()=>{const key=$('[name="vision_api_key"]');key.value='';key.dataset.clear='true';key.placeholder='Saved key will be cleared on Save';},
   'list-view':()=>{state.view='list';renderProject();},'icon-view':()=>{state.view='icons';renderProject();},
   save:async()=>{await saveSequence(true);toast('Sequence saved','ok');},'save-project':async()=>{await saveSequence(true);toast('Project saved','ok');},undo:()=>undo(),redo:()=>undo(true),
@@ -1396,7 +1408,10 @@ function bind(){
   $('#program-mode').addEventListener('change',e=>{pause();state.programMode=e.target.value;state.time=0;renderProgram();syncTransport();});
   $('#program-stage').addEventListener('pointerdown',transformPointer);
   $('#source-monitor').addEventListener('pointerdown',()=>state.focus='source');$('#program-monitor').addEventListener('pointerdown',()=>state.focus='program');
-  document.addEventListener('change',e=>{
+  document.addEventListener('cancel',e=>{
+    if(passBusy&&e.target.id==='dialog'){e.preventDefault();toast('A pass is running — wait for it to finish','warn');}
+  });
+document.addEventListener('change',e=>{
     if(e.target.hasAttribute('data-image-duration')){const length=Number(e.target.value);operation('Image duration',()=>edit('Image duration updated',s=>T.trim(s,state.selected,'end',s.clips.find(c=>c.id===state.selected).start+length,false)));}
     if(e.target.closest('#render-form')){const form=$('#render-form');if(e.target.name==='preset'&&exportPresets[e.target.value]){const [w,h,fps]=exportPresets[e.target.value];form.elements.width.value=w;form.elements.height.value=h;form.elements.fps.value=fps;}if(e.target.name==='video_codec'){const ext=e.target.value==='libvpx-vp9'?'.webm':'.mp4';form.elements.filename.value=form.elements.filename.value.replace(/\.(mp4|webm)$/i,ext);}updateRenderSummary();}
     if(e.target.dataset.effect){const key=e.target.dataset.effect,value=key==='enabled'?e.target.checked:key==='fit'?e.target.value:Number(e.target.value);operation('Change effect',()=>edit('Effect updated',s=>{const targets=T.linkedClips(s,state.selected,key==='speed'&&state.linked);if(targets.some(c=>T.locked(s,c.track)))throw new Error('Unlock the track first');targets.forEach(c=>{if(T.ANIMATED.includes(key)&&c.keyframes?.[key]?.length)T.setKeyframe(c,key,Math.max(0,Math.min(T.duration(c),state.time-c.start)),value);else c[key]=value;});}));}

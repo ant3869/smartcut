@@ -188,3 +188,10 @@ test('runEnabled skips analysis-gated passes without a job', async () => {
   const ran = await runEnabled(st, { runners, stopOnError: true, job: { id: 'j1' } });
   assert.deepEqual(calls, ['silence', 'waste', 'silence']);
 });
+
+test('epochMismatch only fails on intervening edits', async () => {
+  const { epochMismatch } = await import('../frontend/passes-panel.mjs');
+  assert.equal(epochMismatch(null, 5), null);
+  assert.equal(epochMismatch(5, 5), null);
+  assert.match(epochMismatch(5, 6), /discarded/);
+});
