@@ -762,11 +762,11 @@ const passConfigure={
   'render':()=>renderDialog(),'intro-outro':()=>passesIntroDialog(),'qc':()=>passesQcDialog(),
 };
 const passClear={
-  'transitions':async()=>{needSequence();const r=await post(projectURL('transitions/clear'),{sequence:state.sequence});commit('Transitions cleared',r.sequence);return `cleared ${r.removed}`;},
-  'watermark':async()=>{needSequence();const r=await api(projectURL('watermark'),{method:'DELETE',body:JSON.stringify({sequence:state.sequence})});commit('Watermark removed',r.sequence);return `removed ${r.removed}`;},
-  'audio-cleanup':async()=>{needSequence();const r=await post(projectURL('audio/cleanup/clear'),{sequence:state.sequence});commit('Cleanup cleared',r.sequence);return 'cleanup cleared';},
-  'music-bed':async()=>{needSequence();const r=await api(projectURL('audio/bed'),{method:'DELETE',body:JSON.stringify({sequence:state.sequence})});commit('Music bed removed',r.sequence);return `removed ${r.removed} clips`;},
-  'intro-outro':async()=>{needSequence();const r=await post(projectURL('intro-outro/remove'),{sequence:state.sequence,side:'both'});commit('Intro / outro removed',r.sequence);return `removed ${r.removed} clips`;},
+  'transitions':async(epoch)=>{needSequence();const r=await post(projectURL('transitions/clear'),{sequence:state.sequence});passCommit('Transitions cleared',r.sequence,epoch);return `cleared ${r.removed}`;},
+  'watermark':async(epoch)=>{needSequence();const r=await api(projectURL('watermark'),{method:'DELETE',body:JSON.stringify({sequence:state.sequence})});passCommit('Watermark removed',r.sequence,epoch);return `removed ${r.removed}`;},
+  'audio-cleanup':async(epoch)=>{needSequence();const r=await post(projectURL('audio/cleanup/clear'),{sequence:state.sequence});passCommit('Cleanup cleared',r.sequence,epoch);return 'cleanup cleared';},
+  'music-bed':async(epoch)=>{needSequence();const r=await api(projectURL('audio/bed'),{method:'DELETE',body:JSON.stringify({sequence:state.sequence})});passCommit('Music bed removed',r.sequence,epoch);return `removed ${r.removed} clips`;},
+  'intro-outro':async(epoch)=>{needSequence();const r=await post(projectURL('intro-outro/remove'),{sequence:state.sequence,side:'both'});passCommit('Intro / outro removed',r.sequence,epoch);return `removed ${r.removed} clips`;},
 };
 function passStatus(id){
   const entry=state.passes?.state[id];
@@ -857,6 +857,12 @@ async function refreshPassesPanel(){
   if(!state.project)return;
   state.passes=await api(projectURL('passes'));
   if($('#passes-rows'))passesDialog();
+}
+async function withPassLock(fn){
+  if(passBusy){toast('A pass is already running','warn');return;}
+  passBusy=true;passProject=state.project?.id;const epoch=state.editVersion;
+  try{return await fn(epoch);}
+  finally{passBusy=false;passProject=null;if(passAlive()&&$('#passes-rows'))await refreshPassesPanel();}
 }
 async function runSinglePass(id){
   if(passBusy){toast('A pass is already running','warn');return;}
@@ -1275,7 +1281,7 @@ const actions={
   'pass-configure':t=>passConfigure[t.dataset.id]?.(),
   'pass-run':t=>operation(`Run ${t.dataset.id}`,()=>runSinglePass(t.dataset.id)),
   'pass-run-all':()=>operation('Run enabled passes',()=>runAllPasses()),
-  'pass-clear':t=>operation(`Clear ${t.dataset.id}`,async()=>{const summary=await passClear[t.dataset.id]?.();await savePasses({[t.dataset.id]:{status:'unconfigured',summary:summary||''}});await refreshPassesPanel();}),
+  'pass-clear':t=>operation(`Clear ${t.dataset.id}`,()=>withPassLock(async(epoch)=>{const summary=await passClear[t.dataset.id]?.(epoch);if(!passAlive()){toast('Project changed — status not saved','warn');return;}await savePasses({[t.dataset.id]:{status:'unconfigured',summary:summary||''}});await refreshPassesPanel();toast(`${t.dataset.id} cleared`,'ok');})),
   'pass-recipe-apply':()=>operation('Apply recipe',()=>applyRecipe($('#passes-recipe')?.value)),
   'pass-recipe-save':()=>operation('Save recipe',async()=>{const name=window.prompt('Recipe name:',$('#passes-recipe')?.value||'');if(!name?.trim())return;const all=PP.allOrdered(state.passes.catalog.map(c=>c.id),state.passes.state);const disabled=all.filter(id=>state.passes.state[id]?.enabled===false);const settings=Object.fromEntries(Object.entries(state.passes.state).filter(([,s])=>Object.keys(s.settings||{}).length).map(([id,s])=>[id,s.settings]));const body=await post(projectURL('pass-recipes'),{name:name.trim(),passes:all,settings,disabled});state.passes.recipes=body.recipes;await refreshPassesPanel();toast(`Recipe ${name.trim()} saved`,'ok');}),
   'pass-recipe-duplicate':()=>operation('Duplicate recipe',async()=>{const src=$('#passes-recipe')?.value;const recipe=(state.passes.recipes||[]).find(r=>r.name===src);if(!recipe)throw new Error('Pick a recipe first');const name=window.prompt('Duplicate as:',src+' copy');if(!name?.trim())return;if((state.passes.recipes||[]).some(r=>r.name===name.trim()))throw new Error(`A recipe named ${name.trim()} already exists`);const body=await post(projectURL('pass-recipes'),{name:name.trim(),passes:recipe.passes,settings:recipe.settings||{},disabled:recipe.disabled||[]});state.passes.recipes=body.recipes;await refreshPassesPanel();}),
