@@ -162,6 +162,24 @@ not deterministic, so one run is signal, not proof — but 3/3 moving
 the same direction with native agreement is the result "better" was
 supposed to look like.
 
+## Full-004 adaptive A/B: native off vs on (2026-10-05, 299.9s original)
+
+Same 3 seeded cards both arms (deterministic cheap scan):
+71-79 / 189-197 / 220.9-228.9.
+
+- OFF: UNCERTAIN 0.82 / UNCERTAIN 0.88 / REVIEW 0.0 — all three to
+  human review.
+- ON: KEEP 0.90 / KEEP 0.85 / KEEP 0.95 — native available 3/3
+  (KEEP / intentional_action @ 0.92 / 0.85 / 0.95), corroborating
+  stills every time.
+
+Native ON is the good way: same spans, everything leaves the review
+queue with a second model agreeing. BUT neither arm touches the
+0-15.4 head where the gold cuts live (CUT 0-4 / KEEP 4-9.45 /
+CUT 9.45-15.419) — the seeder never looks there. That blind spot is
+gauntlet round 1. Full outputs: `cache/scratch/ab004-adapt-off.json`
+/ `ab004-adapt-on.json`.
+
 ## First real end-to-end (2026-10-05, same span, META_API_KEY live)
 
 - `inspect_card_native` trimmed 6-18s, uploaded via Meta `/files`,
