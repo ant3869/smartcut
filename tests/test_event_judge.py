@@ -132,3 +132,39 @@ def test_native_block_survives_prompt_contract():
     prompt = epf(enriched)
     assert 'NATIVE VIDEO TEMPORAL EVIDENCE' in prompt
     assert 'contradicting evidence, use []' in prompt
+
+
+def _required_unavailable_card():
+    c = card()
+    c['_native_required'] = True
+    c['native_video'] = {'status': 'unavailable', 'reason': 'no key'}
+    return c
+
+
+def test_required_unavailable_forces_review():
+    result = review_event_card(_required_unavailable_card(),
+                               lambda *a: raw('KEEP'), enabled=True)
+    final = result['decisions'][0]
+    assert final['decision'] == 'UNCERTAIN'
+    assert 'Native-video' in final['reason']
+
+
+def test_unrequired_unavailable_keeps_stills_verdict():
+    c = card()
+    c['native_video'] = {'status': 'unavailable', 'reason': 'no key'}
+    result = review_event_card(c, lambda *a: raw('KEEP'), enabled=True)
+    assert result['decisions'][0]['decision'] == 'KEEP'
+
+
+def test_required_available_keeps_native_verdict():
+    from pipeline import native_inspection as ni
+    c = ni.attach_native_evidence(
+        card(),
+        {"decision": "KEEP", "event_type": "intentional_action", "confidence": 0.95,
+         "summary": "sustained performance", "evidence": ["e"],
+         "contradicting_evidence": [], "event_start_seconds": 2.0,
+         "event_end_seconds": 6.0},
+        clip_start=1.0, clip_end=8.0)
+    c['_native_required'] = True
+    result = review_event_card(c, lambda *a: raw('KEEP'), enabled=True)
+    assert result['decisions'][0]['decision'] == 'KEEP'

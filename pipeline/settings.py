@@ -80,9 +80,12 @@ SETTINGS = {
     "watermark_path": field("Blade", None, kind="path"),
     "bumper_path": field("Blade", None, kind="path"),
     "auto_render": field("Blade", False),
-    "native_video_enabled": field("EventCard", False),
+    "native_video_enabled": field("EventCard", True),
     "native_video_model": field("EventCard", "muse-spark-1.3-contributor"),
     "native_video_context_seconds": field("EventCard", 2.0, minimum=0, maximum=8, step=.5),
+    "native_video_api_key": field("EventCard", "", kind="password"),
+    "native_video_base_url": field("EventCard", "https://api.meta.ai/v1"),
+    "native_video_required": field("EventCard", False),
 }
 
 

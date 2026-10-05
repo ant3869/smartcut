@@ -150,6 +150,7 @@ def inspect_card_native(
     context_seconds: float = DEFAULT_CONTEXT_SECONDS,
     model: str = NATIVE_VIDEO_MODEL,
     api_key: str | None = None,
+    base_url: str | None = None,
     work_dir: Path | None = None,
     adapter_factory: Callable[..., MetaVideoAdapter] | None = None,
     prompt: str = NATIVE_VIDEO_PROMPT,
@@ -177,7 +178,8 @@ def inspect_card_native(
         trim_native_clip(Path(source), clip_start, clip_end, clip_path)
         factory = adapter_factory or MetaVideoAdapter
         try:
-            adapter = factory(api_key=api_key, model=model, on_attempt=_observe)
+            adapter = factory(api_key=api_key, model=model, base_url=base_url,
+                                on_attempt=_observe)
         except TypeError:
             adapter = factory(api_key=api_key, model=model)
         file_id = adapter.upload_video(clip_path)

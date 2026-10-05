@@ -39,9 +39,12 @@ def native_evidence_block(native: dict | None) -> str:
         f"evidence: {native.get('evidence')}",
         f"contradicting_evidence: {native.get('contradicting_evidence')}",
         f"source event start/end: {native.get('event_start')} / {native.get('event_end')}",
-        ("The native-video model's decision is evidence, not ground truth. "
-         "Reconcile it with frames, transcript, temporal context, and contradictions. "
-         "Do not copy its CUT/KEEP verdict automatically."),
+        ("The native-video model watched the actual motion; the still frames did "
+         "not. When its decision carries confidence 0.8 or higher, follow it "
+         "unless the still frames or transcript directly contradict what it "
+         "describes. Below 0.8, weigh it as one vote among frames, transcript, "
+         "and temporal context. Never invent motion the native summary does not "
+         "claim."),
     ]
     return "\n".join(lines)
 
@@ -143,6 +146,15 @@ def review_event_card(card, ask, *, enabled=False, reinspect=None, max_reinspect
     result['recovery'] = [{**r, 'start':final['start'], 'end':final['end']}
         for r in result['recovery'] if final['decision'] in ('CUT','KEEP')
         and r['decision'] == final['decision']]
+    if (current.get('_native_required')
+            and (current.get('native_video') or {}).get('status') != 'available'
+            and final['decision'] in ('CUT', 'KEEP')):
+        # Fail closed: native video was required for this card but never
+        # arrived (no key, upload/inference failure). A stills-only verdict
+        # is not allowed to stand in for the missing motion evidence.
+        final = {**final, 'decision': 'UNCERTAIN', 'category': 'uncertain',
+                 'confidence': 0.,
+                 'reason': 'Native-video evidence required but unavailable; human review needed'}
     result.update(decisions=[final], judgments=[proposer,other], event_card=current)
     return result
 
@@ -169,7 +181,8 @@ def review_adaptive_events(eye, source, duration, *, enabled=False, max_calls=12
                            max_windows=3, protected_spans=None, confidence_threshold=.8,
                            transcript_words=None, audio_events=None, shots=None,
                            native_video_enabled=False, native_video_model=None,
-                           native_video_context_seconds=2.0, native_api_key=None):
+                           native_video_context_seconds=2.0, native_api_key=None,
+                           native_base_url=None, native_required=False):
     """Actual cheap-scan -> EventCard -> contextual judge integration, advisory only.
 
     When native_video_enabled, each EventCard is enriched via inspect_card_native
@@ -207,7 +220,10 @@ def review_adaptive_events(eye, source, duration, *, enabled=False, max_calls=12
                 card, source, duration, enabled=True,
                 context_seconds=native_video_context_seconds,
                 model=native_video_model or NATIVE_VIDEO_MODEL,
-                api_key=native_api_key, work_dir=folder / 'native-clips')
+                api_key=native_api_key, base_url=native_base_url,
+                work_dir=folder / 'native-clips')
+            if native_required:
+                card['_native_required'] = True
             result.setdefault('native_video', []).append(
                 {k: card.get('native_video', {}).get(k)
                  for k in ('status', 'decision', 'event_type', 'confidence')})

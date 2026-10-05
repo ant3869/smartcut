@@ -58,9 +58,9 @@ def test_native_model_default_is_live_verified():
     assert SETTINGS["native_video_model"]["default"] == "muse-spark-1.3-contributor"
 
 
-# settings default OFF.
+# settings default ON (live the moment a key exists; unavailable without one).
 def test_native_video_defaults_off():
-    assert SETTINGS["native_video_enabled"]["default"] is False
+    assert SETTINGS["native_video_enabled"]["default"] is True
 
 
 # 1: disabled lane changes nothing (same object identity, zero calls).
@@ -214,8 +214,8 @@ def test_native_block_present_with_evidence():
     block = native_evidence_block(card["native_video"])
     for token in ("NATIVE VIDEO TEMPORAL EVIDENCE", "provider:", "model:", "decision: CUT",
                   "event_type: camera_setup", "confidence:", "summary:",
-                  "contradicting_evidence:", "not ground truth",
-                  "Do not copy its CUT/KEEP verdict automatically"):
+                  "contradicting_evidence:", "watched the actual motion",
+                  "confidence 0.8 or higher, follow it"):
         assert token in block
     prompt = event_prompt_for(card)
     assert block in prompt  # same block both proposer and critic receive

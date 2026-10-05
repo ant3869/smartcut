@@ -308,11 +308,15 @@ class PipelineBrain:
             story_map=story_map, audio_enabled=bool(self.config.get("audio_evidence_enabled", True)),
             adaptive_events=adaptive_events is True,
             transcript_words=transcript_words,
-            native_video_enabled=bool(self.config.get("native_video_enabled", False)),
+            native_video_enabled=bool(self.config.get("native_video_enabled", True)),
             native_video_model=str(self.config.get(
                 "native_video_model", "muse-spark-1.3-contributor")),
             native_video_context_seconds=float(self.config.get(
                 "native_video_context_seconds", 2.0)),
+            native_api_key=(self.config.get("native_video_api_key") or None),
+            native_base_url=(self.config.get("native_video_base_url")
+                             or "https://api.meta.ai/v1"),
+            native_required=bool(self.config.get("native_video_required", False)),
         )
         write_json(job / "editorial_review.json", result)
         return result

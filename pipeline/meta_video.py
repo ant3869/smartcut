@@ -7,8 +7,9 @@ a validated structured decision dict; it never edits, cuts, or renders.
 The evidence it returns MAY be consumed by adaptive EventCard review
 (``review_adaptive_events`` enriches a card before the real proposer/critic
 see it), and ``PipelineBrain.review_editorial`` forwards the native settings
-when adaptive review is explicitly requested. Default remains OFF, evidence
-remains advisory-only, and no native result can authorize an edit.
+when adaptive review is explicitly requested. Default is ON with any
+configured key; without a key every card degrades to unavailable (and to
+human review when required). No native result can authorize an edit.
 
 Auth: explicit ``api_key=`` or the SmartCut credential chain. For direct
 Meta base URLs (api.meta.ai) ONLY ``META_API_KEY`` is selected (gateway
@@ -222,7 +223,7 @@ class MetaVideoAdapter:
         *,
         api_key: str | None = None,
         model: str = NATIVE_VIDEO_MODEL,
-        base_url: str = META_API_BASE_URL,
+        base_url: str | None = None,
         timeout: float = 180.0,
         tries: int = 3,
         on_attempt: Any | None = None,
@@ -230,9 +231,10 @@ class MetaVideoAdapter:
         """on_attempt(kind, attempt_number) optionally observes each real HTTP
         attempt ('upload' for /files posts, 'inference' for /responses posts)
         so callers can account retries truthfully. Defaults to None."""
-        resolved = resolve_api_key(api_key, base_url=base_url)
+        resolved_base = (base_url or META_API_BASE_URL).rstrip("/")
+        resolved = resolve_api_key(api_key, base_url=resolved_base)
         if not resolved:
-            if _is_direct_meta_url(base_url):
+            if _is_direct_meta_url(resolved_base):
                 raise PipelineError(
                     "Meta video adapter needs a direct-Meta API key for api.meta.ai: "
                     f"pass api_key=... or set {META_API_KEY_ENV_VAR} in the environment. "
@@ -246,7 +248,7 @@ class MetaVideoAdapter:
             )
         self.api_key = resolved
         self.model = model
-        self.base_url = base_url.rstrip("/")
+        self.base_url = resolved_base
         self.timeout = timeout
         self.tries = max(1, int(tries))
         self.on_attempt = on_attempt

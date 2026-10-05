@@ -41,7 +41,7 @@ def test_brain_review_editorial_defaults_unchanged(tmp_path, monkeypatch):
     brain.review_editorial(_source(tmp_path), enabled=True, duration=10.0)
     assert calls and calls[0]["adaptive_events"] is False
     assert calls[0]["transcript_words"] is None
-    assert calls[0]["native_video_enabled"] is False
+    assert calls[0]["native_video_enabled"] is True
 
 
 def test_brain_forwards_native_and_transcript_when_requested(tmp_path, monkeypatch):
@@ -152,3 +152,41 @@ def test_adaptive_native_settings_reach_inspect_card(tmp_path, monkeypatch):
     assert seen.get("api_key") == "nk"
     assert seen.get("enabled") is True
     assert out["request_counts"]["total_external_attempts"] == out["request_counts"]["judge_attempts"]
+
+
+def test_adaptive_forwards_base_url_and_required(tmp_path, monkeypatch):
+    from pipeline import native_inspection as ni
+    seen = {}
+
+    def fake(card, source, duration, **kwargs):
+        seen.update(kwargs)
+        return card
+
+    monkeypatch.setattr(ni, "inspect_card_native", fake)
+    import pipeline.event_judge as evjm
+    monkeypatch.setattr(evjm, "inspect_card_native", fake, raising=False)
+    eye = _Eye()
+    card = {"id": "c" * 8, "target": {"start": 1.0, "end": 2.0},
+            "frames": [], "context": {}}
+    import pipeline.adaptive_inspection as ai
+    monkeypatch.setattr(ai, "inspect_events",
+                        lambda *a, **k: {"event_cards": [card]})
+    evj.review_adaptive_events(
+        eye, _source(tmp_path), 10.0, enabled=True, max_calls=12,
+        native_video_enabled=True, native_base_url="https://gw.example/v1",
+        native_required=True)
+    assert seen.get("base_url") == "https://gw.example/v1"
+    assert card.get("_native_required") is True
+
+
+def test_brain_forwards_native_key_not_vision_key(tmp_path, monkeypatch):
+    brain = brain_mod.PipelineBrain.__new__(brain_mod.PipelineBrain)
+    brain.config = {"vision_api_key": "gateway-secret",
+                    "native_video_api_key": "meta-secret"}
+    brain.work_dir = tmp_path / "work"
+    brain.eye = _Eye()
+    calls = []
+    monkeypatch.setattr(ej, "review_editorial",
+                        lambda *a, **k: calls.append(k) or {"enabled": False})
+    brain.review_editorial(_source(tmp_path), enabled=True, duration=10.0)
+    assert calls[0]["native_api_key"] == "meta-secret"

@@ -134,6 +134,7 @@ def review_editorial(
     transcript_words: list[dict] | None = None, audio_events: list[dict] | None = None,
     native_video_enabled: bool = False, native_video_model: str | None = None,
     native_video_context_seconds: float = 2.0, native_api_key: str | None = None,
+    native_base_url: str | None = None, native_required: bool = False,
 ) -> dict:
     """Return advisory decisions, coverage and evidence paths, without applying edits.
 
@@ -163,7 +164,9 @@ def review_editorial(
                                       native_video_enabled=native_video_enabled,
                                       native_video_model=native_video_model,
                                       native_video_context_seconds=native_video_context_seconds,
-                                      native_api_key=native_api_key)
+                                      native_api_key=native_api_key,
+                                      native_base_url=native_base_url,
+                                      native_required=native_required)
     if (not isinstance(max_calls, int) or isinstance(max_calls, bool) or max_calls < 0
             or not math.isfinite(target_seconds) or target_seconds <= 0
             or not math.isfinite(context_seconds) or context_seconds < 0
