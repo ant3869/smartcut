@@ -146,6 +146,22 @@ reasoning and returned no content (`finish_reason: length`), so
 `ask_editorial` now takes `max_tokens` (default still 4000) and the
 event-judge path requests 8000.
 
+## Full-window A/B: native off vs on (2026-10-05, 30s trim of 001.mp4)
+
+Same 3 review windows, same judge model, only the flag differs
+(`cache/scratch/ab_test.py`, both arms in `ab-off.json`/`ab-on.json`):
+
+- OFF: UNCERTAIN 0.88 / UNCERTAIN 0.85 / UNCERTAIN 0.90 — all three
+  to human review.
+- ON: KEEP 0.95 / KEEP 0.95 / KEEP 0.92 — native available on all
+  three (KEEP / intentional_action @ 0.95 / 0.95 / 0.92).
+
+Motion evidence corroborated the stills and lifted every window out
+of the review queue into confident KEEPs. Caveat: judge calls are
+not deterministic, so one run is signal, not proof — but 3/3 moving
+the same direction with native agreement is the result "better" was
+supposed to look like.
+
 ## First real end-to-end (2026-10-05, same span, META_API_KEY live)
 
 - `inspect_card_native` trimmed 6-18s, uploaded via Meta `/files`,
