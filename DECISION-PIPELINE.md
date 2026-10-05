@@ -146,6 +146,19 @@ reasoning and returned no content (`finish_reason: length`), so
 `ask_editorial` now takes `max_tokens` (default still 4000) and the
 event-judge path requests 8000.
 
+## First real end-to-end (2026-10-05, same span, META_API_KEY live)
+
+- `inspect_card_native` trimmed 6-18s, uploaded via Meta `/files`,
+  analyzed with `input_video`: 1 upload attempt, 1 inference attempt,
+  status **available**. Verdict: KEEP / intentional_action @ 0.85 —
+  "continuous intentional activity, no setup or waste segment."
+- Judge with stills + that real block: KEEP, corroborated. Two
+  independent models, two different inputs (motion vs stills), same
+  verdict — the loop works as designed.
+- Wart: the model returned 0s event stamps, mapped to 6.0/6.0. The
+  summary/evidence carried the decision; stamp validation is the next
+  hardening target if zero-stamps recur.
+
 ## Evidence locations (per job dir)
 `edit_plan.json` (final truth) · `story_map.json` · `section_summaries.json` ·
 `temporal_waste.json` (often `[]` by design) · `editorial_loop.json` ·
