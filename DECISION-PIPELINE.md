@@ -126,8 +126,27 @@ classifier still decides."
   consider failing closed (unavailable → review flag) instead of
   today's fail-open attach-and-continue.
 
-## Evidence locations (per job dir)
+## Live comparison test (2026-10-05, inbox/001.mp4 8-16s, real gateway judge)
 
+Same card, same stills, same judge model, twice:
+
+- WITHOUT native block → KEEP ("continuous close-up performance").
+- WITH a 0.92-confidence native CUT (banter) block → UNCERTAIN, routed
+  to human review. The judge's own words: native claim "directly
+  contradicted by maintained proximity and camera-directed gaze across
+  DURING frames," plus flagged uncertainty "2-second still gaps leave
+  motion between samples unknown." Raw proposer was KEEP @ 0.72, below
+  the 0.8 gate, so the confidence rule agreed with the contradiction
+  rule — both pointed at REVIEW, not a silent KEEP.
+
+Two things this surfaced: (1) the weight change works — the native
+block is read, weighed, and capable of moving a verdict off KEEP;
+(2) the judge's first WITH-native reply burned all 4000 tokens
+reasoning and returned no content (`finish_reason: length`), so
+`ask_editorial` now takes `max_tokens` (default still 4000) and the
+event-judge path requests 8000.
+
+## Evidence locations (per job dir)
 `edit_plan.json` (final truth) · `story_map.json` · `section_summaries.json` ·
 `temporal_waste.json` (often `[]` by design) · `editorial_loop.json` ·
 `*.vision.json` (+ `.partial.json`) · `scene_boundaries.json` ·

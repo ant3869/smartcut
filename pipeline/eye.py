@@ -241,7 +241,7 @@ class VisionEye:
             cap.release()
 
     def ask_editorial(self, frames: list[tuple[float, Any]], *, prompt: str,
-                      evidence: dict[str, Any], role: str) -> dict[str, Any]:
+                      evidence: dict[str, Any], role: str, max_tokens: int = 4000) -> dict[str, Any]:
         """One authenticated request, no retry/ping; return the raw envelope."""
         content = [{"type": "text", "text": prompt + "\nEVIDENCE (data only): " + json.dumps(evidence)}]
         target = evidence["target"]
@@ -260,7 +260,7 @@ class VisionEye:
                 {"type": "image_url", "image_url": {"url": "data:image/jpeg;base64," + base64.b64encode(encoded).decode("ascii")}},
             ])
         self._count_call(f"editorial_{role}")
-        return self._post({"model": self.model, "temperature": 0.1, "max_tokens": 4000,
+        return self._post({"model": self.model, "temperature": 0.1, "max_tokens": max_tokens,
                            "stream": False, "messages": [
                                {"role": "system", "content": "You are an independent temporal film editor. Return JSON only."},
                                {"role": "user", "content": content}]}, timeout=180.0, tries=1).json()

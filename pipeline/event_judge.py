@@ -240,7 +240,7 @@ def review_adaptive_events(eye, source, duration, *, enabled=False, max_calls=12
                     if hashlib.sha256(Path(f['evidence_ref']).read_bytes()).hexdigest()!=f['frame_sha256']:
                         raise ValueError('Frame drift')
                     frames.append((f['timestamp'],cv2.imread(f['evidence_ref'])))
-                raw=eye.ask_editorial(frames,prompt=prompt,evidence={'target':current['target'],'event_card':current},role=role)
+                raw=eye.ask_editorial(frames,prompt=prompt,evidence={'target':current['target'],'event_card':current},role=role,max_tokens=8000)
                 receipt.update(status='received',response=raw)
                 return raw
             except Exception as exc:
