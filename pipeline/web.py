@@ -39,6 +39,11 @@ from .audio import snap_cuts_to_beats as audio_snap
 from .intro import PRESETS as INTRO_PRESETS
 from .intro import build_intro_outro as intro_build
 from .intro import remove_intro_outro as intro_remove
+from .passpanel import STATUSES as PASS_STATUSES
+from .passpanel import catalog as pass_catalog
+from .passpanel import derive_status
+from .passpanel import ensure_project_passes
+from .passpanel import validate_pass_id
 from .qc import run_qc as qc_structural
 from .qc import run_signal_qc as qc_signal
 from .sequence import AudioCleanup
@@ -184,6 +189,17 @@ class QcRequest(BaseModel):
     filename: str | None = None
     deep: bool = True
     scan_seconds: float = 60.0
+
+
+class PassConfigRequest(BaseModel):
+    passes: dict[str, dict[str, Any]] = {}
+
+
+class RecipeRequest(BaseModel):
+    name: str = ""
+    passes: list[str] = []
+    settings: dict[str, dict[str, Any]] = {}
+    disabled: list[str] = []
 class SpotlightRequest(BaseModel):
     source_kind: str = "media"
     job_ids: list[str] = []
@@ -985,6 +1001,81 @@ def create_app(config_path: str | Path = DEFAULT_CONFIG) -> FastAPI:
             merged = {key: structural[key] for key in ("errors", "warnings", "infos")}
         merged["summary"] = {key: len(merged[key]) for key in ("errors", "warnings", "infos")}
         return merged
+
+    @app.get("/api/projects/{project_id}/passes")
+    def passes_get(project_id: str):
+        folder = project_path(project_id)
+        data = ensure_project_passes(read_json(folder / "project.json"))
+        sequence = Sequence.model_validate(read_json(folder / "sequence.json"))
+        state = data["passes"]
+        derived = {p["id"]: derive_status(p["id"], sequence) for p in pass_catalog()}
+        return {"catalog": pass_catalog(), "state": state,
+                "derived": derived, "recipes": data["recipes"]}
+
+    @app.put("/api/projects/{project_id}/passes")
+    def passes_put(project_id: str, request: PassConfigRequest):
+        with sequence_lock:
+            folder = project_path(project_id)
+            data = ensure_project_passes(read_json(folder / "project.json"))
+            for pass_id, entry in (request.passes or {}).items():
+                try:
+                    validate_pass_id(pass_id)
+                except KeyError:
+                    raise HTTPException(400, f"Unknown pass: {pass_id}")
+                stored = data["passes"][pass_id]
+                if entry.get("enabled") is not None:
+                    stored["enabled"] = bool(entry["enabled"])
+                if entry.get("order") is not None:
+                    stored["order"] = int(entry["order"])
+                if isinstance(entry.get("settings"), dict):
+                    stored["settings"] = entry["settings"]
+                if entry.get("status") in PASS_STATUSES:
+                    stored["status"] = entry["status"]
+                if isinstance(entry.get("summary"), str):
+                    stored["summary"] = entry["summary"][:500]
+            data["updated_at"] = utc_now()
+            write_json(folder / "project.json", data)
+            return {"ok": True, "passes": data["passes"]}
+
+    @app.post("/api/projects/{project_id}/pass-recipes")
+    def pass_recipe_save(project_id: str, request: RecipeRequest):
+        with sequence_lock:
+            folder = project_path(project_id)
+            data = ensure_project_passes(read_json(folder / "project.json"))
+            name = (request.name or "").strip()
+            if not name:
+                raise HTTPException(400, "Recipe needs a name")
+            for pass_id in request.passes:
+                try:
+                    validate_pass_id(pass_id)
+                except KeyError:
+                    raise HTTPException(400, f"Unknown pass: {pass_id}")
+            for pass_id in request.disabled:
+                try:
+                    validate_pass_id(pass_id)
+                except KeyError:
+                    raise HTTPException(400, f"Unknown pass: {pass_id}")
+            recipe = {"name": name, "passes": list(request.passes),
+                      "settings": dict(request.settings or {}),
+                      "disabled": list(request.disabled or [])}
+            names = [r["name"] for r in data["recipes"]]
+            if name in names:
+                data["recipes"][names.index(name)] = recipe
+            else:
+                data["recipes"].append(recipe)
+            data["updated_at"] = utc_now()
+            write_json(folder / "project.json", data)
+            return {"ok": True, "recipes": data["recipes"]}
+
+    @app.delete("/api/projects/{project_id}/pass-recipes")
+    def pass_recipe_delete(project_id: str, name: str):
+        with sequence_lock:
+            folder = project_path(project_id)
+            data = ensure_project_passes(read_json(folder / "project.json"))
+            data["recipes"] = [r for r in data["recipes"] if r["name"] != name]
+            data["updated_at"] = utc_now()
+            write_json(folder / "project.json", data)
+            return {"ok": True, "recipes": data["recipes"]}
     def spotlight_inputs(project_id: str, request: SpotlightRequest):
         """Evidence + hashes for highlight/shorts sources. Reads only; masters untouched.
 

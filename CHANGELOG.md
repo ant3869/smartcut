@@ -17,6 +17,12 @@ All notable changes to this project are documented here. The project follows
   already-analyzed sources" toggle re-queues sources that already have a plan, with refresh. Each
   source queues through the existing analyze endpoint and runs on the same one-at-a-time task worker,
   so one failed source doesn't stop the rest.
+- Passes panel (top-bar Passes button): AI Edit, Audio Cleanup, Silence Cleanup, Music Bed,
+  Beat Cuts, Transitions, Intro/Outro, Captions (planned), Watermark, QC, and Render as ordered,
+  enable/disable/configure/run rows with drag reorder, per-pass status, project-level settings
+  persistence, and named recipes (Vertical Social, Clean Longform built in; save/duplicate/rename/
+  delete/restore supported). Every pass calls the same function or endpoint as its Auto menu
+  counterpart; Run Enabled Passes executes in order with stop/continue-on-error policy.
 
 ### Fixed
 
