@@ -17,11 +17,14 @@ def test_duration_metrics_do_not_excuse_an_overbroad_cut():
     assert metrics["proposed_seconds"] == 100
     assert metrics["expected_seconds"] == 20
     assert metrics["correctly_cut_seconds"] == 20
+    # Option A: precision denominator is labeled proposed time only
+    # (20 expected + 20 protected seconds); unlabeled seconds never penalize.
+    assert metrics["labeled_proposed_seconds"] == 40
     assert metrics["off_target_seconds"] == 80
     assert metrics["unlabeled_seconds"] == 60
     assert metrics["missed_expected_seconds"] == 0
     assert metrics["protected_seconds_cut"] == 20
-    assert metrics["duration_precision"] == 0.2
+    assert metrics["duration_precision"] == 0.5
     assert metrics["duration_recall"] == 1.0
 
 
@@ -50,11 +53,11 @@ def test_protected_violation_allows_a_proposal_without_reasons():
 @pytest.mark.parametrize(
     "proposals, expected, precision, recall, missed, unlabeled",
     [
-        ([], [], 1.0, 1.0, 0, 0),
-        ([], [EditorialInterval(0, 10, "noise")], 1.0, 0.0, 10, 0),
-        ([Clip(0, 10)], [], 0.0, 1.0, 0, 10),
+        ([], [], None, None, 0, 0),
+        ([], [EditorialInterval(0, 10, "noise")], None, 0.0, 10, 0),
+        ([Clip(0, 10)], [], None, None, 0, 10),
         ([Clip(0, 1)], [EditorialInterval(0, 10, "noise")], 1.0, 0.1, 9, 0),
-        ([Clip(10, 20)], [EditorialInterval(0, 10, "noise")], 0.0, 0.0, 10, 10),
+        ([Clip(10, 20)], [EditorialInterval(0, 10, "noise")], None, 0.0, 10, 10),
     ],
 )
 def test_duration_metrics_cover_empty_partial_and_touching_inputs(
@@ -87,6 +90,47 @@ def test_fragmented_proposals_measure_union_coverage_without_double_counting():
     )
     assert report["metrics"]["proposed_seconds"] == 4
     assert report["metrics"]["correctly_cut_seconds"] == 4
+    assert report["metrics"]["duration_precision"] == 1.0
     assert report["metrics"]["duration_recall"] == 0.4
     assert report["metrics"]["missed_expected_seconds"] == 6
     assert report["unexpected_proposals"] == []
+
+
+def test_unlabeled_proposals_have_zero_effect_on_precision_and_recall():
+    # Same labeled evidence with and without extra unlabeled proposals:
+    # precision and recall must not move; the extra time is report-only.
+    base = evaluate_proposals(
+        [Clip(0, 5)],
+        expected_cuts=[EditorialInterval(0, 10, "noise")], protected_keeps=[],
+    )["metrics"]
+    extended = evaluate_proposals(
+        [Clip(0, 5), Clip(50, 60)],
+        expected_cuts=[EditorialInterval(0, 10, "noise")], protected_keeps=[],
+    )["metrics"]
+    assert base["duration_precision"] == extended["duration_precision"] == 1.0
+    assert base["duration_recall"] == extended["duration_recall"] == 0.5
+    assert extended["unlabeled_seconds"] == 10
+    assert sum(
+        item["end"] - item["start"]
+        for item in evaluate_proposals(
+            [Clip(0, 5), Clip(50, 60)],
+            expected_cuts=[EditorialInterval(0, 10, "noise")], protected_keeps=[],
+        )["unexpected_proposals"]
+    ) == 10
+
+
+def test_absence_of_cut_label_is_never_a_keep_label():
+    # Proposals with no gold labels at all: nothing is scorable.
+    report = evaluate_proposals(
+        [Clip(0, 10)], expected_cuts=[], protected_keeps=[],
+    )
+    assert report["metrics"]["duration_precision"] is None
+    assert report["metrics"]["duration_recall"] is None
+    assert report["metrics"]["unlabeled_seconds"] == 10
+    # ...while a proposal contradicting an explicit protected keep IS scored.
+    report = evaluate_proposals(
+        [Clip(0, 10)], expected_cuts=[],
+        protected_keeps=[EditorialInterval(0, 10, "demo")],
+    )
+    assert report["metrics"]["duration_precision"] == 0.0
+    assert report["metrics"]["protected_seconds_cut"] == 10

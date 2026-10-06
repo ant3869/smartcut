@@ -55,13 +55,19 @@ def evaluate_proposals(
 ) -> dict[str, Any]:
     """Score proposals against potentially partial editorial labels.
 
+    Option A (gold-coverage-only): precision and recall denominators contain
+    ONLY explicitly labeled time. Proposed time outside every gold label is
+    reported under ``unexpected_proposals`` / ``unlabeled_seconds`` with zero
+    effect on precision, recall, or pass/fail. Absence of a CUT label is
+    never treated as a KEEP label: precision over zero labeled proposed
+    seconds is None (unknown), never a perfect or failing score.
+    Protected overlap is measured independently, including conflicting labels;
+    a proposal inside an explicit protected keep IS scorable (it contradicts
+    a label), while a proposal in unlabeled time is not.
     Legacy interval-count metrics retain their thresholds. Duration metrics use
     unions and exact positive overlaps, rounded to milliseconds (ratios to three
-    decimals); empty precision/recall denominators score 1.0. Precision measures
-    support by expected labels, not proof that all remaining time is wrong.
-    Protected overlap is measured independently, including conflicting labels.
-    ``unexpected_proposals`` contains per-proposal unlabeled fragments, not
-    whole cuts; its count can increase when a proposal has several fragments.
+    decimals). ``unexpected_proposals`` contains per-proposal unlabeled fragments,
+    not whole cuts; its count can increase when a proposal has several fragments.
     """
     found: list[dict[str, Any]] = []
     missed: list[dict[str, Any]] = []
@@ -117,18 +123,30 @@ def evaluate_proposals(
     proposed_seconds = _seconds(proposed_spans)
     expected_seconds = _seconds(expected_spans)
     correctly_cut_seconds = _intersection_seconds(proposed_spans, expected_spans)
+    # Option A: precision is scored ONLY inside explicit gold coverage
+    # (expected cuts + protected keeps). Unlabeled proposed time is reported
+    # separately and never penalizes precision; with no labeled proposed
+    # time there is nothing to score, so precision is None (unknown).
+    labeled_proposed_seconds = _intersection_seconds(
+        proposed_spans, _union(expected_spans + protected_spans))
+    if labeled_proposed_seconds:
+        labeled_precision = correctly_cut_seconds / labeled_proposed_seconds
+    else:
+        labeled_precision = None
     duration_metrics = {
         "proposed_seconds": proposed_seconds,
         "expected_seconds": expected_seconds,
         "correctly_cut_seconds": correctly_cut_seconds,
+        "labeled_proposed_seconds": labeled_proposed_seconds,
         "off_target_seconds": proposed_seconds - correctly_cut_seconds,
         "unlabeled_seconds": proposed_seconds - _intersection_seconds(
             proposed_spans, _union(expected_spans + protected_spans),
         ),
         "missed_expected_seconds": expected_seconds - correctly_cut_seconds,
         "protected_seconds_cut": _intersection_seconds(proposed_spans, protected_spans),
-        "duration_precision": correctly_cut_seconds / proposed_seconds if proposed_seconds else 1.0,
-        "duration_recall": correctly_cut_seconds / expected_seconds if expected_seconds else 1.0,
+        "duration_precision": labeled_precision,
+        "duration_recall": (correctly_cut_seconds / expected_seconds
+                            if expected_seconds else None),
     }
     total = len(expected_cuts)
     return {
@@ -138,7 +156,8 @@ def evaluate_proposals(
         "protected_keep_violations": protected_violations,
         "unexpected_proposals": unexpected,
         "metrics": {
-            **{name: round(max(0.0, value), 3) for name, value in duration_metrics.items()},
+            **{name: (round(max(0.0, value), 3) if value is not None else None)
+               for name, value in duration_metrics.items()},
             "expected_cuts": total,
             "matched_cuts": len(expected_matches),
             "missed_cuts": len(missed),
