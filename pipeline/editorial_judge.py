@@ -17,7 +17,7 @@ import cv2
 
 from .util import PipelineError, match_sampled_timestamp, read_json_or_none, source_fingerprint, write_json
 
-PROMPT_VERSION = 4
+PROMPT_VERSION = 5
 CATEGORIES = {
     "camera_setup", "wrong_orientation", "between_take_banter",
     "lens_obstruction", "wardrobe_reset", "intended_content", "uncertain",
@@ -51,9 +51,20 @@ Distinguish these removable interruptions from intended content:
 If the distinction, boundaries or evidence is unclear return REVIEW, not CUT. Missing
 before/after context is a limitation, not proof of waste. No category is mandatory.
 Decide speech and contact by counting DURING frames, in this priority order (CUT rules first):
-1. CUT (lens_obstruction or camera_setup) when the actor is off-screen or obstructed,
+1. CUT (camera_setup) when the target shows setup, pre-roll, or technical preparation
+before the intended performance begins: preparing, framing, positioning, checking
+the recording, getting ready, preamble, or technical coordination. This decides CUT
+even when the actor speaks to the camera. Recognize it by evidence that nothing
+has begun yet: no performance action is underway in the target or in any earlier
+footage, with the first performance action appearing only afterward; the actor
+visibly holds or adjusts the camera themselves; greeting-style address gives way
+to off-camera coordination. A pause inside an already-underway performance that
+later resumes is not setup. Require contextual evidence of preparation:
+a position near the start alone, a static shot alone, or camera-facing speech alone
+never proves setup.
+2. CUT (lens_obstruction or camera_setup) when the actor is off-screen or obstructed,
 the camera is handled or moved, or frames are blurry or obscured across most of the target.
-2. CUT (between_take_banter) when sustained speech coincides with a paused act:
+3. CUT (between_take_banter) when sustained speech coincides with a paused act:
 transcript words span most of the target AND most DURING frames show gaze
 off-camera toward another person present with mouth movement, while no ACTIVE
 intimate contact is visible. Active means visible motion of the act itself
@@ -62,11 +73,12 @@ unchanged across DURING frames, is a paused act, not performance. Compare contac
 position across DURING frames; an unchanging resting hand means paused.
 Talking or vocalizing during active contact in the same frames is performance, not aside talk.
 Brief glances away during an ongoing act do not count.
-3. KEEP (intended_content) when sustained speech coincides with gaze into the lens in
-most DURING frames: the actor addresses the viewer.
-4. KEEP (intended_content) when intimate contact is visibly ACTIVE in most DURING frames.
+4. KEEP (intended_content) when sustained speech coincides with gaze into the lens in
+most DURING frames as part of the intended performance: the actor addresses the viewer,
+unless rule 1 setup evidence shows the performance has not begun.
+5. KEEP (intended_content) when intimate contact is visibly ACTIVE in most DURING frames.
 Contact that merely persists unchanged across frames while the actor converses
-off-camera is a paused act under rule 2, not performance.
+off-camera is a paused act under rule 3, not performance.
 Judge the target as a whole: the verdict follows the pattern filling most DURING frames
 and bounds stay the full target span. A brief head or tail of a different pattern neither
 changes the verdict nor narrows the bounds; narrow bounds only for a cleanly bounded
