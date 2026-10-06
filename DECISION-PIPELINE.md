@@ -178,6 +178,31 @@ Bar: gold CUT 0-4 / KEEP 4-9.45 / CUT 9.45-15.419 + 158s hand-cut final.
 - Suite: 564 passed. Only `pipeline/adaptive_inspection.py` changed
   (+20/-5).
 
+## Generalization validation, frozen prompts (2026-10-05, NO changes)
+
+Validator ran native-ON on 008 (w3), 002, 003 with prompts frozen
+(git diff empty before/after). Human expectations locked before runs.
+
+- Adaptive native-ON: 003 head 2/2 PASS (rule 4). 002 head: 2
+  abstains + 1 FN miss; 008 interruption got zero cards (max_windows=3 never
+  looks past the head).
+- Targeted probes, 12 regions: 4/12 (33%). CUT recall 0/8 —
+  zero CUTs emitted anywhere. Rule 4 decided 8/8 verdicts;
+  rules 1/2 fired zero times.
+- 3 of 4 wrong-KEEPs were expectation-side (validator's own sparse
+  stills unrepresentative; judges applied counting tests correctly).
+- Genuine patterns (repeated across clips): (1) majority-dilution —
+  brief pauses hide between sparse DURING samples, bookend action
+  carries "most of target" (008-R2 "I'm bored" aside → KEEP 0.85
+  vs gold CUT); (2) proposer starvation — budget of 3 never reviews
+  mid-clip (002's 54 speech segments, zero mid cards).
+- Verdict: rule application generalizes (never misreads evidence),
+  but the system is CUT-under-sensitive on faceless footage: gaze
+  tests need faces, "most of target" needs dense sampling.
+  Recommendations logged, nothing changed: raise/condition the
+  window budget past head slots; denser DURING sampling on wide
+  targets.
+
 ## Gauntlet round 3: hard rules, 3/3 (2026-10-05, committed)
 
 User's 4 rules, priority order: (1) off-screen/obstructed/camera
