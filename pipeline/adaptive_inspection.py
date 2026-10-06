@@ -115,6 +115,17 @@ def scan_video(source: Path, duration: float, *, source_sha256=None,
 # Max silence bridged when coalescing transcript words into speech spans.
 SPEECH_MERGE_GAP_SECONDS = 1.0
 
+# Dense DURING evidence spacing: brief pauses hide between sparse samples, so
+# interior frame count scales with the target span. Bounded per-card so judge
+# payloads and decode budgets stay flat.
+DURING_SPACING_SECONDS = 0.75
+MAX_DENSE_FRAMES_PER_WINDOW = 25
+
+# Small pad past a speech/action resumption point when capping a
+# transcript-seeded card. The card covers the pause through its end; the pad
+# is judgment context, never a fixed forward breadth.
+RESUMPTION_PAD_SECONDS = 1.0
+
 
 def speech_spans_from_words(words, duration):
     """Coalesce timed word dicts into speech spans; invalid words are skipped."""
@@ -166,13 +177,21 @@ def propose_inspection_windows(signals, duration, *, max_windows=12, window_seco
                                coverage_fraction=.5, protected_spans=None, speech_spans=None):
     """Change clusters plus stratified interiors; never bridge protected gaps.
 
-    The first two coverage slots are head-anchored over the opening seconds
-    so early footage always seeds review even when nothing moves there.
+    Bounded stratified budget: head anchors guarantee the opening seconds
+    seed review; ranked motion takes reserved slots after coverage and speech
+    shares; speech spans seed onset-anchored INSPECT windows ranked by
+    resumption (preceding silence gap) with a nearby-change pick, so late
+    talk after a long quiet stretch seeds review instead of head chatter
+    eating the transcript share; a late-temporal reserve anchors the closing
+    seconds at wider budgets.
     Speech spans seed onset-anchored INSPECT windows: a seed never begins
-    before its speech onset (transcript timing is the evidence), with exactly
-    the standard broad forward breadth (window_seconds) — a long merged
-    speech span seeds one bounded card at its onset, never one giant card.
-    Ranked motion takes only what is left after reserving coverage and speech
+    before its speech onset (transcript timing is the evidence), covering its
+    seeding utterance and the pause that follows, ending at the next speech
+    onset or visual change (plus a small pad) capped by the standard broad
+    forward breadth (window_seconds) — a long merged speech span still seeds
+    one bounded card at its onset, never one giant card, and an interruption
+    card stays pause-dominated instead of straddling the boundary into
+    resumed contact. Ranked motion takes only what is left after reserving
     seed slots, so tight budgets keep the guaranteed head review instead of
     displacing it with far-away motion. The 'transcript' reason marks timed
     words present, never proven actor dialogue. Transcript seeds take only
@@ -243,11 +262,49 @@ def propose_inspection_windows(signals, duration, *, max_windows=12, window_seco
     spans = []
     for span in speech_spans or []:
         spans.append(_span(span))
+    spans.sort()
+    # Resumption ranking: a span resuming after a long quiet stretch is the
+    # coordination/banter-shaped candidate; head chatter must not eat the
+    # transcript share. Onset order breaks ties deterministically. Seeds keep
+    # onset anchoring (never before speech onset) and broad forward breadth.
+    gaps = {}
+    previous_end = 0.
+    for a, b in spans:
+        gaps[(a, b)] = a - previous_end
+        previous_end = max(previous_end, b)
+    spans.sort(key=lambda ab: (-gaps[ab], ab[0]))
+    # Motion pick: the transcript slot goes to the resumption-shortlisted
+    # span with the strongest nearby visual change, so an isolated tail
+    # utterance does not displace mid-video coordination; the late-temporal
+    # reserve still covers the tail at wider budgets.
+    shortlist = spans[:min(3, len(spans))]
+    shortlist.sort(key=lambda ab: (
+        -max([score for score, t, _ in changes if abs(t - ab[0]) <= window_seconds / 2] + [0.]),
+        -gaps[ab], ab[0]))
+    if shortlist:
+        spans = shortlist[:1] + [s for s in spans if s != shortlist[0]]
     share = max(1, max_windows // 3)
     add(ranked, max(0, max_windows - coverage_count - (share if spans else 0)))
+    onset_order = sorted(spans)
     for a, b in spans[:share]:
-        _add_span(a, min(duration, a + window_seconds), 0., ['transcript'], max_windows)
+        # Resumption cap: the card covers its seeding utterance and the pause
+        # that follows, ending at the next speech onset or visual change plus
+        # a small pad instead of a fixed forward breadth. Changes within
+        # SPEECH_MERGE_GAP of the seed end are utterance settle
+        # (word-boundary slop), never a resumption. General rule; no
+        # clip-specific spans.
+        following = [s for s, _ in onset_order if s > b]
+        following += [t for _, t, _ in changes
+                      if t > b + SPEECH_MERGE_GAP_SECONDS]
+        end = min(duration, a + window_seconds,
+                  min(following, default=float('inf')) + RESUMPTION_PAD_SECONDS)
+        _add_span(a, end, 0., ['transcript'], max_windows)
     add(coverage, max_windows)
+    # Late-temporal reserve: one bounded slot anchoring the closing seconds,
+    # after coverage and before leftover motion fill. Tight budgets
+    # (max_windows < 4) yield it to head review; wider budgets keep it.
+    if max_windows >= 4 and duration > window_seconds and len(selected) < max_windows:
+        _add_span(max(0., duration - window_seconds), duration, 0., ['coverage'], max_windows)
     add(ranked, max_windows)
     return sorted(selected, key=lambda w: (w['start'], w['end']))
 
@@ -274,8 +331,11 @@ def inspect_events(source: Path, duration: float, *, evidence_dir: Path,
     result = {'schema_version': 1, 'source_sha256': scan['source_sha256'], 'scan': scan,
               'windows': windows, 'event_cards': [], 'candidates': [], 'advisory_only': True,
               'decode_attempts': scan['decode_attempts'], 'dense_decode_failures': [],
-              'model_calls': 0, 'budget': {'max_coarse_frames': max_coarse_frames,
-              'max_windows': max_windows, 'frames_per_window': frames_per_window},
+              'model_calls': 0,
+              'budget': {'max_coarse_frames': max_coarse_frames,
+                'max_windows': max_windows, 'frames_per_window': frames_per_window,
+                'during_spacing_seconds': DURING_SPACING_SECONDS,
+                'max_dense_frames_per_window': MAX_DENSE_FRAMES_PER_WINDOW},
               'coverage': {'status': 'sampled_not_editorially_reviewed'},
               'limitations': ['complete action context requires semantic review; never assumed',
                               'no audio event detection or word alignment performed']}
@@ -294,7 +354,14 @@ def inspect_events(source: Path, duration: float, *, evidence_dir: Path,
             a, b = target['start'], target['end']
             before = max([t for t in times if t < a], default=0.)
             after = min([t for t in times if t >= b], default=max(0., duration - .001))
-            requested_times = sorted(set([before, after] + list(np.linspace(a, max(a, b - .001), frames_per_window - 2))))
+            # DURING density scales with the target span so brief pauses stop
+            # hiding between sparse samples; the per-card cap bounds judge
+            # payloads and decode attempts. BEFORE/AFTER context stays single
+            # frames from the nearest coarse observations.
+            interior = min(MAX_DENSE_FRAMES_PER_WINDOW - 2,
+                           max(frames_per_window - 2,
+                               math.ceil(max(.001, b - a) / DURING_SPACING_SECONDS)))
+            requested_times = sorted(set([before, after] + list(np.linspace(a, max(a, b - .001), interior))))
             frames = []
             for requested in requested_times:
                 if requested not in cache:
