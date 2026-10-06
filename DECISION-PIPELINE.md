@@ -178,6 +178,21 @@ Bar: gold CUT 0-4 / KEEP 4-9.45 / CUT 9.45-15.419 + 158s hand-cut final.
 - Suite: 564 passed. Only `pipeline/adaptive_inspection.py` changed
   (+20/-5).
 
+## Gauntlet round 3: hard rules, 3/3 (2026-10-05, committed)
+
+User's 4 rules, priority order: (1) off-screen/obstructed/camera
+moving/blurry → CUT; (2) talking to other actor → CUT; (3) talking
+to camera → KEEP; (4) penetration visible → KEEP. Encoded
+generically in `NATIVE_VIDEO_PROMPT` + `EDITORIAL_PROMPT`
+(PROMPT_VERSION 3→4), prompt text only, no logic changes.
+
+Unlock for the 8-16 miss: active-vs-paused — after ~9.4s a static
+resting hold + aside talk (rule 2 CUT), before that active contact
+with lens-addressed stretches. 4 prompt iterations (early ones
+hedged to UNCERTAIN, reverted). Final: KEEP 0.85 / KEEP 0.9 /
+CUT 0.86 rule-citing, native agreeing all 3, critic-reproduced
+3/3 on a fresh run. Suite 564 green.
+
 ## Full-004 adaptive A/B: native off vs on (2026-10-05, 299.9s original)
 
 Same 3 seeded cards both arms (deterministic cheap scan):
