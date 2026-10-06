@@ -166,9 +166,15 @@ def propose_inspection_windows(signals, duration, *, max_windows=12, window_seco
                                coverage_fraction=.5, protected_spans=None, speech_spans=None):
     """Change clusters plus stratified interiors; never bridge protected gaps.
 
+    The first two coverage slots are head-anchored over the opening seconds
+    so early footage always seeds review even when nothing moves there.
     Speech spans seed onset-anchored INSPECT windows: a seed never begins
-    before its speech onset (transcript timing is the evidence), with the
-    standard broad forward breadth. The 'transcript' reason marks timed
+    before its speech onset (transcript timing is the evidence), with exactly
+    the standard broad forward breadth (window_seconds) — a long merged
+    speech span seeds one bounded card at its onset, never one giant card.
+    Ranked motion takes only what is left after reserving coverage and speech
+    seed slots, so tight budgets keep the guaranteed head review instead of
+    displacing it with far-away motion. The 'transcript' reason marks timed
     words present, never proven actor dialogue. Transcript seeds take only
     a small share of the budget so motion/change and coverage candidates
     survive. Seeds are inspection targets, never
@@ -204,7 +210,16 @@ def propose_inspection_windows(signals, duration, *, max_windows=12, window_seco
     coverage_count = min(max_windows, max(1, math.ceil(max_windows * coverage_fraction)))
     if not ranked:
         coverage_count = max_windows
-    coverage = [(0., duration * (i + .5) / coverage_count, ['coverage']) for i in range(coverage_count)]
+    stratified = [(0., duration * (i + .5) / coverage_count, ['coverage']) for i in range(coverage_count)]
+    # Head anchor: the opening seconds must always seed review, independent of
+    # motion/change detection. Two coverage candidates cover [~0.5, ~2*window]
+    # contiguously (the second starts where the first ends, minus a small
+    # overlap); the small positive offset keeps a BEFORE context frame
+    # available for dense inspection. They take coverage slots (never extra
+    # budget), displacing the farthest stratified interiors first.
+    head = [(0., 0.5 + window_seconds / 2, ['coverage']), (0., 1.5 * window_seconds, ['coverage'])]
+    heads = head[:coverage_count]
+    coverage = heads + stratified[:max(0, coverage_count - len(heads))]
     selected = []
 
     def add(items, limit):
@@ -225,13 +240,13 @@ def propose_inspection_windows(signals, duration, *, max_windows=12, window_seco
                 selected.append({'start': x, 'end': y, 'priority_score': score,
                                  'reasons': list(reasons), 'decision': 'INSPECT', 'advisory_only': True})
 
-    add(ranked, max_windows - coverage_count)
     spans = []
     for span in speech_spans or []:
         spans.append(_span(span))
     share = max(1, max_windows // 3)
+    add(ranked, max(0, max_windows - coverage_count - (share if spans else 0)))
     for a, b in spans[:share]:
-        _add_span(a, min(duration, max(b, a + window_seconds)), 0., ['transcript'], max_windows)
+        _add_span(a, min(duration, a + window_seconds), 0., ['transcript'], max_windows)
     add(coverage, max_windows)
     add(ranked, max_windows)
     return sorted(selected, key=lambda w: (w['start'], w['end']))
