@@ -162,6 +162,22 @@ not deterministic, so one run is signal, not proof — but 3/3 moving
 the same direction with native agreement is the result "better" was
 supposed to look like.
 
+## Gauntlet vs 004 hand-cut final (2026-10-05, rounds 1-2, committed)
+
+Bar: gold CUT 0-4 / KEEP 4-9.45 / CUT 9.45-15.419 + 158s hand-cut final.
+
+- Round 1 (seeder coverage): PASS, critic-verified. Head anchors
+  0.5-8.5 / 8-16 added; overlap per region 3.5s / 5.45s / 5.97s.
+- Round 2 (verdicts, native ON): 2/3, critic-verified (KEEP 0.92 /
+  KEEP 0.93 / KEEP 0.93, native available 3/3 @ 0.92/0.95/0.93).
+  The 8-16 miss is an honest perception dispute — motion + stills
+  both read continuous action at ~0.9, transcript is background
+  lyrics with no banter evidence. A sharper native prompt was tried
+  and reverted (flipped a correct card). Forcing CUT would be
+  bar-fitting, not improvement. Loop stopped here.
+- Suite: 564 passed. Only `pipeline/adaptive_inspection.py` changed
+  (+20/-5).
+
 ## Full-004 adaptive A/B: native off vs on (2026-10-05, 299.9s original)
 
 Same 3 seeded cards both arms (deterministic cheap scan):
