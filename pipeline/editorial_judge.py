@@ -17,7 +17,7 @@ import cv2
 
 from .util import PipelineError, match_sampled_timestamp, read_json_or_none, source_fingerprint, write_json
 
-PROMPT_VERSION = 3
+PROMPT_VERSION = 4
 CATEGORIES = {
     "camera_setup", "wrong_orientation", "between_take_banter",
     "lens_obstruction", "wardrobe_reset", "intended_content", "uncertain",
@@ -50,6 +50,28 @@ Distinguish these removable interruptions from intended content:
   deliberate clothing action that belongs to the scene is content.
 If the distinction, boundaries or evidence is unclear return REVIEW, not CUT. Missing
 before/after context is a limitation, not proof of waste. No category is mandatory.
+Decide speech and contact by counting DURING frames, in this priority order (CUT rules first):
+1. CUT (lens_obstruction or camera_setup) when the actor is off-screen or obstructed,
+the camera is handled or moved, or frames are blurry or obscured across most of the target.
+2. CUT (between_take_banter) when sustained speech coincides with a paused act:
+transcript words span most of the target AND most DURING frames show gaze
+off-camera toward another person present with mouth movement, while no ACTIVE
+intimate contact is visible. Active means visible motion of the act itself
+(stroking, thrusting, oral motion); a hand merely resting on or holding still,
+unchanged across DURING frames, is a paused act, not performance. Compare contact
+position across DURING frames; an unchanging resting hand means paused.
+Talking or vocalizing during active contact in the same frames is performance, not aside talk.
+Brief glances away during an ongoing act do not count.
+3. KEEP (intended_content) when sustained speech coincides with gaze into the lens in
+most DURING frames: the actor addresses the viewer.
+4. KEEP (intended_content) when intimate contact is visibly ACTIVE in most DURING frames.
+Contact that merely persists unchanged across frames while the actor converses
+off-camera is a paused act under rule 2, not performance.
+Judge the target as a whole: the verdict follows the pattern filling most DURING frames
+and bounds stay the full target span. A brief head or tail of a different pattern neither
+changes the verdict nor narrows the bounds; narrow bounds only for a cleanly bounded
+removable interruption. Do not record uncertainty about who speech is addressed to when
+the counting tests above settle it.
 Return JSON only with decision CUT|KEEP|REVIEW, category, start, end, confidence (0-1),
 reason, uncertainty (list), evidence (list of {frame_time, observation}). Bound start/end
 inside the target. KEEP may use intended_content. REVIEW may use uncertain.
