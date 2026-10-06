@@ -178,6 +178,23 @@ Bar: gold CUT 0-4 / KEEP 4-9.45 / CUT 9.45-15.419 + 158s hand-cut final.
 - Suite: 564 passed. Only `pipeline/adaptive_inspection.py` changed
   (+20/-5).
 
+## Round 5: setup rule, committed (2026-10-06)
+
+Policy gap closed: setup/pre-roll/technical preamble → CUT, rule 1
+above viewer-address KEEP, in both prompts (PROMPT_VERSION 5).
+Guards: contextual evidence required; position/static/speech alone
+never prove it; mid-performance pauses excluded.
+
+- 004 opening native: CUT 0.82-0.84 (critic-reproduced), ablation-
+  proven causal. Stills 0-4 still KEEP (3-still gaze-perception gap).
+- Zero setup false CUTs: 003-open, 002-mid, 003-pause all KEEP/REVIEW.
+- 008 interruption: card surfaces every run, never zero-coverage;
+  verdicts mixed (evidence-citing UNCERTAIN twice, KEEP once in 4
+  runs) — remaining gap is the sustained-speech counting test,
+  untouched this round.
+- Commits: a9eba42 evaluator, 936f8b9 evidence layer, 9e91f04 setup
+  rule. Suite 568 green.
+
 ## Generalization validation, frozen prompts (2026-10-05, NO changes)
 
 Validator ran native-ON on 008 (w3), 002, 003 with prompts frozen
