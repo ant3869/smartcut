@@ -17,7 +17,7 @@ import cv2
 
 from .util import PipelineError, match_sampled_timestamp, read_json_or_none, source_fingerprint, write_json
 
-PROMPT_VERSION = 5
+PROMPT_VERSION = 7
 CATEGORIES = {
     "camera_setup", "wrong_orientation", "between_take_banter",
     "lens_obstruction", "wardrobe_reset", "intended_content", "uncertain",
@@ -51,6 +51,11 @@ Distinguish these removable interruptions from intended content:
 If the distinction, boundaries or evidence is unclear return REVIEW, not CUT. Missing
 before/after context is a limitation, not proof of waste. No category is mandatory.
 Decide speech and contact by counting DURING frames, in this priority order (CUT rules first):
+Scope first: when BEFORE and AFTER both show the same ongoing main action and the
+target interior holds a distinct speech-pause stretch (a transcript onset plus a
+paused act), judge the bounded interior event under rule 3 with bounds covering
+the interruption — never majority-vote the wide window together with its context;
+otherwise judge the target as a whole per the paragraph below.
 1. CUT (camera_setup) when the target shows setup, pre-roll, or technical preparation
 before the intended performance begins: preparing, framing, positioning, checking
 the recording, getting ready, preamble, or technical coordination. This decides CUT
@@ -64,10 +69,42 @@ a position near the start alone, a static shot alone, or camera-facing speech al
 never proves setup.
 2. CUT (lens_obstruction or camera_setup) when the actor is off-screen or obstructed,
 the camera is handled or moved, or frames are blurry or obscured across most of the target.
-3. CUT (between_take_banter) when sustained speech coincides with a paused act:
+3. CUT (between_take_banter) when speech coincides with a paused act:
 transcript words span most of the target AND most DURING frames show gaze
 off-camera toward another person present with mouth movement, while no ACTIVE
-intimate contact is visible. Active means visible motion of the act itself
+intimate contact is visible. A short bounded coordination event inside a wider
+span of main action also CUTs: a distinct speech stretch with a clear transcript
+onset, coinciding with gaze off-camera toward another person and a paused act.
+For such main-action/coordination/main-action sequences, identify the bounded
+event from transcript plus visual or native evidence and judge that event, never
+majority-vote the wide window: report CUT with start/end covering the removable
+interruption — from the speech onset through the resumption of main action when
+resumption is visible, so the surrounding main action stands. Resumption bounds
+are for NARROWING the span when resumption is visible, never grounds for
+abstention when it is not: when a bounded pause+aside event is established and
+no active contact resumes inside the target, the pause standing through the
+target end IS the interruption — report CUT with end at the target end. A brief event CUTs only with real
+supporting evidence (off-camera gaze with mouth movement and a paused act in
+DURING frames, corroborated by transcript or native motion evidence); speech
+alone never proves coordination, and speech addressed to the viewer (gaze into
+the lens) is never a coordination event. Stills gaze is fallible: a face turned
+toward the camera is not eye contact. Count gaze as off-camera when the eyes are
+visibly averted (downcast, sideways, or half-lidded away from the lens) in the
+event frames; when the eyes cannot be resolved at all (blur, cropping, or low
+resolution), do not count gaze as viewer address — weigh the transcript onset,
+the paused act, and the resumption bounds instead. Only clear, sustained gaze
+into the lens establishes viewer address and rules out coordination. Gaze
+directed at the other participant — including down at the other participant's
+body visible in frame — is off-camera toward another person present, not viewer
+address. Visible mouth movement coinciding with a transcript onset corroborates
+that speech occurred (not who spoke, nor the exact wording); low word-level
+confidences bear on wording, not on occurrence. When every
+available stream (transcript onset, DURING pause, gaze, resumption bounds,
+native motion) converges on the same bounded event, the settled points are not
+uncertainty: record uncertainty only for genuinely unsettled evidence, never
+inherent sampling limitations. When the addressee or the pause cannot
+be established from the evidence, return REVIEW, not CUT. Active means visible
+motion of the act itself
 (stroking, thrusting, oral motion); a hand merely resting on or holding still,
 unchanged across DURING frames, is a paused act, not performance. Compare contact
 position across DURING frames; an unchanging resting hand means paused.
@@ -79,14 +116,17 @@ unless rule 1 setup evidence shows the performance has not begun.
 5. KEEP (intended_content) when intimate contact is visibly ACTIVE in most DURING frames.
 Contact that merely persists unchanged across frames while the actor converses
 off-camera is a paused act under rule 3, not performance.
-Judge the target as a whole: the verdict follows the pattern filling most DURING frames
+Judge the target as a whole, except for a cleanly bounded coordination event under
+rule 3: otherwise the verdict follows the pattern filling most DURING frames
 and bounds stay the full target span. A brief head or tail of a different pattern neither
 changes the verdict nor narrows the bounds; narrow bounds only for a cleanly bounded
-removable interruption. Do not record uncertainty about who speech is addressed to when
+removable interruption, including a localized coordination event. Prefer an event-scoped
+CUT over a wholesale label, and never let an aside take down surrounding main action. Do not record uncertainty about who speech is addressed to when
 the counting tests above settle it.
 Return JSON only with decision CUT|KEEP|REVIEW, category, start, end, confidence (0-1),
 reason, uncertainty (list), evidence (list of {frame_time, observation}). Bound start/end
-inside the target. KEEP may use intended_content. REVIEW may use uncertain.
+inside the target. Every evidence frame_time must be one of the supplied tagged frame
+timestamps, never a transcript time. KEEP may use intended_content. REVIEW may use uncertain.
 Return every required field. If there is no uncertainty, use []. If there is no
 contradicting evidence, use []. Never omit required array fields.
 """

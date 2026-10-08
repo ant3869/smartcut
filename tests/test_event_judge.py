@@ -168,3 +168,138 @@ def test_required_available_keeps_native_verdict():
     c['_native_required'] = True
     result = review_event_card(c, lambda *a: raw('KEEP'), enabled=True)
     assert result['decisions'][0]['decision'] == 'KEEP'
+
+
+def _native_cut_card(event_type='banter', confidence=0.9, start=1.5, end=4.5,
+                     summary='speech 2.5s-5.5s with paused act, gaze off-camera',
+                     evidence=('gaze off-camera toward another person at 3.0s',
+                               'mouth moving 2.5s-5.5s while the act stays paused')):
+    from pipeline import native_inspection as ni
+    return ni.attach_native_evidence(
+        card(),
+        {"decision": "CUT", "event_type": event_type, "confidence": confidence,
+         "summary": summary, "evidence": list(evidence),
+         "contradicting_evidence": [], "event_start_seconds": start,
+         "event_end_seconds": end},
+        clip_start=1.0, clip_end=8.0)
+
+
+def test_native_cut_resolves_stills_abstention():
+    votes = iter([raw('UNCERTAIN'), raw('UNCERTAIN')])
+    result = review_event_card(_native_cut_card(), lambda *a: next(votes), enabled=True)
+    final = result['decisions'][0]
+    assert final['decision'] == 'CUT'
+    assert final['category'] == 'between_take_banter'
+    assert (final['start'], final['end']) == (2.5, 5.5)
+    assert final['confidence'] == 0.9
+    assert final['resolution'] == 'native_cut_resolves_stills_abstention'
+    assert final['contradiction_keep'] is False
+    assert final['stills_decision']['decision'] == 'UNCERTAIN'
+    assert final['native_decision'] == {'decision': 'CUT', 'event_type': 'banter',
+                                        'confidence': 0.9, 'event_start': 2.5,
+                                        'event_end': 5.5}
+    assert [j['decision'] for j in result['judgments']] == ['UNCERTAIN', 'UNCERTAIN']
+
+
+def test_native_cut_blocked_by_confident_stills_keep():
+    votes = iter([raw('KEEP'), raw()])
+    result = review_event_card(_native_cut_card(), lambda *a: next(votes), enabled=True)
+    final = result['decisions'][0]
+    assert final['decision'] == 'UNCERTAIN'
+    assert final['contradiction_keep'] is True
+    assert 'resolution' not in final
+
+
+def test_hedged_keep_is_abstention_not_contradiction():
+    hedged = raw('KEEP', uncertainty=['gaze unclear'])
+    votes = iter([hedged, raw('UNCERTAIN')])
+    result = review_event_card(_native_cut_card(), lambda *a: next(votes), enabled=True)
+    final = result['decisions'][0]
+    assert final['decision'] == 'CUT'
+    assert final['contradiction_keep'] is False
+
+
+def test_native_cut_blocked_by_low_confidence():
+    votes = iter([raw('UNCERTAIN'), raw('UNCERTAIN')])
+    result = review_event_card(_native_cut_card(confidence=0.5),
+                               lambda *a: next(votes), enabled=True)
+    assert result['decisions'][0]['decision'] == 'UNCERTAIN'
+
+
+def test_native_keep_never_resolves_abstention():
+    from pipeline import native_inspection as ni
+    c = ni.attach_native_evidence(
+        card(),
+        {"decision": "KEEP", "event_type": "intentional_action", "confidence": 0.95,
+         "summary": "sustained performance 2.5s-5.5s", "evidence": ["a 3.0s", "b 4.0s"],
+         "contradicting_evidence": [], "event_start_seconds": 1.5,
+         "event_end_seconds": 4.5},
+        clip_start=1.0, clip_end=8.0)
+    votes = iter([raw('UNCERTAIN'), raw('UNCERTAIN')])
+    result = review_event_card(c, lambda *a: next(votes), enabled=True)
+    assert result['decisions'][0]['decision'] == 'UNCERTAIN'
+
+
+def test_native_cut_without_temporal_rationale_blocked():
+    votes = iter([raw('UNCERTAIN'), raw('UNCERTAIN')])
+    result = review_event_card(
+        _native_cut_card(summary='looks like banter', evidence=('seems off-camera',)),
+        lambda *a: next(votes), enabled=True)
+    assert result['decisions'][0]['decision'] == 'UNCERTAIN'
+
+
+def test_native_cut_without_overlap_blocked():
+    votes = iter([raw('UNCERTAIN'), raw('UNCERTAIN')])
+    result = review_event_card(_native_cut_card(start=0.0, end=0.4),
+                               lambda *a: next(votes), enabled=True)
+    assert result['decisions'][0]['decision'] == 'UNCERTAIN'
+
+
+def test_native_cut_unknown_event_type_blocked():
+    votes = iter([raw('UNCERTAIN'), raw('UNCERTAIN')])
+    result = review_event_card(_native_cut_card(event_type='other'),
+                               lambda *a: next(votes), enabled=True)
+    assert result['decisions'][0]['decision'] == 'UNCERTAIN'
+
+
+def test_stills_cut_untouched_by_native():
+    votes = iter([raw(), raw()])
+    result = review_event_card(_native_cut_card(), lambda *a: next(votes), enabled=True)
+    final = result['decisions'][0]
+    assert final['decision'] == 'CUT'
+    assert 'resolution' not in final
+
+
+def test_no_contradiction_when_native_agrees_with_stills_keep():
+    from pipeline import native_inspection as ni
+    c = ni.attach_native_evidence(
+        card(),
+        {"decision": "KEEP", "event_type": "intentional_action", "confidence": 0.95,
+         "summary": "sustained performance 2.5s-5.5s", "evidence": ["a 3.0s", "b 4.0s"],
+         "contradicting_evidence": [], "event_start_seconds": 1.5,
+         "event_end_seconds": 4.5},
+        clip_start=1.0, clip_end=8.0)
+    votes = iter([raw('KEEP'), raw('KEEP')])
+    result = review_event_card(c, lambda *a: next(votes), enabled=True)
+    final = result['decisions'][0]
+    assert final['decision'] == 'KEEP'
+    assert final['contradiction_keep'] is False
+
+
+def test_weak_native_cut_with_stills_keep_is_not_contradiction():
+    votes = iter([raw('KEEP'), raw()])
+    result = review_event_card(_native_cut_card(confidence=0.5),
+                               lambda *a: next(votes), enabled=True)
+    final = result['decisions'][0]
+    assert final['decision'] == 'UNCERTAIN'
+    assert final['contradiction_keep'] is False
+
+
+def test_double_lane_error_never_resolves():
+    c = _native_cut_card()
+    result = review_event_card(c, lambda *a: {}, enabled=True)
+    final = result['decisions'][0]
+    assert result['judgments'] == [None, None]
+    assert final['decision'] == 'UNCERTAIN'
+    assert 'resolution' not in final
+    assert final['contradiction_keep'] is False

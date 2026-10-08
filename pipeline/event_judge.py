@@ -4,6 +4,7 @@ import copy
 import hashlib
 import json
 import math
+import re
 from pathlib import Path
 import cv2
 from .editorial_judge import EDITORIAL_PROMPT, _parse
@@ -88,6 +89,141 @@ def parse_event(raw, target, times, context):
         return None
 
 
+# Native event_type -> (active editorial rule label, stills CUT category).
+# Only these CUT-typed native verdicts may resolve a stills abstention.
+# intentional_action / other / unknown carry no active CUT rule: never resolve.
+_NATIVE_CUT_RULES = {
+    "camera_setup": ("rule 1 (camera_setup)", "camera_setup"),
+    "obstruction": ("rule 2 (lens_obstruction)", "lens_obstruction"),
+    "wrong_orientation": ("rule 2 (wrong_orientation)", "wrong_orientation"),
+    "banter": ("rule 3 (between_take_banter)", "between_take_banter"),
+    "wardrobe_adjustment": ("wardrobe_reset", "wardrobe_reset"),
+}
+
+# A numeric time token (3.2s, 0.5-2.3s, 1:04): the native rationale must cite
+# temporal evidence, not just describe a pattern.
+_NATIVE_TIME_RE = re.compile(r"\d+(?:\.\d+)?\s*s\b|\b\d+:\d{2}\b")
+
+# Minimum positive overlap between the native event span and the stills span
+# to count as the SAME localized event (edge touches are not agreement).
+_NATIVE_OVERLAP_MIN_SECONDS = 0.5
+
+# Resolution/arbitration-path native confidence bar (Round 7, user-authorized).
+# Lowered from 0.80 to 0.70 for the native-CUT-resolves-abstention path ONLY.
+# The global stills/model confidence gate (confidence_threshold=0.8 default in
+# review_event_card / review_adaptive_events) is untouched: affirmative stills
+# KEEP contradiction still requires the global bar.
+NATIVE_RESOLUTION_CONFIDENCE_THRESHOLD = 0.70
+
+
+def _affirmative_keep(judgment: dict | None, confidence_threshold: float) -> bool:
+    """A stills KEEP that genuinely contradicts a native CUT.
+
+    Confident, uncertainty-free, evidence-citing: low-confidence or hedged
+    KEEPs are abstentions, not contradiction.
+    """
+    if not isinstance(judgment, dict) or judgment.get("decision") != "KEEP":
+        return False
+    try:
+        conf = float(judgment.get("confidence"))
+    except (TypeError, ValueError):
+        return False
+    return (math.isfinite(conf) and conf >= confidence_threshold
+            and not judgment.get("uncertainty")
+            and isinstance(judgment.get("evidence"), list)
+            and len(judgment["evidence"]) > 0)
+
+
+def native_cut_resolution(native: dict | None, stills_final: dict,
+                          judgments: list, *, confidence_threshold: float = 0.8,
+                          native_confidence_threshold: float | None = None) -> dict:
+    """Evidence-aware merge of a confident native CUT with a stills abstention.
+
+    Returns {"resolution": dict | None, "contradiction_keep": bool}.
+    resolution is a CUT decision (intersection bounds, per-lane verdicts
+    preserved) only when ALL hold: native available + CUT + confident +
+    active-rule event_type + positive event span + >=2 evidence items whose
+    rationale cites temporal evidence + stills final UNCERTAIN + no
+    affirmative stills KEEP + >=0.5s span overlap (same localized event).
+    contradiction_keep reports genuine lane disagreement: a confident
+    native CUT facing an affirmative (confident, uncertainty-free,
+    evidence-citing) stills KEEP. It is False when either lane abstains,
+    so it never fires on a stills-KEEP verdict the native lane agrees with.
+    Never resolves when stills already decided, when native is KEEP, or
+    when the native rationale lacks rule/temporal grounding.
+    At least one stills vote must be a valid parsed judgment: double
+    lane-error (both votes None) carries no stills localization, so there
+    is no same-event agreement to resolve — the card stays for human
+    review instead of letting the native lane decide alone.
+    Native bar is native_confidence_threshold (default
+    NATIVE_RESOLUTION_CONFIDENCE_THRESHOLD = 0.70, resolution path only);
+    the stills affirmative-KEEP bar stays on confidence_threshold (global,
+    default 0.8, untouched).
+    """
+    native_bar = (NATIVE_RESOLUTION_CONFIDENCE_THRESHOLD
+                  if native_confidence_threshold is None
+                  else native_confidence_threshold)
+    confident_native_cut = (
+        isinstance(native, dict) and native.get("status") == "available"
+        and native.get("decision") == "CUT"
+        and isinstance(native.get("confidence"), (int, float))
+        and not isinstance(native.get("confidence"), bool)
+        and math.isfinite(float(native.get("confidence")))
+        and float(native.get("confidence")) >= native_bar)
+    contradiction = bool(confident_native_cut) and any(
+        _affirmative_keep(j, confidence_threshold) for j in judgments)
+    if (not isinstance(native, dict) or native.get("status") != "available"
+            or native.get("decision") != "CUT" or contradiction):
+        return {"resolution": None, "contradiction_keep": contradiction}
+    try:
+        nconf = float(native.get("confidence"))
+    except (TypeError, ValueError):
+        return {"resolution": None, "contradiction_keep": contradiction}
+    if not (math.isfinite(nconf) and nconf >= native_bar):
+        return {"resolution": None, "contradiction_keep": contradiction}
+    mapping = _NATIVE_CUT_RULES.get(native.get("event_type"))
+    if mapping is None:
+        return {"resolution": None, "contradiction_keep": contradiction}
+    rule_label, category = mapping
+    try:
+        ns, ne = float(native.get("event_start")), float(native.get("event_end"))
+    except (TypeError, ValueError):
+        return {"resolution": None, "contradiction_keep": contradiction}
+    if not (math.isfinite(ns) and math.isfinite(ne) and ns < ne):
+        return {"resolution": None, "contradiction_keep": contradiction}
+    evidence = [x for x in (native.get("evidence") or []) if isinstance(x, str) and x.strip()]
+    rationale = str(native.get("summary") or "") + "\n" + "\n".join(evidence)
+    if len(evidence) < 2 or not rationale.strip() or not _NATIVE_TIME_RE.search(rationale):
+        return {"resolution": None, "contradiction_keep": contradiction}
+    if not isinstance(stills_final, dict) or stills_final.get("decision") != "UNCERTAIN":
+        return {"resolution": None, "contradiction_keep": contradiction}
+    if not any(isinstance(j, dict) for j in judgments):
+        return {"resolution": None, "contradiction_keep": contradiction}
+    try:
+        fs, fe = float(stills_final.get("start")), float(stills_final.get("end"))
+    except (TypeError, ValueError):
+        return {"resolution": None, "contradiction_keep": contradiction}
+    start, end = max(ns, fs), min(ne, fe)
+    if not (math.isfinite(start) and math.isfinite(end)
+            and end - start >= _NATIVE_OVERLAP_MIN_SECONDS):
+        return {"resolution": None, "contradiction_keep": contradiction}
+    return {"resolution": {
+        "decision": "CUT", "category": category, "start": start, "end": end,
+        "confidence": nconf,
+        "reason": (f"Native-video CUT ({native.get('event_type')}, {rule_label}, "
+                   f"conf {nconf:.2f}) resolves stills abstention on the same "
+                   f"localized event (native {ns:.3f}-{ne:.3f}s overlaps stills "
+                   f"{fs:.3f}-{fe:.3f}s); no affirmative stills KEEP evidence."),
+        "resolution": "native_cut_resolves_stills_abstention",
+        "resolution_rule": rule_label,
+        "stills_decision": {"decision": "UNCERTAIN", "start": fs, "end": fe,
+                            "confidence": stills_final.get("confidence")},
+        "native_decision": {"decision": "CUT", "event_type": native.get("event_type"),
+                            "confidence": nconf, "event_start": ns, "event_end": ne},
+        "contradiction_keep": False,
+    }, "contradiction_keep": contradiction}
+
+
 def review_event_card(card, ask, *, enabled=False, reinspect=None, max_reinspections=1,
                       confidence_threshold=.8, critic=True):
     """ask(card, role) owns raw request receipts; reinspect(request) returns real frames.
@@ -95,6 +231,15 @@ def review_event_card(card, ask, *, enabled=False, reinspect=None, max_reinspect
     Reinspection retains original evidence and target; one bounded request maximum.
     A final CUT still requires the existing confidence/uncertainty and blind-critic
     agreement gate. No human KEEP or downstream boundary policy is weakened.
+
+    Evidence-aware native resolution (logic only, no prompt change): when the
+    stills lane abstains (final UNCERTAIN) with no affirmative contradictory
+    KEEP, a confident native CUT on the SAME localized event (positive span
+    overlap with the stills span) whose rationale cites the active rule and
+    temporal evidence may resolve the final to CUT with intersection bounds.
+    Per-lane verdicts stay in the record; genuine lane disagreement (a
+    confident, uncertainty-free stills KEEP) stays UNCERTAIN. Native KEEP
+    never overrides stills, and native CUT never overrides a stills verdict.
     """
     result = {'enabled':enabled, 'advisory_only':True, 'calls_used':0,
               'decisions':[], 'raw_responses':[], 'evidence_requests':[], 'recovery':[]}
@@ -155,6 +300,14 @@ def review_event_card(card, ask, *, enabled=False, reinspect=None, max_reinspect
         final = {**final, 'decision': 'UNCERTAIN', 'category': 'uncertain',
                  'confidence': 0.,
                  'reason': 'Native-video evidence required but unavailable; human review needed'}
+    merge = native_cut_resolution(current.get('native_video'), final, [proposer, other],
+                                  confidence_threshold=confidence_threshold)
+    # confidence_threshold above is the GLOBAL stills gate (0.8, untouched);
+    # the native resolution bar defaults to NATIVE_RESOLUTION_CONFIDENCE_THRESHOLD
+    # (0.70, resolution path only) inside native_cut_resolution.
+    final = {**final, 'contradiction_keep': merge['contradiction_keep']}
+    if merge['resolution'] is not None:
+        final.update(merge['resolution'])
     result.update(decisions=[final], judgments=[proposer,other], event_card=current)
     return result
 
