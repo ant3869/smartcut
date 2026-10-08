@@ -178,6 +178,20 @@ Bar: gold CUT 0-4 / KEEP 4-9.45 / CUT 9.45-15.419 + 158s hand-cut final.
 - Suite: 564 passed. Only `pipeline/adaptive_inspection.py` changed
   (+20/-5).
 
+## Round 10: coverage-aware allocation, committed (2026-10-08)
+
+Budget died on near-duplicates (IoU-0.94 pairs both spending).
+Fix, one file: IoU≥0.5 collapse before spend, 1.0s gain gate,
+head-complement motion reserve, resumption-capped transcripts
+always spend. max_windows untouched, cost ≤ baseline.
+
+- 004: all three labeled regions covered at both budgets.
+- 008: transcript seed holds CUT middle, byte-identical reruns.
+- Suite 595 (586+9). Determinism 20/20.
+- NOT fixed: 008 KEEP wings can still drop at W=4 (needs wider
+  budget/set-cover, separate work); 004 0-4 majority miss is
+  window geometry, not allocation.
+
 ## Round 9: deterministic localization, committed (2026-10-08)
 
 Root cause: evidence variance, not RNG — SRT vs Whisper words seeded

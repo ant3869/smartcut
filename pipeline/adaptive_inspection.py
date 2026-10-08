@@ -138,6 +138,22 @@ MAX_DENSE_FRAMES_PER_WINDOW = 25
 # is judgment context, never a fixed forward breadth.
 RESUMPTION_PAD_SECONDS = 1.0
 
+# Near-duplicate collapse threshold (intersection over union) applied
+# WITHIN one seed family before any budget is spent. Two motion windows
+# (or two coverage windows) overlapping this much re-review the same
+# footage; the weaker one never reaches the budget. Cross-family overlap
+# is resolved at spend time by information gain instead, so a strong
+# motion event is never silently dropped in favor of a coverage head.
+NEAR_DUPE_IOU = 0.5
+
+# Minimum uncovered footage (seconds) for a candidate to spend budget.
+# A window re-reviewing less than this over already-selected footage is
+# deferred, freeing the slot for temporally diverse footage. Content-free
+# (pure bounds geometry), deterministic, and bounded: selection stays
+# O(max_windows * pool). The first head anchor is exempt so the opening
+# seconds always seed review.
+MIN_INFORMATION_GAIN_SECONDS = 1.0
+
 
 def speech_spans_from_words(words, duration):
     """Coalesce timed word dicts into speech spans; invalid words are skipped."""
@@ -215,6 +231,16 @@ def propose_inspection_windows(signals, duration, *, max_windows=12, window_seco
     a small share of the budget so motion/change and coverage candidates
     survive. Seeds are inspection targets, never
     cuts; continuous footage is never a reason to suppress one.
+    Dedupe happens before spend: exact-identity merges (millisecond
+    bounds) plus within-family near-duplicate collapse (IoU >=
+    NEAR_DUPE_IOU keeps the stronger seed) shrink the pools first, then
+    each spend phase skips candidates adding less than
+    MIN_INFORMATION_GAIN_SECONDS of uncovered footage over
+    already-selected windows -- information gain over duplicate coverage.
+    Explicit family reserves (motion slots, transcript share, coverage
+    slots incl. the exempt first head anchor, late-temporal slot) sum to
+    at most max_windows, so the budget stays hard-bounded; unspent slots
+    stay unspent instead of re-reviewing the same seconds.
     """
     _duration(duration)
     _duration(window_seconds)
@@ -258,10 +284,59 @@ def propose_inspection_windows(signals, duration, *, max_windows=12, window_seco
     coverage = heads + stratified[:max(0, coverage_count - len(heads))]
     selected = []
 
-    def add(items, limit):
-        for score, center, reasons in items:
-            start = max(0., min(center - window_seconds / 2, duration - window_seconds))
-            _add_span(start, min(duration, start + window_seconds), score, reasons, limit)
+    def _overlap_selected(a, b):
+        total = 0.
+        for w in selected:
+            total += max(0., min(b, w['end']) - max(a, w['start']))
+        return total
+
+    def _gain(a, b):
+        return max(0., (b - a) - _overlap_selected(a, b))
+
+    def _iou(a, b, c, d):
+        inter = max(0., min(b, d) - max(a, c))
+        union = (b - a) + (d - c) - inter
+        return inter / union if union > 0 else 0.
+
+    def _window_bounds(center):
+        start = max(0., min(center - window_seconds / 2, duration - window_seconds))
+        return start, min(duration, start + window_seconds)
+
+    def _collapse(pool):
+        """Within-family near-dupe collapse before spend, deterministic.
+
+        pool holds [start, end, score, reasons]; sort strongest-first with
+        explicit tie-breaks (start, end, reasons) and drop anything
+        IoU >= NEAR_DUPE_IOU against a kept window. Round-9 identity
+        (quantized bounds) is the equality basis; near-dupes keep the
+        winner unchanged (no reason blending across different footage).
+        """
+        kept = []
+        for cand in sorted(pool, key=lambda c: (-c[2], c[0], c[1], tuple(c[3]))):
+            if any(_iou(cand[0], cand[1], k[0], k[1]) >= NEAR_DUPE_IOU for k in kept):
+                continue
+            kept.append(cand)
+        return kept
+
+    def add(items, limit, *, gain_gated=True, exempt_first=False):
+        order = list(items)
+        # The exempt candidate is the pool-order first (the head anchor),
+        # not the gain-sorted first: the opening-seconds guarantee must
+        # not depend on what motion won earlier phases.
+        exempt = order[0] if exempt_first and order else None
+        if gain_gated:
+            # Information gain over duplicate coverage: rank by uncovered
+            # footage first so temporally diverse footage wins ties in
+            # budget order; pool order breaks remaining ties.
+            index = {id(c): i for i, c in enumerate(order)}
+            order.sort(key=lambda c: (-_gain(*_window_bounds(c[1])), index[id(c)]))
+        for item in order:
+            score, center, reasons = item
+            start, end = _window_bounds(center)
+            if gain_gated and item is not exempt:
+                if _gain(start, end) < MIN_INFORMATION_GAIN_SECONDS:
+                    continue
+            _add_span(start, end, score, reasons, limit)
 
     def _add_span(a, b, score, reasons, limit):
         pieces = [(a, b)]
@@ -312,7 +387,42 @@ def propose_inspection_windows(signals, duration, *, max_windows=12, window_seco
     if shortlist:
         spans = shortlist[:1] + [s for s in spans if s != shortlist[0]]
     share = max(1, max_windows // 3)
-    add(ranked, max(0, max_windows - coverage_count - (share if spans else 0)))
+    # Explicit family reserves; counts match the long-standing budget
+    # split (motion-first, transcript share, coverage fill, late slot,
+    # motion fill) so tight budgets keep the guaranteed head review.
+    # Reserves sum to at most max_windows; every insert below is
+    # limit-checked, so the budget stays hard-bounded.
+    motion_reserve = max(0, max_windows - coverage_count - (share if spans else 0))
+    # Dedupe before spend: collapse within-family near-dupes on
+    # quantized-bounds identity so duplicate footage never consumes a
+    # reserve slot. Transcript seeds are onset-anchored evidence and are
+    # never collapsed, only gain-skipped at spend time.
+    motion_pool = _collapse([[*_window_bounds(t), score, list(reasons)]
+                             for score, t, reasons in ranked])
+    coverage_pool = _collapse([[*_window_bounds(center), score, list(reasons)]
+                               for score, center, reasons in coverage])
+    motion_pool = [(c[2], (c[0] + c[1]) / 2, c[3]) for c in motion_pool]
+    coverage_pool = [(c[2], (c[0] + c[1]) / 2, c[3]) for c in coverage_pool]
+    # Head-complement: the motion reserve prefers events OUTSIDE the
+    # guaranteed head review. A top-scoring motion window re-reviewing
+    # head footage the coverage anchors already carry defers to the
+    # leftover fill; the reserve goes to temporally diverse motion.
+    # Pure bounds geometry (no content, no labels), fully deterministic.
+    head_bounds = [_window_bounds(center) for _, center, _ in coverage_pool[:2]]
+    def _head_gain(center):
+        a, b = _window_bounds(center)
+        covered = 0.
+        for x, y in head_bounds:
+            covered += max(0., min(b, y) - max(a, x))
+        return max(0., (b - a) - covered)
+    reserve_picks = []
+    for cand in motion_pool:
+        if len(reserve_picks) >= motion_reserve:
+            break
+        if _head_gain(cand[1]) < MIN_INFORMATION_GAIN_SECONDS:
+            continue
+        reserve_picks.append(cand)
+    add(reserve_picks, max_windows)
     onset_order = sorted(spans)
     for a, b in spans[:share]:
         # Resumption cap: the card covers its seeding utterance and the pause
@@ -324,16 +434,32 @@ def propose_inspection_windows(signals, duration, *, max_windows=12, window_seco
         following = [s for s, _ in onset_order if s > b]
         following += [t for _, t, _ in changes
                       if t > b + SPEECH_MERGE_GAP_SECONDS]
-        end = min(duration, a + window_seconds,
-                  min(following, default=float('inf')) + RESUMPTION_PAD_SECONDS)
-        _add_span(a, end, 0., ['transcript'], max_windows)
-    add(coverage, max_windows)
+        resumption_cap = min(following, default=float('inf')) + RESUMPTION_PAD_SECONDS
+        breadth_cap = min(duration, a + window_seconds)
+        end = min(breadth_cap, resumption_cap)
+        # Transcript seeds are evidence-ranked (resumption order above). A
+        # seed ending AT a resumption localizes a pause-to-action boundary
+        # the covering windows do not: it always spends. A breadth-capped
+        # seed is pure footage review and is gain-skipped when covered.
+        if resumption_cap < breadth_cap or _gain(a, end) >= MIN_INFORMATION_GAIN_SECONDS:
+            _add_span(a, end, 0., ['transcript'], max_windows)
+    # Coverage fill in pool order (heads first); the first head anchor is
+    # exempt from gain-skipping so the opening seconds always seed review.
+    add(coverage_pool, max_windows, exempt_first=True)
     # Late-temporal reserve: one bounded slot anchoring the closing seconds,
     # after coverage and before leftover motion fill. Tight budgets
     # (max_windows < 4) yield it to head review; wider budgets keep it.
+    # Gain-gated like every other non-exempt spend: an already-reviewed
+    # tail does not consume the slot.
     if max_windows >= 4 and duration > window_seconds and len(selected) < max_windows:
-        _add_span(max(0., duration - window_seconds), duration, 0., ['coverage'], max_windows)
-    add(ranked, max_windows)
+        if _gain(max(0., duration - window_seconds), duration) >= MIN_INFORMATION_GAIN_SECONDS:
+            _add_span(max(0., duration - window_seconds), duration, 0., ['coverage'], max_windows)
+    # Leftover motion fill: untaken pool (including head-deferred) in
+    # strength order, gain-gated, so temporally diverse motion wins over
+    # duplicate coverage while deferred head motion still fills genuine
+    # leftover budget instead of vanishing.
+    taken = set(id(c) for c in reserve_picks)
+    add([c for c in motion_pool if id(c) not in taken], max_windows)
     return sorted(selected, key=lambda w: (w['start'], w['end'], tuple(w['reasons'])))
 
 
