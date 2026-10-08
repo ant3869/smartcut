@@ -178,6 +178,21 @@ Bar: gold CUT 0-4 / KEEP 4-9.45 / CUT 9.45-15.419 + 158s hand-cut final.
 - Suite: 564 passed. Only `pipeline/adaptive_inspection.py` changed
   (+20/-5).
 
+## Round 9: deterministic localization, committed (2026-10-08)
+
+Root cause: evidence variance, not RNG — SRT vs Whisper words seeded
+different bounds; identical evidence → bit-identical (critic-reproduced).
+
+Fix: ms emission quantum, content-stable card IDs, tertiary sort
+keys, canonical evidence order. Zero prompt-wording changes
+(EDITORIAL_PROMPT SHA identical). No clip-specific content.
+
+- 008 localized identically ×7 (+critic ×2); native CUT 3/3.
+- 20-run determinism tests failed-before/pass-after. Suite 586.
+- NOT fixed by this commit: the separate 004 labeled coverage/recall
+  gap (max_windows=4 windows structurally can't score those seconds).
+  That's a candidate-coverage/budget issue for later, not determinism.
+
 ## Round 5: setup rule, committed (2026-10-06)
 
 Policy gap closed: setup/pre-roll/technical preamble → CUT, rule 1

@@ -1,0 +1,1173 @@
+{
+ "clip": "008",
+ "duration": 227.53333333333333,
+ "source_sha256": "aef29e5a96b53906839af06c91c7f4546e1b220c86fe7bc831b46dba2a28ad27",
+ "signals": [
+  {
+   "timestamp": 1.4333333333333333,
+   "motion": 0.03783950182943991,
+   "image_change": 0.0,
+   "visibility_change": 0.0
+  },
+  {
+   "timestamp": 4.266666666666667,
+   "motion": 0.064874871001032,
+   "image_change": 0.18989011633361477,
+   "visibility_change": 0.0025958110516934307
+  },
+  {
+   "timestamp": 7.1000000000000005,
+   "motion": 0.04203056102823905,
+   "image_change": 0.17542827657378743,
+   "visibility_change": 0.039389248522375464
+  },
+  {
+   "timestamp": 9.966666666666667,
+   "motion": 0.020392274134534195,
+   "image_change": 0.22959681958907963,
+   "visibility_change": 0.018215592457078544
+  },
+  {
+   "timestamp": 12.8,
+   "motion": 0.07460186227601089,
+   "image_change": 0.15137055539919317,
+   "visibility_change": 0.03940836382399854
+  },
+  {
+   "timestamp": 15.633333333333335,
+   "motion": 0.04249437095412328,
+   "image_change": 0.14116169434280887,
+   "visibility_change": 0.06740758983019046
+  },
+  {
+   "timestamp": 18.5,
+   "motion": 0.05953935641242143,
+   "image_change": 0.11389189886480909,
+   "visibility_change": 0.0011104465709728673
+  },
+  {
+   "timestamp": 21.333333333333336,
+   "motion": 0.01811860868749414,
+   "image_change": 0.11388978797260532,
+   "visibility_change": 0.008419997185477035
+  },
+  {
+   "timestamp": 24.166666666666668,
+   "motion": 0.03948107233323952,
+   "image_change": 0.096116544704006,
+   "visibility_change": 0.003981025424523832
+  },
+  {
+   "timestamp": 27.033333333333335,
+   "motion": 0.2946465428276574,
+   "image_change": 0.0737048503611971,
+   "visibility_change": 0.0013157894736842146
+  },
+  {
+   "timestamp": 29.866666666666667,
+   "motion": 0.0011097429402382962,
+   "image_change": 0.2802813350220471,
+   "visibility_change": 0.26961663852143725
+  },
+  {
+   "timestamp": 32.7,
+   "motion": 0.0846669481189605,
+   "image_change": 0.07102214091378178,
+   "visibility_change": 0.026374425368233423
+  },
+  {
+   "timestamp": 35.56666666666667,
+   "motion": 0.06251372079932452,
+   "image_change": 0.19050555868280325,
+   "visibility_change": 0.13670360728023265
+  },
+  {
+   "timestamp": 38.400000000000006,
+   "motion": 0.06889506520311474,
+   "image_change": 0.14111935922694435,
+   "visibility_change": 0.0388433483441224
+  },
+  {
+   "timestamp": 41.233333333333334,
+   "motion": 0.014579346092503987,
+   "image_change": 0.0787429636926541,
+   "visibility_change": 0.002718242799512105
+  },
+  {
+   "timestamp": 44.1,
+   "motion": 0.07667733839947462,
+   "image_change": 0.2236543062200957,
+   "visibility_change": 0.16371223848391026
+  },
+  {
+   "timestamp": 46.93333333333334,
+   "motion": 0.12696582700065673,
+   "image_change": 0.22135507552303216,
+   "visibility_change": 0.13988800544141095
+  },
+  {
+   "timestamp": 49.76666666666667,
+   "motion": 0.03685922694436627,
+   "image_change": 0.18754022422366076,
+   "visibility_change": 0.031049934327798068
+  },
+  {
+   "timestamp": 52.63333333333334,
+   "motion": 0.10773864809081528,
+   "image_change": 0.22116357069143447,
+   "visibility_change": 0.0366035744441317
+  },
+  {
+   "timestamp": 55.46666666666667,
+   "motion": 0.07353844169246646,
+   "image_change": 0.2388909606904963,
+   "visibility_change": 0.013973050942865162
+  },
+  {
+   "timestamp": 58.300000000000004,
+   "motion": 0.09377310254245239,
+   "image_change": 0.1068050473778028,
+   "visibility_change": 0.026778778497044742
+  },
+  {
+   "timestamp": 61.13333333333334,
+   "motion": 0.049875105544610186,
+   "image_change": 0.17949186133783657,
+   "visibility_change": 0.010008560840604197
+  },
+  {
+   "timestamp": 64.0,
+   "motion": 0.046846561591143636,
+   "image_change": 0.20648958626512806,
+   "visibility_change": 0.017097523219814226
+  },
+  {
+   "timestamp": 66.83333333333334,
+   "motion": 0.06693979266347687,
+   "image_change": 0.07711335491134254,
+   "visibility_change": 0.011434585796040952
+  },
+  {
+   "timestamp": 69.66666666666667,
+   "motion": 0.06314593301435406,
+   "image_change": 0.08019431935453607,
+   "visibility_change": 0.005148114269631299
+  },
+  {
+   "timestamp": 72.53333333333333,
+   "motion": 0.13545489726991275,
+   "image_change": 0.235228797260531,
+   "visibility_change": 0.002144549207242663
+  },
+  {
+   "timestamp": 75.36666666666667,
+   "motion": 0.05654142039590956,
+   "image_change": 0.12097359039309503,
+   "visibility_change": 0.02960455952716018
+  },
+  {
+   "timestamp": 78.2,
+   "motion": 0.04455987897551365,
+   "image_change": 0.16765010789004597,
+   "visibility_change": 0.01909208180880001
+  },
+  {
+   "timestamp": 81.06666666666668,
+   "motion": 0.06502755887043812,
+   "image_change": 0.18588247021296558,
+   "visibility_change": 0.03124859273853081
+  },
+  {
+   "timestamp": 83.9,
+   "motion": 0.0860127591706539,
+   "image_change": 0.14031944835350407,
+   "visibility_change": 0.017579744816586917
+  },
+  {
+   "timestamp": 86.73333333333333,
+   "motion": 0.05760214372830472,
+   "image_change": 0.15654001313444038,
+   "visibility_change": 0.012664649591894173
+  },
+  {
+   "timestamp": 89.60000000000001,
+   "motion": 0.04449561403508772,
+   "image_change": 0.13770897832817336,
+   "visibility_change": 0.012611408199643515
+  },
+  {
+   "timestamp": 92.43333333333334,
+   "motion": 0.056182451449479316,
+   "image_change": 0.1315020170747725,
+   "visibility_change": 0.03980157613284546
+  },
+  {
+   "timestamp": 95.26666666666667,
+   "motion": 0.06995015948963317,
+   "image_change": 0.20433307533539732,
+   "visibility_change": 0.05889705882352941
+  },
+  {
+   "timestamp": 98.13333333333334,
+   "motion": 0.1430831926071864,
+   "image_change": 0.1901911530162304,
+   "visibility_change": 0.0030664227413453315
+  },
+  {
+   "timestamp": 100.96666666666667,
+   "motion": 0.05310207336523126,
+   "image_change": 0.19572215967726803,
+   "visibility_change": 0.01546158176189133
+  },
+  {
+   "timestamp": 103.80000000000001,
+   "motion": 0.04990747255840135,
+   "image_change": 0.23503952059292618,
+   "visibility_change": 0.07870473308940801
+  },
+  {
+   "timestamp": 106.66666666666667,
+   "motion": 0.07252568252181256,
+   "image_change": 0.09281616474340933,
+   "visibility_change": 0.03490242987147013
+  },
+  {
+   "timestamp": 109.5,
+   "motion": 0.08037151702786377,
+   "image_change": 0.22870015948963318,
+   "visibility_change": 0.05565789473684213
+  },
+  {
+   "timestamp": 112.33333333333334,
+   "motion": 0.03381285767895675,
+   "image_change": 0.1738015995872033,
+   "visibility_change": 0.03419539825499579
+  },
+  {
+   "timestamp": 115.2,
+   "motion": 0.06208884510742096,
+   "image_change": 0.1863618772867999,
+   "visibility_change": 0.041165095224692694
+  },
+  {
+   "timestamp": 118.03333333333335,
+   "motion": 0.032727038183694525,
+   "image_change": 0.1019008584294962,
+   "visibility_change": 0.011331621165212469
+  },
+  {
+   "timestamp": 120.86666666666667,
+   "motion": 0.043958391969227885,
+   "image_change": 0.16845740688619945,
+   "visibility_change": 0.030515995872033075
+  },
+  {
+   "timestamp": 123.73333333333333,
+   "motion": 0.04778309409888357,
+   "image_change": 0.09882634393470308,
+   "visibility_change": 0.0007083216061544717
+  },
+  {
+   "timestamp": 126.56666666666668,
+   "motion": 0.06051845857960409,
+   "image_change": 0.20359613941270288,
+   "visibility_change": 0.03877275072708508
+  },
+  {
+   "timestamp": 129.4,
+   "motion": 0.018840651092973074,
+   "image_change": 0.05074068861994559,
+   "visibility_change": 0.0016739375175908178
+  },
+  {
+   "timestamp": 132.26666666666668,
+   "motion": 0.09890186696688245,
+   "image_change": 0.16930106013697346,
+   "visibility_change": 0.017124261187728695
+  },
+  {
+   "timestamp": 135.10000000000002,
+   "motion": 0.07891089689464303,
+   "image_change": 0.18270909559996246,
+   "visibility_change": 0.03586065766019331
+  },
+  {
+   "timestamp": 137.93333333333334,
+   "motion": 0.04891910591987992,
+   "image_change": 0.2613753635425462,
+   "visibility_change": 0.028005441411014187
+  },
+  {
+   "timestamp": 140.8,
+   "motion": 0.06539157050379961,
+   "image_change": 0.11465580729899615,
+   "visibility_change": 0.0006608265315695694
+  },
+  {
+   "timestamp": 143.63333333333335,
+   "motion": 0.0525817384370016,
+   "image_change": 0.2843479688526128,
+   "visibility_change": 0.024372830471901696
+  },
+  {
+   "timestamp": 146.46666666666667,
+   "motion": 0.026615653438408857,
+   "image_change": 0.10231013697344966,
+   "visibility_change": 0.024567149826437762
+  },
+  {
+   "timestamp": 149.33333333333334,
+   "motion": 0.10486935922694438,
+   "image_change": 0.1352460362135285,
+   "visibility_change": 0.011321653063139092
+  },
+  {
+   "timestamp": 152.16666666666669,
+   "motion": 0.04832758701566751,
+   "image_change": 0.10187681771273104,
+   "visibility_change": 0.037052959939956887
+  },
+  {
+   "timestamp": 155.0,
+   "motion": 0.08328665916127216,
+   "image_change": 0.09592726803640117,
+   "visibility_change": 0.0065992353879351096
+  },
+  {
+   "timestamp": 157.86666666666667,
+   "motion": 0.10918238108640585,
+   "image_change": 0.1417896847734309,
+   "visibility_change": 0.02676951402570593
+  },
+  {
+   "timestamp": 160.70000000000002,
+   "motion": 0.03654880851862276,
+   "image_change": 0.17971502955249086,
+   "visibility_change": 0.0607613284548269
+  },
+  {
+   "timestamp": 163.53333333333333,
+   "motion": 0.07449127497889108,
+   "image_change": 0.18742365606529693,
+   "visibility_change": 0.008955225630922214
+  },
+  {
+   "timestamp": 166.4,
+   "motion": 0.12241661975795103,
+   "image_change": 0.1428621352847359,
+   "visibility_change": 0.06475302561215873
+  },
+  {
+   "timestamp": 169.23333333333335,
+   "motion": 0.03839994370954123,
+   "image_change": 0.15527711323763954,
+   "visibility_change": 0.04056020733652316
+  },
+  {
+   "timestamp": 172.0666666666667,
+   "motion": 0.06459728867623604,
+   "image_change": 0.14146320011258093,
+   "visibility_change": 0.0145680880007506
+  },
+  {
+   "timestamp": 174.9,
+   "motion": 0.06288758326297025,
+   "image_change": 0.15776831785345719,
+   "visibility_change": 0.05165259405197481
+  },
+  {
+   "timestamp": 177.76666666666668,
+   "motion": 0.04484895393564124,
+   "image_change": 0.12573459048691246,
+   "visibility_change": 0.00534290271132376
+  },
+  {
+   "timestamp": 180.60000000000002,
+   "motion": 0.04385859367670513,
+   "image_change": 0.07869347499765456,
+   "visibility_change": 0.0018940566657284497
+  },
+  {
+   "timestamp": 183.43333333333334,
+   "motion": 0.04430422647527911,
+   "image_change": 0.10984391124871001,
+   "visibility_change": 0.0012396800825593135
+  },
+  {
+   "timestamp": 186.3,
+   "motion": 0.024704592363261096,
+   "image_change": 0.21430575100853738,
+   "visibility_change": 0.004653579135003305
+  },
+  {
+   "timestamp": 189.13333333333335,
+   "motion": 0.11696969696969697,
+   "image_change": 0.06999648184632705,
+   "visibility_change": 0.01654259311380052
+  },
+  {
+   "timestamp": 191.96666666666667,
+   "motion": 0.03835643587578572,
+   "image_change": 0.15745872033023736,
+   "visibility_change": 0.04216202270381836
+  },
+  {
+   "timestamp": 194.83333333333334,
+   "motion": 0.04021413828689371,
+   "image_change": 0.07107772774181444,
+   "visibility_change": 0.0011319073083779219
+  },
+  {
+   "timestamp": 197.66666666666669,
+   "motion": 0.07440179660380898,
+   "image_change": 0.1834825030490665,
+   "visibility_change": 0.06526503424336239
+  },
+  {
+   "timestamp": 200.5,
+   "motion": 0.09793027019420208,
+   "image_change": 0.1639784454451637,
+   "visibility_change": 0.02356775963974106
+  },
+  {
+   "timestamp": 203.36666666666667,
+   "motion": 0.07058225443287364,
+   "image_change": 0.20281557838446385,
+   "visibility_change": 0.02086323763955339
+  },
+  {
+   "timestamp": 206.20000000000002,
+   "motion": 0.04894044938549583,
+   "image_change": 0.1278474763110986,
+   "visibility_change": 0.03652676142227229
+  },
+  {
+   "timestamp": 209.03333333333336,
+   "motion": 0.10367283516277324,
+   "image_change": 0.13997736654470402,
+   "visibility_change": 0.05578208556149733
+  },
+  {
+   "timestamp": 211.9,
+   "motion": 0.0713380711136129,
+   "image_change": 0.16058225443287363,
+   "visibility_change": 0.09752474434749975
+  },
+  {
+   "timestamp": 214.73333333333335,
+   "motion": 0.035478117084154236,
+   "image_change": 0.08379221784407542,
+   "visibility_change": 0.029618045782906388
+  },
+  {
+   "timestamp": 217.5666666666667,
+   "motion": 0.07992928511117366,
+   "image_change": 0.14535005629045877,
+   "visibility_change": 0.028703325827938886
+  },
+  {
+   "timestamp": 220.43333333333334,
+   "motion": 0.0551779013040623,
+   "image_change": 0.09479923069706352,
+   "visibility_change": 0.03815953654188953
+  },
+  {
+   "timestamp": 223.26666666666668,
+   "motion": 0.058408621821934514,
+   "image_change": 0.1397339103105357,
+   "visibility_change": 0.05433753166338312
+  },
+  {
+   "timestamp": 226.10000000000002,
+   "motion": 0.12989562810770242,
+   "image_change": 0.2053556853363355,
+   "visibility_change": 0.02072884416924664
+  }
+ ],
+ "transcript_words": [
+  {
+   "start": 0.11,
+   "end": 0.59,
+   "word": " It's",
+   "confidence": 0.5944
+  },
+  {
+   "start": 0.59,
+   "end": 0.61,
+   "word": " all",
+   "confidence": 0.4141
+  },
+  {
+   "start": 0.61,
+   "end": 0.71,
+   "word": " you",
+   "confidence": 0.4075
+  },
+  {
+   "start": 0.71,
+   "end": 1.11,
+   "word": " recording,",
+   "confidence": 0.8613
+  },
+  {
+   "start": 1.13,
+   "end": 1.31,
+   "word": " I",
+   "confidence": 0.8784
+  },
+  {
+   "start": 1.31,
+   "end": 1.45,
+   "word": " just",
+   "confidence": 0.4824
+  },
+  {
+   "start": 1.45,
+   "end": 1.57,
+   "word": " put",
+   "confidence": 0.1943
+  },
+  {
+   "start": 1.57,
+   "end": 1.73,
+   "word": " off",
+   "confidence": 0.4014
+  },
+  {
+   "start": 1.73,
+   "end": 1.99,
+   "word": " his",
+   "confidence": 0.4441
+  },
+  {
+   "start": 1.99,
+   "end": 2.17,
+   "word": " force",
+   "confidence": 0.0781
+  },
+  {
+   "start": 2.17,
+   "end": 2.39,
+   "word": " right",
+   "confidence": 0.7563
+  },
+  {
+   "start": 2.39,
+   "end": 2.85,
+   "word": " here.",
+   "confidence": 0.583
+  },
+  {
+   "start": 5.43,
+   "end": 5.79,
+   "word": " You",
+   "confidence": 0.7378
+  },
+  {
+   "start": 5.79,
+   "end": 5.95,
+   "word": " gotta",
+   "confidence": 0.8022
+  },
+  {
+   "start": 5.95,
+   "end": 6.17,
+   "word": " go.",
+   "confidence": 0.9917
+  },
+  {
+   "start": 7.23,
+   "end": 7.59,
+   "word": " You're",
+   "confidence": 0.5764
+  },
+  {
+   "start": 7.59,
+   "end": 7.79,
+   "word": " maybe",
+   "confidence": 0.9585
+  },
+  {
+   "start": 7.79,
+   "end": 8.07,
+   "word": " holding",
+   "confidence": 0.8135
+  },
+  {
+   "start": 8.07,
+   "end": 8.41,
+   "word": " this",
+   "confidence": 0.9761
+  },
+  {
+   "start": 8.41,
+   "end": 8.59,
+   "word": " way.",
+   "confidence": 0.7935
+  },
+  {
+   "start": 14.3,
+   "end": 14.66,
+   "word": " Right",
+   "confidence": 0.7441
+  },
+  {
+   "start": 14.66,
+   "end": 14.86,
+   "word": " there?",
+   "confidence": 0.9922
+  },
+  {
+   "start": 15.52,
+   "end": 15.88,
+   "word": " What",
+   "confidence": 0.8843
+  },
+  {
+   "start": 15.88,
+   "end": 15.94,
+   "word": " does",
+   "confidence": 0.4189
+  },
+  {
+   "start": 15.94,
+   "end": 16.0,
+   "word": " it",
+   "confidence": 0.9692
+  },
+  {
+   "start": 16.0,
+   "end": 16.16,
+   "word": " look",
+   "confidence": 0.9966
+  },
+  {
+   "start": 16.16,
+   "end": 16.34,
+   "word": " like?",
+   "confidence": 0.9995
+  },
+  {
+   "start": 16.42,
+   "end": 16.48,
+   "word": " Let",
+   "confidence": 0.9268
+  },
+  {
+   "start": 16.48,
+   "end": 16.54,
+   "word": " me",
+   "confidence": 0.9268
+  },
+  {
+   "start": 16.54,
+   "end": 16.76,
+   "word": " see.",
+   "confidence": 0.9985
+  },
+  {
+   "start": 17.8,
+   "end": 18.08,
+   "word": " Okay,",
+   "confidence": 0.7529
+  },
+  {
+   "start": 18.26,
+   "end": 18.4,
+   "word": " yeah.",
+   "confidence": 0.9722
+  },
+  {
+   "start": 18.5,
+   "end": 18.76,
+   "word": " You",
+   "confidence": 0.2922
+  },
+  {
+   "start": 18.76,
+   "end": 18.86,
+   "word": " can",
+   "confidence": 0.9634
+  },
+  {
+   "start": 18.86,
+   "end": 18.86,
+   "word": " do",
+   "confidence": 0.065
+  },
+  {
+   "start": 18.86,
+   "end": 18.96,
+   "word": " it?",
+   "confidence": 0.8452
+  },
+  {
+   "start": 19.08,
+   "end": 19.3,
+   "word": " Yeah.",
+   "confidence": 0.1603
+  },
+  {
+   "start": 20.14,
+   "end": 20.46,
+   "word": " Okay.",
+   "confidence": 0.2502
+  },
+  {
+   "start": 20.98,
+   "end": 21.12,
+   "word": " You",
+   "confidence": 0.3904
+  },
+  {
+   "start": 21.12,
+   "end": 21.28,
+   "word": " can",
+   "confidence": 0.9941
+  },
+  {
+   "start": 21.28,
+   "end": 21.56,
+   "word": " move",
+   "confidence": 0.5171
+  },
+  {
+   "start": 21.56,
+   "end": 21.88,
+   "word": " it.",
+   "confidence": 0.5659
+  },
+  {
+   "start": 22.18,
+   "end": 22.42,
+   "word": " All",
+   "confidence": 0.3335
+  },
+  {
+   "start": 22.42,
+   "end": 23.9,
+   "word": " right.",
+   "confidence": 0.9976
+  },
+  {
+   "start": 24.14,
+   "end": 24.3,
+   "word": " No,",
+   "confidence": 0.8262
+  },
+  {
+   "start": 24.4,
+   "end": 24.54,
+   "word": " look",
+   "confidence": 0.6582
+  },
+  {
+   "start": 24.54,
+   "end": 24.72,
+   "word": " good.",
+   "confidence": 0.9902
+  },
+  {
+   "start": 27.57,
+   "end": 27.91,
+   "word": " Look",
+   "confidence": 0.4414
+  },
+  {
+   "start": 27.91,
+   "end": 28.07,
+   "word": " at",
+   "confidence": 0.2345
+  },
+  {
+   "start": 28.07,
+   "end": 28.21,
+   "word": " it.",
+   "confidence": 0.6963
+  },
+  {
+   "start": 28.93,
+   "end": 29.29,
+   "word": " Look",
+   "confidence": 0.5889
+  },
+  {
+   "start": 29.29,
+   "end": 29.45,
+   "word": " at",
+   "confidence": 0.4868
+  },
+  {
+   "start": 29.45,
+   "end": 29.53,
+   "word": " it",
+   "confidence": 0.4375
+  },
+  {
+   "start": 29.53,
+   "end": 29.69,
+   "word": " around.",
+   "confidence": 0.3416
+  },
+  {
+   "start": 29.81,
+   "end": 29.95,
+   "word": " You",
+   "confidence": 0.7896
+  },
+  {
+   "start": 29.95,
+   "end": 30.03,
+   "word": " know.",
+   "confidence": 0.2712
+  },
+  {
+   "start": 30.03,
+   "end": 30.37,
+   "word": " Recording",
+   "confidence": 0.5884
+  },
+  {
+   "start": 30.37,
+   "end": 30.51,
+   "word": " you",
+   "confidence": 0.8877
+  },
+  {
+   "start": 30.51,
+   "end": 30.67,
+   "word": " right",
+   "confidence": 0.9834
+  },
+  {
+   "start": 30.67,
+   "end": 30.89,
+   "word": " now.",
+   "confidence": 0.9961
+  },
+  {
+   "start": 31.05,
+   "end": 31.09,
+   "word": " Look",
+   "confidence": 0.7905
+  },
+  {
+   "start": 31.09,
+   "end": 31.25,
+   "word": " with",
+   "confidence": 0.4702
+  },
+  {
+   "start": 31.25,
+   "end": 31.39,
+   "word": " it",
+   "confidence": 0.8711
+  },
+  {
+   "start": 31.39,
+   "end": 31.55,
+   "word": " around.",
+   "confidence": 0.9971
+  },
+  {
+   "start": 32.57,
+   "end": 32.93,
+   "word": " You",
+   "confidence": 0.8799
+  },
+  {
+   "start": 32.93,
+   "end": 33.03,
+   "word": " can",
+   "confidence": 0.8774
+  },
+  {
+   "start": 33.03,
+   "end": 33.41,
+   "word": " leave",
+   "confidence": 0.7695
+  },
+  {
+   "start": 33.41,
+   "end": 33.53,
+   "word": " it",
+   "confidence": 0.9814
+  },
+  {
+   "start": 33.53,
+   "end": 33.73,
+   "word": " towards",
+   "confidence": 0.9116
+  },
+  {
+   "start": 33.73,
+   "end": 33.89,
+   "word": " you?",
+   "confidence": 0.9961
+  },
+  {
+   "start": 34.23,
+   "end": 34.43,
+   "word": " No,",
+   "confidence": 0.7905
+  },
+  {
+   "start": 34.49,
+   "end": 34.63,
+   "word": " it's",
+   "confidence": 0.9927
+  },
+  {
+   "start": 34.63,
+   "end": 34.77,
+   "word": " fine.",
+   "confidence": 0.9546
+  },
+  {
+   "start": 35.03,
+   "end": 35.03,
+   "word": " Just",
+   "confidence": 0.6157
+  },
+  {
+   "start": 35.03,
+   "end": 35.19,
+   "word": " keep",
+   "confidence": 0.6963
+  },
+  {
+   "start": 35.19,
+   "end": 35.35,
+   "word": " going.",
+   "confidence": 0.769
+  },
+  {
+   "start": 36.45,
+   "end": 36.83,
+   "word": " Is",
+   "confidence": 0.6553
+  },
+  {
+   "start": 36.83,
+   "end": 36.91,
+   "word": " it",
+   "confidence": 0.9092
+  },
+  {
+   "start": 36.91,
+   "end": 37.25,
+   "word": " recording?",
+   "confidence": 0.979
+  },
+  {
+   "start": 37.61,
+   "end": 37.61,
+   "word": " Mm",
+   "confidence": 0.0969
+  },
+  {
+   "start": 37.61,
+   "end": 37.75,
+   "word": "-hmm.",
+   "confidence": 0.8101
+  },
+  {
+   "start": 38.25,
+   "end": 38.47,
+   "word": " Is",
+   "confidence": 0.8413
+  },
+  {
+   "start": 38.47,
+   "end": 38.57,
+   "word": " it",
+   "confidence": 0.9219
+  },
+  {
+   "start": 38.57,
+   "end": 38.89,
+   "word": " gambling?",
+   "confidence": 0.1559
+  },
+  {
+   "start": 39.87,
+   "end": 40.45,
+   "word": " Okay.",
+   "confidence": 0.832
+  },
+  {
+   "start": 40.95,
+   "end": 41.21,
+   "word": " Is",
+   "confidence": 0.9722
+  },
+  {
+   "start": 41.21,
+   "end": 41.31,
+   "word": " it",
+   "confidence": 0.9922
+  },
+  {
+   "start": 41.31,
+   "end": 41.57,
+   "word": " clean?",
+   "confidence": 0.9155
+  },
+  {
+   "start": 42.77,
+   "end": 43.35,
+   "word": " You?",
+   "confidence": 0.2703
+  },
+  {
+   "start": 44.73,
+   "end": 45.31,
+   "word": " Yeah,",
+   "confidence": 0.6758
+  },
+  {
+   "start": 45.37,
+   "end": 45.37,
+   "word": " it",
+   "confidence": 0.4751
+  },
+  {
+   "start": 45.37,
+   "end": 45.57,
+   "word": " is.",
+   "confidence": 0.9946
+  },
+  {
+   "start": 45.85,
+   "end": 46.05,
+   "word": " You're",
+   "confidence": 0.7025
+  },
+  {
+   "start": 46.05,
+   "end": 46.15,
+   "word": " saying",
+   "confidence": 0.4617
+  },
+  {
+   "start": 46.15,
+   "end": 46.41,
+   "word": " you",
+   "confidence": 0.4492
+  },
+  {
+   "start": 46.41,
+   "end": 46.55,
+   "word": " know.",
+   "confidence": 0.4717
+  },
+  {
+   "start": 47.91,
+   "end": 48.49,
+   "word": " Sorry.",
+   "confidence": 0.7915
+  },
+  {
+   "start": 107.55,
+   "end": 107.79,
+   "word": " Okay,",
+   "confidence": 0.4014
+  },
+  {
+   "start": 107.89,
+   "end": 107.93,
+   "word": " do",
+   "confidence": 0.2615
+  },
+  {
+   "start": 107.93,
+   "end": 108.13,
+   "word": " you",
+   "confidence": 0.8696
+  },
+  {
+   "start": 108.13,
+   "end": 108.13,
+   "word": " wanna",
+   "confidence": 0.5166
+  },
+  {
+   "start": 108.13,
+   "end": 108.53,
+   "word": " do",
+   "confidence": 0.3994
+  },
+  {
+   "start": 108.53,
+   "end": 108.73,
+   "word": " it?",
+   "confidence": 0.8618
+  },
+  {
+   "start": 108.91,
+   "end": 109.01,
+   "word": " I'm",
+   "confidence": 0.4838
+  },
+  {
+   "start": 109.01,
+   "end": 109.29,
+   "word": " bored.",
+   "confidence": 0.2231
+  },
+  {
+   "start": 120.02,
+   "end": 120.6,
+   "word": " Try",
+   "confidence": 0.101
+  },
+  {
+   "start": 124.54,
+   "end": 125.12,
+   "word": " to",
+   "confidence": 0.3809
+  },
+  {
+   "start": 125.12,
+   "end": 125.18,
+   "word": " be",
+   "confidence": 0.9458
+  },
+  {
+   "start": 125.18,
+   "end": 125.42,
+   "word": " good.",
+   "confidence": 0.8789
+  },
+  {
+   "start": 126.46,
+   "end": 126.64,
+   "word": " No",
+   "confidence": 0.3418
+  },
+  {
+   "start": 126.64,
+   "end": 126.94,
+   "word": " way.",
+   "confidence": 0.8257
+  },
+  {
+   "start": 127.86,
+   "end": 128.44,
+   "word": " You",
+   "confidence": 0.3936
+  },
+  {
+   "start": 128.44,
+   "end": 128.72,
+   "word": " do?",
+   "confidence": 0.8359
+  },
+  {
+   "start": 216.76,
+   "end": 217.34,
+   "word": " Fine.",
+   "confidence": 0.0095
+  }
+ ]
+}

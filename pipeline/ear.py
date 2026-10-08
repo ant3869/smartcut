@@ -109,7 +109,7 @@ class WhisperEar:
 
 
 def merge_intervals(intervals: Iterable[Clip], *, gap: float = 0.25) -> list[Clip]:
-    ordered = sorted(intervals, key=lambda x: x.start)
+    ordered = sorted(intervals, key=lambda x: (x.start, x.end))
     merged: list[Clip] = []
     for item in ordered:
         if not merged or item.start > merged[-1].end + gap:

@@ -115,6 +115,18 @@ def scan_video(source: Path, duration: float, *, source_sha256=None,
 # Max silence bridged when coalescing transcript words into speech spans.
 SPEECH_MERGE_GAP_SECONDS = 1.0
 
+# Emission quantum for localization bounds (milliseconds). Decode times
+# (full-precision cv2 floats) mix with transcript times (millisecond words)
+# when seeds, resumption caps and pads combine them; emitting unquantized
+# bounds turns float representation into distinct start/end values across
+# otherwise-identical runs. Internal math keeps full precision; only
+# emitted window/span bounds are quantized. Never a tolerance, never a cut.
+TIMESTAMP_QUANTUM_SECONDS = 0.001
+
+
+def _quantize(timestamp: float) -> float:
+    return round(float(timestamp), 3)
+
 # Dense DURING evidence spacing: brief pauses hide between sparse samples, so
 # interior frame count scales with the target span. Bounded per-card so judge
 # payloads and decode budgets stay flat.
@@ -148,7 +160,12 @@ def speech_spans_from_words(words, duration):
             merged[-1][1] = max(merged[-1][1], b)
         else:
             merged.append([a, b])
-    return [{'start': a, 'end': b} for a, b in merged]
+    out = []
+    for a, b in merged:
+        ra, rb = _quantize(a), _quantize(b)
+        if ra < rb:
+            out.append({'start': ra, 'end': rb})
+    return out
 
 
 def valid_word_spans(words):
@@ -223,7 +240,7 @@ def propose_inspection_windows(signals, duration, *, max_windows=12, window_seco
         if reasons:
             changes.append((max(values[k] for k in reasons), t, reasons))
     ranked = []
-    for score, t, reasons in sorted(changes, key=lambda x: (-x[0], x[1])):
+    for score, t, reasons in sorted(changes, key=lambda x: (-x[0], x[1], tuple(x[2]))):
         if all(abs(t - old[1]) >= window_seconds / 2 for old in ranked):
             ranked.append((score, t, reasons))
     coverage_count = min(max_windows, max(1, math.ceil(max_windows * coverage_fraction)))
@@ -252,6 +269,17 @@ def propose_inspection_windows(signals, duration, *, max_windows=12, window_seco
             pieces = [(x, y) for aa, bb in pieces for x, y in
                       ([(aa, bb)] if q <= aa or p >= bb else [(aa, min(bb, p)), (max(aa, q), bb)]) if x < y]
         for x, y in pieces:
+            # Canonical emission: millisecond bounds so identical events from
+            # mixed float sources compare (and dedupe) identically every run.
+            x, y = _quantize(x), _quantize(y)
+            # ... clamped to the source: rounding must never push an edge
+            # past duration (the duration edge keeps the exact duration).
+            if x < 0:
+                x = 0.0
+            if y > duration:
+                y = duration
+            if not x < y:
+                continue
             old = next((w for w in selected if w['start'] == x and w['end'] == y), None)
             if old is not None:
                 old['reasons'] = sorted(set(old['reasons'] + reasons))
@@ -272,7 +300,7 @@ def propose_inspection_windows(signals, duration, *, max_windows=12, window_seco
     for a, b in spans:
         gaps[(a, b)] = a - previous_end
         previous_end = max(previous_end, b)
-    spans.sort(key=lambda ab: (-gaps[ab], ab[0]))
+    spans.sort(key=lambda ab: (-gaps[ab], ab[0], ab[1]))
     # Motion pick: the transcript slot goes to the resumption-shortlisted
     # span with the strongest nearby visual change, so an isolated tail
     # utterance does not displace mid-video coordination; the late-temporal
@@ -280,7 +308,7 @@ def propose_inspection_windows(signals, duration, *, max_windows=12, window_seco
     shortlist = spans[:min(3, len(spans))]
     shortlist.sort(key=lambda ab: (
         -max([score for score, t, _ in changes if abs(t - ab[0]) <= window_seconds / 2] + [0.]),
-        -gaps[ab], ab[0]))
+        -gaps[ab], ab[0], ab[1]))
     if shortlist:
         spans = shortlist[:1] + [s for s in spans if s != shortlist[0]]
     share = max(1, max_windows // 3)
@@ -306,7 +334,7 @@ def propose_inspection_windows(signals, duration, *, max_windows=12, window_seco
     if max_windows >= 4 and duration > window_seconds and len(selected) < max_windows:
         _add_span(max(0., duration - window_seconds), duration, 0., ['coverage'], max_windows)
     add(ranked, max_windows)
-    return sorted(selected, key=lambda w: (w['start'], w['end']))
+    return sorted(selected, key=lambda w: (w['start'], w['end'], tuple(w['reasons'])))
 
 
 def inspect_events(source: Path, duration: float, *, evidence_dir: Path,

@@ -189,7 +189,7 @@ def _parse(raw: Any, target: dict, frame_times: list[float]) -> dict | None:
 
 def _unreviewed(duration: float, reviewed: list[dict]) -> list[dict]:
     gaps, cursor = [], 0.0
-    for span in sorted(reviewed, key=lambda x: x["start"]):
+    for span in sorted(reviewed, key=lambda x: (x["start"], x["end"])):
         if span["start"] > cursor:
             gaps.append({"start": cursor, "end": span["start"]})
         cursor = max(cursor, span["end"])
