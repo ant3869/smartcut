@@ -126,8 +126,17 @@ def build_event_card(source_sha256, target, frames, *, observations=None,
 
 
 def candidate_from_card(card):
-    """Return an advisory inspection target, never a CUT or editable interval."""
+    """Return an advisory inspection target, never a CUT or editable interval.
+
+    start/end address the inspection window (coverage scaffolding, stable
+    for coverage probes); event_start/event_end carry the editorial
+    interval verdicts attach to (Round 11: event ⊆ inspection). Cards
+    built without an inspection window report the target for both.
+    """
+    window = card.get('inspection') or card['target']
     return {'event_card_id': card['id'], 'source_sha256': card['source_sha256'],
-            **card['target'], 'decision': 'INSPECT', 'advisory_only': True,
+            'start': window['start'], 'end': window['end'],
+            'event_start': card['target']['start'], 'event_end': card['target']['end'],
+            'decision': 'INSPECT', 'advisory_only': True,
             'confidence': None, 'reason': 'requires contextual editorial judgment',
             'evidence_refs': [f['evidence_ref'] for f in card['frames']]}

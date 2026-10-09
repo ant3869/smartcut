@@ -192,6 +192,58 @@ always spend. max_windows untouched, cost ≤ baseline.
   budget/set-cover, separate work); 004 0-4 majority miss is
   window geometry, not allocation.
 
+## Round 11: event/context separation, committed (2026-10-09)
+
+Fixed: event interval vs inspection-context conflation — broad model
+context no longer automatically becomes the edit interval. 004 head
+event localizes to [0.5, 6.6] inside window [0.5, 8.5]; previous
+confident false KEEP eliminated (UNCERTAIN 0.72/0.42, two runs).
+008 stable. Prompts, policy, thresholds, aggregation, budget unchanged.
+
+REMAINING, not fixed: the correctly shaped 004 setup event still
+returns UNCERTAIN, not CUT — now a judging/evidence-interpretation
+problem, not geometry.
+
+Root cause (traced, not guessed): the head coverage anchor [0.5, 8.5]
+holds 3.5s of gold CUT 0-4.0 plus 4.5s of gold KEEP 4.0-9.45, and
+candidate/event bounds WERE the window bounds
+(`candidate_from_card` copied `card['target']`; the judge partitions
+BEFORE/DURING/AFTER by target in `eye.py`). Whole-target counting
+therefore majority-votes the event together with neighboring footage:
+KEEP 0.88, gold CUT missed. Widening point: fixed +/-4s breadth around
+the synthetic head center 4.5 (0.5 offset + window_seconds/2), plus the
+event==window conflation downstream. No prompt change can fix that
+geometry; prompts already scope rule-3 interiors.
+
+Fix (geometry only, general, no timestamps, no prompt/threshold/label/
+budget changes): the window stays coverage scaffolding (propose output
+bit-identical, Round 9/10 tests untouched); the verdict attaches to a
+delimited event inside it. `event_start` == window start (leading edge
+stays seed-anchored); `event_end` for motion/coverage seeds = last
+strictly-interior change + RESUMPTION_PAD, clamped to the window
+(generalizes the transcript resumption-cap shape; transcript seeds own
+their ends and are never re-delimited; no interior change -> event ==
+window). Cards carry `target` = event plus `inspection` = window;
+frames/context/transcript still span the window (zero context loss);
+candidates keep window bounds (coverage probes stable) and add
+`event_start/end`. Evaluator audit: no metric change -- coverage probes
+compare gold to inspection windows AS coverage (labeled), event scoring
+compares gold to verdict bounds; both are needed, criteria untouched.
+
+- 004: [0.5,8.5]->event [0.5,6.6] (CUT 3.5 vs KEEP 2.6, CUT-dominated);
+  [8,16]->[8,14.133] (CUT 5.68 vs KEEP 1.45). After, native ON:
+  UNCERTAIN 0.72 (was confident KEEP 0.88; uncertainty cites the 3.7-4.5
+  framing shift) / card-2 CUT/CUT votes, critic 0.78 under the frozen
+  0.8 bar -> UNCERTAIN / native-resolved CUT unchanged.
+- 008 gate: key transcript card [107.55,113.333] untouched (transcript
+  seeds never re-delimited); native clip identical.
+- 002/003: same 12 windows/frames, transcript cards untouched, tail
+  cuts <=1.6s, no fragmentation, no clipped evidence.
+- 20-run determinism on real 004 signals; 8 focused tests
+  fail-before/pass-after; full suite 603 green.
+- Cost: zero new decodes, zero new model calls (pure O(signals) bound
+  math per window); frames per card identical.
+
 ## Round 9: deterministic localization, committed (2026-10-08)
 
 Root cause: evidence variance, not RNG — SRT vs Whisper words seeded

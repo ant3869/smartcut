@@ -115,6 +115,12 @@ def scan_video(source: Path, duration: float, *, source_sha256=None,
 # Max silence bridged when coalescing transcript words into speech spans.
 SPEECH_MERGE_GAP_SECONDS = 1.0
 
+# Score floors that mark a coarse sample as a visual change. A change is a
+# candidate event boundary, never a classification. Shared by seed
+# construction (propose_inspection_windows) and event delimiting
+# (_event_end_for_window) so both agree on where observable change lies.
+CHANGE_THRESHOLDS = (('motion', .04), ('image_change', .08), ('visibility_change', .08))
+
 # Emission quantum for localization bounds (milliseconds). Decode times
 # (full-precision cv2 floats) mix with transcript times (millisecond words)
 # when seeds, resumption caps and pads combine them; emitting unquantized
@@ -153,6 +159,62 @@ NEAR_DUPE_IOU = 0.5
 # O(max_windows * pool). The first head anchor is exempt so the opening
 # seconds always seed review.
 MIN_INFORMATION_GAIN_SECONDS = 1.0
+
+
+def _change_times(signals):
+    """Timestamps (full precision) where coarse scores cross CHANGE_THRESHOLDS.
+
+    Same change definition as seed construction: a change is a candidate
+    event boundary, never a classification. Invalid signals raise, mirroring
+    propose_inspection_windows validation.
+    """
+    times = []
+    for signal in signals:
+        t = signal['timestamp']
+        if type(t) not in (int, float) or not math.isfinite(t):
+            raise ValueError('invalid signal timestamp')
+        values = {k: signal.get(k) for k in ('motion', 'image_change', 'visibility_change')}
+        if any(v is not None and (type(v) not in (int, float) or not math.isfinite(v))
+               for v in values.values()):
+            raise ValueError('invalid signal score')
+        if any(values[k] is not None and values[k] >= threshold
+               for k, threshold in CHANGE_THRESHOLDS):
+            times.append(float(t))
+    return sorted(times)
+
+
+def _event_end_for_window(start, end, change_times, *, transcript_seeded):
+    """Delimit the editorial event end inside an inspection window.
+
+    Geometry invariants (Round 11):
+    - event_start == inspection start (leading edge stays seed-anchored:
+      transcript seeds are onset-anchored by construction; motion seeds keep
+      leading context for the model; coverage heads are pinned scaffolding).
+    - event_end <= inspection end. For motion/coverage seeds the window end
+      is fixed-breadth scaffolding (center +/- window_seconds/2), so the
+      event ends at the last observable interior change plus the standard
+      judgment-context pad -- the same resumption-cap shape transcript seeds
+      already use. Trailing stable footage stays inspected (frames, context
+      and transcript are unchanged) but leaves the verdict interval, so
+      judging reflects the event, not neighboring footage.
+    - transcript-seeded ends are owned by the resumption machinery (they
+      already end at a resumption or an explicit breadth cap) and are never
+      re-delimited here.
+    - no interior change -> event == window (no localization claim).
+    - emission only: quantized to TIMESTAMP_QUANTUM_SECONDS, clamped inside
+      (start, end]. Internal math keeps full precision.
+    """
+    if transcript_seeded:
+        return end
+    later = [t for t in change_times if start < t < end]
+    if not later:
+        return end
+    event_end = _quantize(min(end, max(later) + RESUMPTION_PAD_SECONDS))
+    if event_end > end:
+        event_end = end
+    if not start < event_end <= end:
+        return end
+    return event_end
 
 
 def speech_spans_from_words(words, duration):
@@ -261,7 +323,7 @@ def propose_inspection_windows(signals, duration, *, max_windows=12, window_seco
         if any(v is not None and (type(v) not in (int, float) or not math.isfinite(v) or not 0 <= v <= 1)
                for v in values.values()):
             raise ValueError('invalid signal score')
-        reasons = [k for k, threshold in [('motion', .04), ('image_change', .08), ('visibility_change', .08)]
+        reasons = [k for k, threshold in CHANGE_THRESHOLDS
                    if values[k] is not None and values[k] >= threshold]
         if reasons:
             changes.append((max(values[k] for k in reasons), t, reasons))
@@ -495,6 +557,7 @@ def inspect_events(source: Path, duration: float, *, evidence_dir: Path,
                               'no audio event detection or word alignment performed']}
     if not windows:
         return result
+    change_times = _change_times(scan['signals'])
     evidence_dir = Path(evidence_dir) / scan['source_sha256'][:16]
     evidence_dir.mkdir(parents=True, exist_ok=True)
     cap = cv2.VideoCapture(str(source))
@@ -506,6 +569,15 @@ def inspect_events(source: Path, duration: float, *, evidence_dir: Path,
     try:
         for target in windows:
             a, b = target['start'], target['end']
+            # Editorial event vs inspection context (Round 11): the window is
+            # coverage scaffolding; the verdict attaches to the event, which
+            # ends at the last observable interior change plus the standard
+            # pad. Frames, context and transcript still span the full window,
+            # so the models lose no evidence -- only the DURING partition
+            # (eye.py tags BEFORE/DURING/AFTER by target) narrows to the event.
+            event = {'start': a, 'end': _event_end_for_window(
+                a, b, change_times,
+                transcript_seeded='transcript' in target['reasons'])}
             before = max([t for t in times if t < a], default=0.)
             after = min([t for t in times if t >= b], default=max(0., duration - .001))
             # DURING density scales with the target span so brief pauses stop
@@ -544,12 +616,15 @@ def inspect_events(source: Path, duration: float, *, evidence_dir: Path,
                 if cache[requested] is not None:
                     frames.append(cache[requested])
             frames = sorted({f['timestamp']: f for f in frames}.values(), key=lambda f: f['timestamp'])
-            card = build_event_card(scan['source_sha256'], target, frames,
+            card = build_event_card(scan['source_sha256'], event, frames,
                       transcript_words=valid_word_spans(transcript_words), audio_events=audio_events, shots=shots)
+            card['inspection'] = {'start': a, 'end': b}
             card['inspection_reasons'] = target['reasons']
             card['limitations'].append('no semantic model extraction performed')
             result['event_cards'].append(card)
             candidate = candidate_from_card(card)
+            # candidate start/end stay on the inspection window (coverage
+            # probes stable); the editorial event rides in event_start/end.
             candidate['reasons'] = target['reasons']
             candidate['priority_score'] = target['priority_score']
             result['candidates'].append(candidate)
