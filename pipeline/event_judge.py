@@ -57,7 +57,44 @@ def event_prompt_for(card: dict) -> str:
     same native evidence independently.
     """
     block = native_evidence_block(card.get("native_video") if isinstance(card, dict) else None)
-    return EVENT_PROMPT + ("\n" + block if block else "")
+    return EVENT_PROMPT + PHASE_PROMPT_ADDENDUM + ("\n" + block if block else "")
+
+
+# Additive, optional phase-verdict channel (Round 13: decision granularity).
+# A single verdict cannot express setup-then-performance (or any internal
+# editorial state change) inside one event. Either role may add "phases":
+# 2-3 contiguous sub-verdicts partitioning the target exactly. Phases take
+# effect only when BOTH roles report the same partition with the same
+# per-phase verdicts (see validate_phases); anything else keeps the existing
+# whole-target verdict. The top-level verdict stays required as fallback.
+PHASE_PROMPT_ADDENDUM = """
+State count first: decide whether the target holds ONE editorial state or a
+SEQUENCE of distinct states. Preparation giving way to performance is TWO
+states; action giving way to a bounded interruption and then resuming is
+THREE; obstruction or adjustment giving way to usable footage is TWO;
+direct address to the viewer giving way to a distinct state is TWO. A single verdict
+spanning a state change is incorrect: when the BEFORE/DURING/AFTER evidence
+shows one pattern giving way to another, return phased verdicts below
+instead of majority-voting the whole target. When the target is a single
+state or the boundary is unclear, return only the top-level verdict.
+Phases: an array of 2-3 verdicts partitioning the target exactly (the first
+starts at the target start, the last ends at the target end, each interior
+boundary shared with the next phase; report bounds to millisecond
+precision). Shape: {"phases": [{"start": 10.0, "end": 14.0,
+"decision": "CUT", "category": "camera_setup", "confidence": 0.9,
+"reason": "...", "uncertainty": [], "evidence": [{"frame_time": 10.5,
+"observation": "..."}]}, {"start": 14.0, "end": 18.0, "decision": "KEEP",
+"category": "intended_content", ...}]}. Each phase carries its own decision
+(CUT or KEEP only), category, start, end, confidence (0-1), reason,
+uncertainty (list) and evidence (list of {frame_time, observation}), judged
+on that phase's span under the same rules above, citing sampled frame
+timestamps (a CUT phase cites at least two distinct frames including one
+inside the phase, plus BEFORE/AFTER context frames whenever the card
+supplies them). Judge each phase on its own span: an early phase keeps its
+own verdict even when it addresses the viewer. A phase with genuine uncertainty stays out: omit phases unless
+every phase is confident and settled. Always keep the top-level verdict as
+the whole-target judgment.
+"""
 
 
 def parse_event(raw, target, times, context):
@@ -87,6 +124,129 @@ def parse_event(raw, target, times, context):
         return parsed
     except (KeyError, IndexError, TypeError, ValueError, AttributeError):
         return None
+
+
+def _phase_raw(phase: dict):
+    """Wrap one phase verdict as a raw judge reply for the shared parser."""
+    return {"choices": [{"finish_reason": "stop",
+                         "message": {"content": json.dumps(phase)}}]}
+
+
+def validate_phases(proposer: dict | None, critic: dict | None, target: dict,
+                    frame_times: list, *, confidence_threshold: float = 0.8):
+    """Agreed phased verdicts for one card's internal state change, or None.
+
+    A split takes effect only when BOTH roles independently report the same
+    partition with the same per-phase verdicts: 2-3 phases covering the
+    target exactly on each side, corresponding phases overlapping by the
+    same-event bar with only the agreed intersection reported (a contested
+    gap between intersections stays unjudged), each reported phase at
+    least the pipeline's own independently-reviewable footage quantum,
+    confident uncertainty-free CUT/KEEP under the SHARED _parse rules
+    (run per phase, so CUT citation and bounds discipline is identical to
+    whole-target verdicts), same decision and category across roles, and no
+    NEED_MORE_EVIDENCE plea behind either reply (an UNCERTAIN whole-target
+    vote beside confident phases is coherent). Anything less keeps the
+    existing whole-target verdict. Pure and deterministic: identical replies
+    always validate identically.
+    """
+    from .adaptive_inspection import MIN_INFORMATION_GAIN_SECONDS
+    if not isinstance(proposer, dict) or not isinstance(critic, dict):
+        return None
+    # A decisive top-level vote is not required: an UNCERTAIN whole-target
+    # vote beside confident agreed phases is coherent ("parts clear, whole
+    # not") and is exactly the conflict phasing exists to resolve. Only
+    # NEED_MORE_EVIDENCE vetoes, since that reply declares its own evidence
+    # incomplete while claiming settled phases.
+    if (proposer.get("decision") == "NEED_MORE_EVIDENCE"
+            or critic.get("decision") == "NEED_MORE_EVIDENCE"):
+        return None
+    mine, theirs = proposer.get("phases"), critic.get("phases")
+    if not isinstance(mine, list) or not isinstance(theirs, list):
+        return None
+    if not (2 <= len(mine) <= 3) or len(mine) != len(theirs):
+        return None
+    try:
+        ta, tb = round(float(target["start"]), 3), round(float(target["end"]), 3)
+    except (KeyError, TypeError, ValueError):
+        return None
+
+    def bounds(phases):
+        out = []
+        for phase in phases:
+            if not isinstance(phase, dict):
+                return None
+            try:
+                a = round(float(phase["start"]), 3)
+                b = round(float(phase["end"]), 3)
+            except (KeyError, TypeError, ValueError):
+                return None
+            if not (math.isfinite(a) and math.isfinite(b) and a < b):
+                return None
+            out.append((a, b))
+        return out
+
+    first, second = bounds(mine), bounds(theirs)
+    if first is None or second is None or len(first) != len(second):
+        return None
+    if first[0][0] != ta or first[-1][1] != tb:
+        return None
+    if second[0][0] != ta or second[-1][1] != tb:
+        return None
+    for (a, b), (c, d) in zip(first, first[1:]):
+        if b != c or d <= c:
+            return None
+    for (a, b), (c, d) in zip(second, second[1:]):
+        if b != c or d <= c:
+            return None
+    if any(b - a < MIN_INFORMATION_GAIN_SECONDS for a, b in first + second):
+        return None
+    # Near-boundary agreement: corresponding phases intersect like the
+    # existing whole-verdict gate (max starts, min ends), and only the
+    # agreed overlap is reported. A contested gap between consecutive
+    # overlaps stays unjudged instead of forcing a false exact boundary.
+    # Each overlap must clear the same-event bar the native lane uses
+    # (_NATIVE_OVERLAP_MIN_SECONDS) and the reviewable-footage quantum,
+    # then re-pass the shared _parse rules on its reported span so
+    # citation discipline holds on what is actually claimed.
+    agreed = []
+    previous_end = None
+    for (a, b), (c, d), mine_phase, theirs_phase in zip(first, second, mine, theirs):
+        start, end = max(a, c), min(b, d)
+        if not (math.isfinite(start) and math.isfinite(end)):
+            return None
+        if end - start < _NATIVE_OVERLAP_MIN_SECONDS:
+            return None
+        if end - start < MIN_INFORMATION_GAIN_SECONDS:
+            return None
+        if previous_end is not None and start < previous_end:
+            return None
+        span = {"start": start, "end": end}
+        # The reported verdict IS the agreed overlap: re-validate the
+        # bound-adjusted copies so citation discipline holds on the span
+        # actually claimed, not the wider proposed one.
+        mine_parsed = _parse(_phase_raw({**mine_phase, "start": start, "end": end}),
+                             span, frame_times)
+        theirs_parsed = _parse(_phase_raw({**theirs_phase, "start": start, "end": end}),
+                               span, frame_times)
+        if mine_parsed is None or theirs_parsed is None:
+            return None
+        if (mine_parsed["decision"] not in ("CUT", "KEEP")
+                or mine_parsed["decision"] != theirs_parsed["decision"]
+                or mine_parsed["category"] != theirs_parsed["category"]):
+            return None
+        if (mine_parsed["uncertainty"] or theirs_parsed["uncertainty"]
+                or mine_parsed["confidence"] < confidence_threshold
+                or theirs_parsed["confidence"] < confidence_threshold):
+            return None
+        if mine_parsed["decision"] == "CUT" and mine_parsed["category"] in {
+                "intended_content", "uncertain"}:
+            return None
+        agreed.append({**mine_parsed, "start": start, "end": end,
+                       "confidence": min(mine_parsed["confidence"],
+                                         theirs_parsed["confidence"])})
+        previous_end = end
+    return agreed
 
 
 # Native event_type -> (active editorial rule label, stills CUT category).
@@ -305,6 +465,29 @@ def review_event_card(card, ask, *, enabled=False, reinspect=None, max_reinspect
     # confidence_threshold above is the GLOBAL stills gate (0.8, untouched);
     # the native resolution bar defaults to NATIVE_RESOLUTION_CONFIDENCE_THRESHOLD
     # (0.70, resolution path only) inside native_cut_resolution.
+    phased = validate_phases(proposer, other, current['target'],
+                             [f['timestamp'] for f in current['frames']],
+                             confidence_threshold=confidence_threshold)
+    if phased is not None:
+        # Agreed internal state change: each phase carries its own verdict
+        # instead of one verdict over the whole event. Phased verdicts never
+        # abstain (CUT/KEEP only), so the whole-card native resolution has
+        # nothing to resolve and is skipped rather than mixed across
+        # granularities.
+        decisions = [{**phase, 'phased': True, 'phase_index': index,
+                      'phase_count': len(phased),
+                      'parent_target': dict(current['target'])}
+                     for index, phase in enumerate(phased)]
+        result.update(decisions=decisions, judgments=[proposer, other],
+                      event_card=current, phased=True,
+                      whole_final=final,
+                      native_resolution_skipped='phased_verdicts_localize_event')
+        return result
+    result['phased'] = False
+    result['phase_status'] = ('no-phases-proposed'
+                              if not isinstance((proposer or {}).get('phases'), list)
+                              and not isinstance((other or {}).get('phases'), list)
+                              else 'phases-rejected')
     final = {**final, 'contradiction_keep': merge['contradiction_keep']}
     if merge['resolution'] is not None:
         final.update(merge['resolution'])
@@ -393,7 +576,7 @@ def review_adaptive_events(eye, source, duration, *, enabled=False, max_calls=12
                     if hashlib.sha256(Path(f['evidence_ref']).read_bytes()).hexdigest()!=f['frame_sha256']:
                         raise ValueError('Frame drift')
                     frames.append((f['timestamp'],cv2.imread(f['evidence_ref'])))
-                raw=eye.ask_editorial(frames,prompt=prompt,evidence={'target':current['target'],'event_card':current},role=role,max_tokens=8000)
+                raw=eye.ask_editorial(frames,prompt=prompt,evidence={'target':current['target'],'event_card':current},role=role,max_tokens=16000)
                 receipt.update(status='received',response=raw)
                 return raw
             except Exception as exc:

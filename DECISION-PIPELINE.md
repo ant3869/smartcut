@@ -192,6 +192,18 @@ always spend. max_windows untouched, cost ≤ baseline.
   budget/set-cover, separate work); 004 0-4 majority miss is
   window geometry, not allocation.
 
+## Round 13: guarded phase segmentation, committed (2026-10-10)
+
+Foundation, NOT a stability claim. Agreed-phases channel: judges may
+return 2-3 contiguous sub-verdicts, effective only on exact cross-role
+agreement; else whole-target verdict stands. Prompt example generalized
+(abstract state transitions, zero clip-derived content). max_tokens
+8000→16000 justified by 2-3× verdict-array footprint.
+
+- One real 004 run split CUT→KEEP near the transition. Live split
+  reliability still low (1/4) — blocker is proposal/agreement
+  consistency, not mechanism. 008/002/003 intact. Suite 626.
+
 ## Round 11: event/context separation, committed (2026-10-09)
 
 Fixed: event interval vs inspection-context conflation — broad model
