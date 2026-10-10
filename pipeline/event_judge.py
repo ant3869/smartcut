@@ -132,27 +132,25 @@ def _phase_raw(phase: dict):
                          "message": {"content": json.dumps(phase)}}]}
 
 
-def validate_phases(proposer: dict | None, critic: dict | None, target: dict,
-                    frame_times: list, *, confidence_threshold: float = 0.8):
-    """Agreed phased verdicts for one card's internal state change, or None.
+def validate_phases_with_reason(proposer: dict | None, critic: dict | None, target: dict,
+                                frame_times: list, *, confidence_threshold: float = 0.8):
+    """Agreed phased verdicts plus a deterministic machine-readable reason.
 
-    A split takes effect only when BOTH roles independently report the same
-    partition with the same per-phase verdicts: 2-3 phases covering the
-    target exactly on each side, corresponding phases overlapping by the
-    same-event bar with only the agreed intersection reported (a contested
-    gap between intersections stays unjudged), each reported phase at
-    least the pipeline's own independently-reviewable footage quantum,
-    confident uncertainty-free CUT/KEEP under the SHARED _parse rules
-    (run per phase, so CUT citation and bounds discipline is identical to
-    whole-target verdicts), same decision and category across roles, and no
-    NEED_MORE_EVIDENCE plea behind either reply (an UNCERTAIN whole-target
-    vote beside confident phases is coherent). Anything less keeps the
-    existing whole-target verdict. Pure and deterministic: identical replies
-    always validate identically.
+    Returns (agreed, reason): agreed is exactly what validate_phases
+    returns; reason is 'agreed' on success, else the first failing bar:
+    'no-judgments' | 'need-more-evidence-veto' | 'phases-missing' |
+    'phase-count' | 'target-coverage' | 'contiguity' | 'sliver-phase' |
+    'insufficient-overlap' | 'overlap-regression' | 'phase-parse' |
+    'verdict-mismatch' | 'confidence-or-uncertainty' |
+    'forbidden-category'. Pure and deterministic: identical replies always
+    validate identically with the same reason.
     """
     from .adaptive_inspection import MIN_INFORMATION_GAIN_SECONDS
+
+    def fail(code):
+        return None, code
     if not isinstance(proposer, dict) or not isinstance(critic, dict):
-        return None
+        return fail('no-judgments')
     # A decisive top-level vote is not required: an UNCERTAIN whole-target
     # vote beside confident agreed phases is coherent ("parts clear, whole
     # not") and is exactly the conflict phasing exists to resolve. Only
@@ -160,16 +158,16 @@ def validate_phases(proposer: dict | None, critic: dict | None, target: dict,
     # incomplete while claiming settled phases.
     if (proposer.get("decision") == "NEED_MORE_EVIDENCE"
             or critic.get("decision") == "NEED_MORE_EVIDENCE"):
-        return None
+        return fail('need-more-evidence-veto')
     mine, theirs = proposer.get("phases"), critic.get("phases")
     if not isinstance(mine, list) or not isinstance(theirs, list):
-        return None
+        return fail('phases-missing')
     if not (2 <= len(mine) <= 3) or len(mine) != len(theirs):
-        return None
+        return fail('phase-count')
     try:
         ta, tb = round(float(target["start"]), 3), round(float(target["end"]), 3)
     except (KeyError, TypeError, ValueError):
-        return None
+        return fail('target-coverage')
 
     def bounds(phases):
         out = []
@@ -188,19 +186,19 @@ def validate_phases(proposer: dict | None, critic: dict | None, target: dict,
 
     first, second = bounds(mine), bounds(theirs)
     if first is None or second is None or len(first) != len(second):
-        return None
+        return fail('phase-count')
     if first[0][0] != ta or first[-1][1] != tb:
-        return None
+        return fail('target-coverage')
     if second[0][0] != ta or second[-1][1] != tb:
-        return None
+        return fail('target-coverage')
     for (a, b), (c, d) in zip(first, first[1:]):
         if b != c or d <= c:
-            return None
+            return fail('contiguity')
     for (a, b), (c, d) in zip(second, second[1:]):
         if b != c or d <= c:
-            return None
+            return fail('contiguity')
     if any(b - a < MIN_INFORMATION_GAIN_SECONDS for a, b in first + second):
-        return None
+        return fail('sliver-phase')
     # Near-boundary agreement: corresponding phases intersect like the
     # existing whole-verdict gate (max starts, min ends), and only the
     # agreed overlap is reported. A contested gap between consecutive
@@ -214,13 +212,13 @@ def validate_phases(proposer: dict | None, critic: dict | None, target: dict,
     for (a, b), (c, d), mine_phase, theirs_phase in zip(first, second, mine, theirs):
         start, end = max(a, c), min(b, d)
         if not (math.isfinite(start) and math.isfinite(end)):
-            return None
+            return fail('insufficient-overlap')
         if end - start < _NATIVE_OVERLAP_MIN_SECONDS:
-            return None
+            return fail('insufficient-overlap')
         if end - start < MIN_INFORMATION_GAIN_SECONDS:
-            return None
+            return fail('insufficient-overlap')
         if previous_end is not None and start < previous_end:
-            return None
+            return fail('overlap-regression')
         span = {"start": start, "end": end}
         # The reported verdict IS the agreed overlap: re-validate the
         # bound-adjusted copies so citation discipline holds on the span
@@ -230,22 +228,46 @@ def validate_phases(proposer: dict | None, critic: dict | None, target: dict,
         theirs_parsed = _parse(_phase_raw({**theirs_phase, "start": start, "end": end}),
                                span, frame_times)
         if mine_parsed is None or theirs_parsed is None:
-            return None
+            return fail('phase-parse')
         if (mine_parsed["decision"] not in ("CUT", "KEEP")
                 or mine_parsed["decision"] != theirs_parsed["decision"]
                 or mine_parsed["category"] != theirs_parsed["category"]):
-            return None
+            return fail('verdict-mismatch')
         if (mine_parsed["uncertainty"] or theirs_parsed["uncertainty"]
                 or mine_parsed["confidence"] < confidence_threshold
                 or theirs_parsed["confidence"] < confidence_threshold):
-            return None
+            return fail('confidence-or-uncertainty')
         if mine_parsed["decision"] == "CUT" and mine_parsed["category"] in {
                 "intended_content", "uncertain"}:
-            return None
+            return fail('forbidden-category')
         agreed.append({**mine_parsed, "start": start, "end": end,
                        "confidence": min(mine_parsed["confidence"],
                                          theirs_parsed["confidence"])})
         previous_end = end
+    return agreed, 'agreed'
+
+
+def validate_phases(proposer: dict | None, critic: dict | None, target: dict,
+                    frame_times: list, *, confidence_threshold: float = 0.8):
+    """Agreed phased verdicts for one card's internal state change, or None.
+
+    A split takes effect only when BOTH roles independently report the same
+    partition with the same per-phase verdicts: 2-3 phases covering the
+    target exactly on each side, corresponding phases overlapping by the
+    same-event bar with only the agreed intersection reported (a contested
+    gap between intersections stays unjudged), each reported phase at
+    least the pipeline's own independently-reviewable footage quantum,
+    confident uncertainty-free CUT/KEEP under the SHARED _parse rules
+    (run per phase, so CUT citation and bounds discipline is identical to
+    whole-target verdicts), same decision and category across roles, and no
+    NEED_MORE_EVIDENCE plea behind either reply (an UNCERTAIN whole-target
+    vote beside confident phases is coherent). Anything less keeps the
+    existing whole-target verdict. Pure and deterministic: identical replies
+    always validate identically.
+    """
+    agreed, _ = validate_phases_with_reason(
+        proposer, critic, target, frame_times,
+        confidence_threshold=confidence_threshold)
     return agreed
 
 
@@ -465,9 +487,10 @@ def review_event_card(card, ask, *, enabled=False, reinspect=None, max_reinspect
     # confidence_threshold above is the GLOBAL stills gate (0.8, untouched);
     # the native resolution bar defaults to NATIVE_RESOLUTION_CONFIDENCE_THRESHOLD
     # (0.70, resolution path only) inside native_cut_resolution.
-    phased = validate_phases(proposer, other, current['target'],
-                             [f['timestamp'] for f in current['frames']],
-                             confidence_threshold=confidence_threshold)
+    phased, phase_reason = validate_phases_with_reason(
+        proposer, other, current['target'],
+        [f['timestamp'] for f in current['frames']],
+        confidence_threshold=confidence_threshold)
     if phased is not None:
         # Agreed internal state change: each phase carries its own verdict
         # instead of one verdict over the whole event. Phased verdicts never
@@ -480,10 +503,11 @@ def review_event_card(card, ask, *, enabled=False, reinspect=None, max_reinspect
                      for index, phase in enumerate(phased)]
         result.update(decisions=decisions, judgments=[proposer, other],
                       event_card=current, phased=True,
-                      whole_final=final,
+                      whole_final=final, phase_rejection=phase_reason,
                       native_resolution_skipped='phased_verdicts_localize_event')
         return result
     result['phased'] = False
+    result['phase_rejection'] = phase_reason
     result['phase_status'] = ('no-phases-proposed'
                               if not isinstance((proposer or {}).get('phases'), list)
                               and not isinstance((other or {}).get('phases'), list)

@@ -192,6 +192,15 @@ always spend. max_windows untouched, cost ≤ baseline.
   budget/set-cover, separate work); 004 0-4 majority miss is
   window geometry, not allocation.
 
+## Round 14: rejection diagnostics, committed (2026-10-10)
+
+NO behavioral change. 18 fresh runs: zero verdict/count/reversed
+conflicts — failures are proposal withholding, not disagreement.
+Boundaries cluster [3.8, 4.5]. All tolerance strategies add zero
+safe activations; exact agreement unchanged. Deterministic
+phase_rejection codes now explain non-activation. Round-13 path
+byte-identical. Suite 635.
+
 ## Round 13: guarded phase segmentation, committed (2026-10-10)
 
 Foundation, NOT a stability claim. Agreed-phases channel: judges may
