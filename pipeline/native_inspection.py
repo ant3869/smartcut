@@ -163,16 +163,32 @@ def attach_native_evidence(card: dict[str, Any], decision: dict[str, Any],
     """Return a copy of card with validated native-video evidence attached.
 
     Clip-relative event times are mapped to source time and range-checked
-    against the clip; invalid stamps raise instead of attaching garbage.
+    against the clip. A span that merely overflows the clip is CLAMPED to
+    the usable intersection and flagged (span_clamped: True) instead of
+    discarding the whole verdict: the rationale (summary, evidence,
+    contradicting evidence) stays available to the judge, and the original
+    clip-relative bounds stay in clip_event_start/clip_event_end for audit.
+    Only a span with no positive intersection with the clip, or an event
+    that ends before it starts, raises instead of attaching garbage.
     """
     event_start = to_source_time(decision["event_start_seconds"], clip_start)
     event_end = to_source_time(decision["event_end_seconds"], clip_start)
     clip_len = clip_end - clip_start
     if event_end < event_start:
         raise PipelineError("native-video event ends before it starts")
+    span_clamped = False
     if not (0 <= decision["event_start_seconds"] <= clip_len
             and 0 <= decision["event_end_seconds"] <= clip_len):
-        raise PipelineError("native-video event lies outside the uploaded clip interval")
+        # Overflow, not garbage: keep the usable intersection so the motion
+        # rationale still reaches the judge; flag it for audit. An event
+        # wholly outside what the model saw carries no usable span.
+        clamped_start = min(max(decision["event_start_seconds"], 0.0), clip_len)
+        clamped_end = min(max(decision["event_end_seconds"], 0.0), clip_len)
+        if not clamped_start < clamped_end:
+            raise PipelineError("native-video event lies outside the uploaded clip interval")
+        span_clamped = True
+        event_start = to_source_time(clamped_start, clip_start)
+        event_end = to_source_time(clamped_end, clip_start)
     enriched = copy.deepcopy(card)
     enriched["native_video"] = {
         "status": "available",
@@ -191,6 +207,7 @@ def attach_native_evidence(card: dict[str, Any], decision: dict[str, Any],
         "clip_event_end": decision["event_end_seconds"],
         "event_start": event_start,
         "event_end": event_end,
+        "span_clamped": span_clamped,
         "advisory_only": True,
     }
     return enriched
@@ -297,8 +314,17 @@ def inspect_card_native(
         block = transcript_block_for_native(card, clip_start, clip_end)
         effective_prompt = prompt + ("\n" + block if block else "")
         decision = adapter.analyze_video(file_id, effective_prompt, fps=None)
-        enriched = attach_native_evidence(card, decision, clip_start=clip_start,
-                                          clip_end=clip_end, model=adapter.model)
+        try:
+            enriched = attach_native_evidence(card, decision, clip_start=clip_start,
+                                              clip_end=clip_end, model=adapter.model)
+        except PipelineError as exc:
+            # The verdict was obtained and validated but its span is unusable:
+            # preserve it for audit instead of dropping it silently. The card
+            # still degrades to unavailable and the existing path continues.
+            failed = mark_native_unavailable(card, f"{type(exc).__name__}: {exc}",
+                                             request_counts=counts)
+            failed["native_video"]["dropped_decision"] = decision
+            return failed
         enriched["native_video"]["request_counts"] = dict(counts)
         return enriched
     except Exception as exc:

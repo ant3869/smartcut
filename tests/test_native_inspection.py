@@ -125,14 +125,66 @@ def test_clip_timestamps_map_to_source():
     assert (nv["event_start"], nv["event_end"]) == (9.0, 11.0)
 
 
-# 6: invalid timestamps rejected, never attached.
-def test_invalid_timestamps_rejected():
+# 6: reversed timestamps rejected, never attached; overflow is clamped, not dropped.
+def test_reversed_timestamps_rejected():
     bad = dict(NATIVE_CUT, event_start_seconds=5.0, event_end_seconds=1.0)
     with pytest.raises(PipelineError):
         ni.attach_native_evidence(_card(), bad, clip_start=8.0, clip_end=16.0)
+
+
+def test_overflow_span_clamped_not_dropped():
     outside = dict(NATIVE_CUT, event_start_seconds=0.0, event_end_seconds=99.0)
+    enriched = ni.attach_native_evidence(_card(), outside, clip_start=8.0, clip_end=16.0)
+    nv = enriched["native_video"]
+    assert nv["status"] == "available" and nv["span_clamped"] is True
+    assert (nv["event_start"], nv["event_end"]) == (8.0, 16.0)
+    assert (nv["clip_event_start"], nv["clip_event_end"]) == (0.0, 99.0)
+    assert nv["decision"] == "CUT" and nv["evidence"] == ["hand on device"]
+
+
+def test_in_range_span_unflagged():
+    enriched = ni.attach_native_evidence(_card(10.0, 14.0), dict(NATIVE_CUT),
+                                         clip_start=8.0, clip_end=16.0)
+    nv = enriched["native_video"]
+    assert nv["span_clamped"] is False
+    assert (nv["event_start"], nv["event_end"]) == (9.0, 11.0)
+
+
+def test_wholly_outside_span_still_rejected():
+    outside = dict(NATIVE_CUT, event_start_seconds=99.0, event_end_seconds=99.0)
     with pytest.raises(PipelineError):
         ni.attach_native_evidence(_card(), outside, clip_start=8.0, clip_end=16.0)
+
+
+def test_clamped_span_still_reaches_judge_block():
+    outside = dict(NATIVE_CUT, event_start_seconds=0.0, event_end_seconds=99.0)
+    card = ni.attach_native_evidence(_card(), outside, clip_start=8.0, clip_end=16.0)
+    block = native_evidence_block(card["native_video"])
+    assert "NATIVE VIDEO TEMPORAL EVIDENCE" in block
+    assert "decision: CUT" in block and "8.0 / 16.0" in block
+
+
+class OverflowAdapter(FakeAdapter):
+    def analyze_video(self, file_id, prompt, *, fps=None):
+        return dict(NATIVE_CUT, event_start_seconds=99.0, event_end_seconds=99.0)
+
+
+def test_unusable_span_preserved_for_audit(tmp_path, monkeypatch):
+    from pathlib import Path
+
+    def fake_run(cmd, *, timeout=1800.0, text=True):
+        Path(cmd[-1]).write_bytes(b"x")
+        from subprocess import CompletedProcess
+        return CompletedProcess(cmd, 0, "", "")
+
+    monkeypatch.setattr(ni, "run_checked", fake_run)
+    out = ni.inspect_card_native(_card(10.0, 14.0), "s.mp4", 100.0, enabled=True,
+                                 work_dir=tmp_path, adapter_factory=OverflowAdapter)
+    nv = out["native_video"]
+    assert nv["status"] == "unavailable"
+    assert nv.get("decision") is None  # not silently a verdict
+    assert nv["dropped_decision"]["decision"] == "CUT"
+    assert nv["dropped_decision"]["event_type"] == "camera_setup"
 
 
 # 7+8: provider failure -> unavailable (never KEEP), whole pass survives.
