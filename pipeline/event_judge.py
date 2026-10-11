@@ -76,11 +76,16 @@ direct address to the viewer giving way to a distinct state is TWO. A single ver
 spanning a state change is incorrect: when the BEFORE/DURING/AFTER evidence
 shows one pattern giving way to another, return phased verdicts below
 instead of majority-voting the whole target. When the target is a single
-state or the boundary is unclear, return only the top-level verdict.
+state, return only the top-level verdict. When you see one pattern giving
+way to another but cannot place the shared boundary even approximately
+from the sampled evidence, return only the top-level verdict.
 Phases: an array of 2-3 verdicts partitioning the target exactly (the first
 starts at the target start, the last ends at the target end, each interior
 boundary shared with the next phase; report bounds to millisecond
-precision). Shape: {"phases": [{"start": 10.0, "end": 14.0,
+precision as a reporting format: review reconciles near-boundary
+disagreement and leaves contested gaps unjudged, so place each interior
+boundary at your best estimate from the evidence rather than withholding
+phases over frame-exact placement). Shape: {"phases": [{"start": 10.0, "end": 14.0,
 "decision": "CUT", "category": "camera_setup", "confidence": 0.9,
 "reason": "...", "uncertainty": [], "evidence": [{"frame_time": 10.5,
 "observation": "..."}]}, {"start": 14.0, "end": 18.0, "decision": "KEEP",
@@ -90,9 +95,14 @@ uncertainty (list) and evidence (list of {frame_time, observation}), judged
 on that phase's span under the same rules above, citing sampled frame
 timestamps (a CUT phase cites at least two distinct frames including one
 inside the phase, plus BEFORE/AFTER context frames whenever the card
-supplies them). Judge each phase on its own span: an early phase keeps its
-own verdict even when it addresses the viewer. A phase with genuine uncertainty stays out: omit phases unless
-every phase is confident and settled. Always keep the top-level verdict as
+supplies them, including the frames showing what follows the phase
+(resumption, continued action, or target end: a CUT phase that never
+cites what comes after it cannot be reconciled). Judge each phase on its own span: an early phase keeps its
+own verdict even when it addresses the viewer. A phase whose own verdict,
+category, or confidence is genuinely unsettled stays out: omit phases
+unless every phase's verdict is confident and settled. Uncertainty about
+the exact boundary frame alone is not grounds for omission when both
+phases' verdicts are settled. Always keep the top-level verdict as
 the whole-target judgment.
 """
 

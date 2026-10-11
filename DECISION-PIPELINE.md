@@ -192,6 +192,18 @@ always spend. max_windows untouched, cost ≤ baseline.
   budget/set-cover, separate work); 004 0-4 majority miss is
   window geometry, not allocation.
 
+## Round 15: phase-contract clarification, committed (2026-10-10)
+
+NARROW CLAIM ONLY — not a proven rate improvement (2/12 vs 1/16
+inconclusive, p≈0.56). Removes the contradiction: proposal text
+demanded frame-exact boundaries while the gate reconciles ±0.7s.
+Existence decoupled from precision; gate/validator/fallback untouched.
+
+- 27 phase tests pass. Full suite 635 green. Gateway run sane.
+- KEY UNRESOLVED FINDING (not tuned here): native verdict variance
+  strongly predicts proposal withholding — native-CUT → propose,
+  native-KEEP → single-state.
+
 ## Round 14: rejection diagnostics, committed (2026-10-10)
 
 NO behavioral change. 18 fresh runs: zero verdict/count/reversed
