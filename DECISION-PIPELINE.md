@@ -192,6 +192,19 @@ always spend. max_windows untouched, cost ≤ baseline.
   budget/set-cover, separate work); 004 0-4 majority miss is
   window geometry, not allocation.
 
+## Round 20: production-cutter safety, committed (2026-10-12)
+
+SAFETY ONLY — restores REVIEW routing in the destructive path. All
+changes reduce auto-cut authority or fail safe. Advisory lane untouched.
+
+- Low-confidence culls don't auto-cut (0.45→0.8 measured floor).
+- Isolated/singleton rejects → REVIEW. Transcript culls → REVIEW
+  by default. Oversize spans → REVIEW. Empty plans fail safe.
+- Replay: false-CUT 236s→34s, deletions 3→0, recall 6/8 held
+  (descriptive only — NOT fresh-run proof). Suite 648.
+- Residual to watch: adjacent sub-50% cross-modality spans may merge
+  post-demotion; total-deletion guard backstops.
+
 ## Round 15: phase-contract clarification, committed (2026-10-10)
 
 NARROW CLAIM ONLY — not a proven rate improvement (2/12 vs 1/16

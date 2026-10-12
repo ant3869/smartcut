@@ -39,7 +39,7 @@ def test_duplicate_source_v1_is_excluded():
 def test_production_threshold_not_raw_advisories(tmp_path):
     eye = AuditedEye({'lm_studio_url': 'http://localhost:1/v1', 'vision_model': 'test',
                       'vision_cull_confidence_threshold': .6}, '', tmp_path, 1, 12, 999999999)
-    items = [eye._observation_from_payload({'keep': False, 'confidence': .59, 'score': 1}, 2),
+    items = [eye._observation_from_payload({'keep': False, 'confidence': .59, 'score': 1}, 4),
              eye._observation_from_payload({'keep': False, 'confidence': .6, 'score': 1}, 6)]
     cuts = eye.cull_intervals(items, 10)
     assert [(x.start, x.end) for x in cuts] == [(5, 7)]

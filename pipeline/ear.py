@@ -107,6 +107,29 @@ class WhisperEar:
                 found.append(Clip(max(0.0, segment.start - padding), segment.end + padding, ("transcript-waste",)))
         return merge_intervals(found)
 
+    def review_intervals(self, transcript: Transcript, terms: Iterable[str], *, padding: float = 0.75) -> list[Clip]:
+        """Turn bare word-matches into REVIEW intervals, never auto-cuts.
+
+        A transcript word-match carries no speaker attribution: the words could
+        be performer speech, on-set coordination, song lyrics, TTS narration,
+        TV background, or a whisper hallucination. Without diarization or a
+        second corroborating modality, deleting on a word-match is unsafe, so
+        matches surface for human review with the firing term preserved in the
+        reason. Matching semantics (word boundaries, padding, merge) are
+        identical to `waste_intervals`; only the lane changes.
+        """
+        patterns = [
+            (term.strip(), re.compile(rf"\b{re.escape(term.strip())}\b", re.IGNORECASE))
+            for term in terms if term.strip()
+        ]
+        found: list[Clip] = []
+        for segment in transcript.segments:
+            matched = sorted({term for term, pattern in patterns if pattern.search(segment.text)})
+            if matched:
+                reasons = tuple(f"transcript-review:{term}" for term in matched)
+                found.append(Clip(max(0.0, segment.start - padding), segment.end + padding, reasons))
+        return merge_intervals(found)
+
 
 def merge_intervals(intervals: Iterable[Clip], *, gap: float = 0.25) -> list[Clip]:
     ordered = sorted(intervals, key=lambda x: (x.start, x.end))

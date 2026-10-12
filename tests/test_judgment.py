@@ -69,10 +69,12 @@ def test_replan_uses_original_frame_sampling_interval(planned_source):
     brain.config.update(frame_interval_seconds=2, waste_terms=[])
     old["frame_interval"] = 0.5
     old["observations"] = [asdict(Observation(4, 3, "Camera obstruction", False,
+                                              cull_reason="obstructed", confidence=0.9)),
+                           asdict(Observation(4.5, 3, "Camera obstruction", False,
                                               cull_reason="obstructed", confidence=0.9))]
     write_json(job / "edit_plan.json", old)
     plan = brain.replan_review(source)
-    assert [(c["start"], c["end"]) for c in plan["waste_intervals"]] == [(3.75, 4.25)]
+    assert [(c["start"], c["end"]) for c in plan["waste_intervals"]] == [(3.75, 4.75)]
     assert plan["frame_interval"] == 0.5
 
 
@@ -85,17 +87,22 @@ def test_short_protected_keep_survives_segment_floor(planned_source):
     write_json(job / "editor_review.json", {"source_sha256": old["source_sha256"],
         "timebase": "source", "cut_intervals": [], "keep_intervals": [{"start": 5, "end": 5.2}]})
     plan = brain.replan_review(source)
-    assert [(c["start"], c["end"]) for c in plan["clips"]] == [(5.0, 5.2)]
+    # The 5-12 model span covers 7/12s of the video, so it fails safe to
+    # REVIEW instead of auto-cutting; the human keep region stays retained.
+    assert [(c["start"], c["end"]) for c in plan["clips"]] == [(5.0, 12.0)]
+    assert any("failsafe-large-span" in r["reasons"] for r in plan["review_intervals"])
 
 
 def test_disabled_multi_pass_cannot_apply_saved_temporal_keep(planned_source):
     brain, source, job, old = planned_source
     brain.config.update(multi_pass_enabled=False, multi_pass_apply_cuts=True, waste_terms=[])
     old["observations"] = [asdict(Observation(4, 3, "Camera obstruction", False,
+        cull_reason="obstructed", confidence=0.9)),
+        asdict(Observation(6, 3, "Camera obstruction", False,
         cull_reason="obstructed", confidence=0.9))]
     write_json(job / "edit_plan.json", old)
     plan = brain.replan_review(source)
-    assert [(c["start"], c["end"]) for c in plan["waste_intervals"]] == [(3.0, 5.0)]
+    assert [(c["start"], c["end"]) for c in plan["waste_intervals"]] == [(3.0, 7.0)]
 
 
 def test_temporal_keep_verdict_can_veto_a_first_pass_cut(planned_source):

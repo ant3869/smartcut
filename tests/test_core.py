@@ -1154,17 +1154,35 @@ def test_low_confidence_rejections_go_to_review_not_waste(tmp_path):
     )
     observations = [
         Observation(4.0, 2.0, "maybe adjusting camera", False, False, "camera_adjustment", 0.4),
-        Observation(8.0, 2.0, "definitely adjusting camera", False, False, "camera_adjustment", 0.9),
+        Observation(6.0, 2.0, "definitely adjusting camera", False, False, "camera_adjustment", 0.9),
     ]
 
     waste = eye.cull_intervals(observations, 12.0)
     review = eye.review_intervals(observations, 12.0)
 
-    assert waste == [Clip(7.0, 9.0, ("vision-cull:camera_adjustment",))]
+    assert waste == [Clip(5.0, 7.0, ("vision-cull:camera_adjustment",))]
     assert review == [Clip(3.0, 5.0, ("vision-review:camera_adjustment", "confidence:0.40"))]
 
 
-def test_old_cached_observations_without_confidence_default_to_certain(tmp_path):
+def test_isolated_rejection_routes_to_review_despite_high_confidence(tmp_path):
+    eye = VisionEye(
+        base_url="http://127.0.0.1:1234/v1",
+        model="test-model",
+        interval=2.0,
+        cache_dir=tmp_path,
+    )
+    observations = [
+        Observation(4.0, 2.0, "maybe adjusting camera", False, False, "camera_adjustment", 0.99),
+        Observation(20.0, 2.0, "kept", True, False, "", 0.9),
+    ]
+
+    assert eye.cull_intervals(observations, 24.0) == []
+    assert eye.review_intervals(observations, 24.0) == [
+        Clip(3.0, 5.0, ("vision-review:camera_adjustment", "confidence:0.99"))
+    ]
+
+
+def test_old_cached_observations_without_confidence_default_to_review(tmp_path):
     eye = VisionEye(
         base_url="http://127.0.0.1:1234/v1",
         model="test-model",
@@ -1176,9 +1194,10 @@ def test_old_cached_observations_without_confidence_default_to_certain(tmp_path)
 
     observation = eye._observation_from_payload(legacy, 4.0)
 
-    assert observation.confidence == 1.0
-    assert eye.cull_intervals([observation], 10.0) == [
-        Clip(3.0, 5.0, ("vision-cull:camera_adjustment",))
+    assert observation.confidence == 0.0
+    assert eye.cull_intervals([observation], 10.0) == []
+    assert eye.review_intervals([observation], 10.0) == [
+        Clip(3.0, 5.0, ("vision-review:camera_adjustment", "confidence:0.00"))
     ]
 
 
@@ -1187,8 +1206,8 @@ def test_confidence_percent_values_are_normalized():
 
     assert _as_confidence(85) == 0.85
     assert _as_confidence(0.7) == 0.7
-    assert _as_confidence(None) == 1.0
-    assert _as_confidence("bad") == 1.0
+    assert _as_confidence(None) == 0.0
+    assert _as_confidence("bad") == 0.0
 
 
 def test_batch_prompt_asks_for_confidence_and_temporal_context(monkeypatch, tmp_path):

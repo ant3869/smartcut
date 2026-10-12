@@ -209,7 +209,7 @@ class VisionEye:
         cache_dir: Path,
         max_width: int = 1024,
         batch_size: int = 4,
-        cull_confidence_threshold: float = 0.6,
+        cull_confidence_threshold: float = 0.8,
         api_key: str | None = None,
     ):
         self.base_url = base_url.rstrip("/")
@@ -674,14 +674,32 @@ class VisionEye:
             clips.append(Clip(highlight.clip.start, highlight.clip.end, reasons))
         return clips
 
-    def cull_intervals(self, observations: list[Observation], duration: float) -> list[Clip]:
+    # Verdicts whose reason can never authorize an automatic cut, no matter how
+    # confident the model sounds. "blank_or_obstructed" means no person is
+    # visible -- which also describes graphics, titles, B-roll, and
+    # out-of-domain footage -- so auto-cutting it deletes whole videos.
+    # Excluded verdicts always surface via `review_intervals` instead.
+    DEFAULT_CULL_EXCLUDED_REASONS: tuple[str, ...] = ("blank_or_obstructed",)
+
+    def cull_intervals(
+        self,
+        observations: list[Observation],
+        duration: float,
+        *,
+        exclude_reasons: tuple[str, ...] | list[str] = (),
+    ) -> list[Clip]:
         """Turn confident rejected verdicts into bounded removal intervals.
 
         Only verdicts at or above `cull_confidence_threshold` become waste.
         Uncertain rejections surface via `review_intervals` instead of being
-        cut silently.
+        cut silently, as do verdicts whose reason is in `exclude_reasons`
+        (they route to review at any confidence). A lone rejection with no
+        agreeing neighbor never auto-cuts either -- one frame alone cannot
+        authorize a deletion.
         """
         half_window = self.interval / 2.0
+        excluded = set(exclude_reasons)
+        isolated = self._isolated_reject_timestamps(observations)
         rejected = [
             Clip(
                 round(max(0.0, item.timestamp - half_window), 3),
@@ -690,12 +708,25 @@ class VisionEye:
             )
             for item in observations
             if not item.keep and item.confidence >= self.cull_confidence_threshold
+            and (item.cull_reason or "") not in excluded
+            and item.timestamp not in isolated
         ]
         return self._merge_clips(rejected)
 
-    def review_intervals(self, observations: list[Observation], duration: float) -> list[Clip]:
-        """Rejected verdicts too uncertain to cut on, kept on the plan for review."""
+    def review_intervals(
+        self,
+        observations: list[Observation],
+        duration: float,
+        *,
+        include_reasons: tuple[str, ...] | list[str] = (),
+    ) -> list[Clip]:
+        """Rejected verdicts too uncertain to cut on, kept on the plan for review.
+
+        Verdicts whose reason is in `include_reasons` (e.g. person-presence
+        verdicts that must never auto-cut) route here at any confidence.
+        """
         half_window = self.interval / 2.0
+        isolated = self._isolated_reject_timestamps(observations)
         uncertain = [
             Clip(
                 round(max(0.0, item.timestamp - half_window), 3),
@@ -706,9 +737,29 @@ class VisionEye:
                 ),
             )
             for item in observations
-            if not item.keep and item.confidence < self.cull_confidence_threshold
+            if not item.keep and (
+                item.confidence < self.cull_confidence_threshold
+                or (item.cull_reason or "") in set(include_reasons)
+                or item.timestamp in isolated
+            )
         ]
         return self._merge_clips(uncertain)
+
+    def _isolated_reject_timestamps(self, observations: list[Observation]) -> set[float]:
+        """Timestamps of rejected verdicts with no agreeing neighbor.
+
+        A lone rejection (no other reject within 1.5 sample intervals) is
+        uncorroborated: transient blur, a handling wobble, or a one-frame
+        misread. It routes to REVIEW and never auto-cuts, however confident.
+        """
+        rejected = sorted(item.timestamp for item in observations if not item.keep)
+        window = self.interval * 1.5
+        return {
+            timestamp
+            for timestamp in rejected
+            if not any(other != timestamp and abs(other - timestamp) <= window
+                       for other in rejected)
+        }
 
     @staticmethod
     def _merge_clips(clips: list[Clip]) -> list[Clip]:
@@ -1085,11 +1136,16 @@ def _parse_score(value: Any, timestamp: float) -> float:
 
 
 def _as_confidence(value: Any) -> float:
-    """Parse the model's 0-1 verdict confidence; old payloads default to certain."""
+    """Parse the model's 0-1 verdict confidence; unparseable means unknown.
+
+    A missing or malformed confidence must never authorize a deletion, so it
+    parses to 0.0 (routes to REVIEW) rather than certainty. Percent-scale
+    answers (>1) are still normalized.
+    """
     try:
         result = float(value)
     except (TypeError, ValueError):
-        return 1.0
+        return 0.0
     if result > 1.0:  # model answered in percent rather than a fraction
         result /= 100.0
     return max(0.0, min(1.0, result))

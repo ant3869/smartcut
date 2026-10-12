@@ -60,7 +60,7 @@ class PipelineBrain:
             cache_dir=self.analysis_dir,
             max_width=int(config.get("vision_max_width", 512)),
             batch_size=int(config.get("vision_batch_size", 4)),
-            cull_confidence_threshold=float(config.get("vision_cull_confidence_threshold", 0.6)),
+            cull_confidence_threshold=float(config.get("vision_cull_confidence_threshold", 0.8)),
             api_key=vision_api_key,
         )
         self.blade = FfmpegBlade(
@@ -133,15 +133,35 @@ class PipelineBrain:
                 threshold=float(self.config.get("scene_threshold", 27.0)),
                 refresh=refresh,
             )
+        transcript_auto_cut = bool(self.config.get("transcript_waste_auto_cut", False))
+        waste_padding = float(self.config.get("waste_padding_seconds", 0.75))
+        # Bare transcript word-matches carry no speaker attribution (performer
+        # speech vs coordination vs lyrics/music vs TTS/background), so they
+        # route to REVIEW unless transcript auto-cuts are explicitly enabled.
         transcript_waste = (
             self.ear.waste_intervals(
                 transcript,
                 self.config.get("waste_terms", []),
-                padding=float(self.config.get("waste_padding_seconds", 0.75)),
+                padding=waste_padding,
             )
-            if audio_evidence else []
+            if audio_evidence and transcript_auto_cut else []
         )
-        visual_waste = self.eye.cull_intervals(observations, duration)
+        transcript_review = (
+            self.ear.review_intervals(
+                transcript,
+                self.config.get("waste_terms", []),
+                padding=waste_padding,
+            )
+            if audio_evidence and not transcript_auto_cut else []
+        )
+        # Person-presence verdicts ("no person visible") also describe
+        # graphics, titles, B-roll, and out-of-domain footage; they must never
+        # auto-cut at any confidence and route to REVIEW instead.
+        cull_excluded = tuple(self.config.get(
+            "vision_cull_excluded_reasons",
+            list(VisionEye.DEFAULT_CULL_EXCLUDED_REASONS),
+        ))
+        visual_waste = self.eye.cull_intervals(observations, duration, exclude_reasons=cull_excluded)
         editorial_waste, editorial_keep = _load_editorial_policy(
             job, duration=duration, source_sha256=source_sha256,
         )
@@ -225,6 +245,16 @@ class PipelineBrain:
         model_waste = _exclude_protected_intervals(
             transcript_waste + visual_waste + temporal_waste, editorial_keep + temporal_keeps,
         )
+        # Fail-safe: no single model-proposed span may auto-delete a large
+        # fraction of the video (the whole-video deletion mode). Oversize
+        # spans route to REVIEW. Human cuts stay authoritative and are never
+        # demoted. (Story-map `known_waste` above is computed pre-demotion;
+        # it feeds advisory candidates only, never cuts.)
+        demoted_spans: list[Clip] = []
+        model_waste, demoted_spans = _demote_oversize_waste(
+            model_waste, duration,
+            fraction=float(self.config.get("max_auto_waste_span_fraction", 0.5)),
+        )
         # Never bridge a human-protected gap while merging automatic proposals.
         waste = merge_intervals(model_waste + editorial_waste, gap=0.0)
         min_seconds = float(self.config.get("full_edit_min_segment_seconds", 0.5))
@@ -234,6 +264,32 @@ class PipelineBrain:
         dropped_slivers: list[Clip] = []
         clips = subtract_intervals([Clip(0.0, duration)], waste, min_seconds=min_seconds,
                                    dropped=dropped_slivers, protected=editorial_keep + temporal_keeps)
+        # Fail-safe: model proposals must never leave zero clips. If they do,
+        # keep the full timeline and route the model waste to REVIEW instead.
+        # A human cut covering everything is still respected (clips stay empty
+        # and render keeps refusing) -- only model proposals fail open.
+        full_keep_fallback = False
+        if not clips and model_waste:
+            demoted_spans = merge_intervals(demoted_spans + model_waste, gap=0.0)
+            waste = merge_intervals(editorial_waste, gap=0.0)
+            dropped_slivers = []
+            clips = subtract_intervals([Clip(0.0, duration)], waste, min_seconds=min_seconds,
+                                       dropped=dropped_slivers,
+                                       protected=editorial_keep + temporal_keeps)
+            full_keep_fallback = True
+        eye_review = self.eye.review_intervals(observations, duration, include_reasons=cull_excluded)
+        demoted_review = [
+            Clip(item.start, item.end, tuple(item.reasons) + ("failsafe-large-span",))
+            for item in demoted_spans
+        ]
+        combined_review = merge_intervals(eye_review + transcript_review + demoted_review, gap=0.0)
+        if full_keep_fallback:
+            combined_review = merge_intervals(
+                combined_review + [
+                    Clip(0.0, duration, ("failsafe-full-keep",)),
+                ],
+                gap=0.0,
+            )
         clips = _tag_dark_overlaps(clips, self.eye.dark_intervals(observations, duration))
         persona = _resolve_persona(self.config)
         report("Voice · captioning" if "voice" in stages else "Voice · skipped", 90)
@@ -260,7 +316,7 @@ class PipelineBrain:
                              else old.get("targeted_review", [])),
             model_disagreements=(self.eye.model_disagreements if "eye" in stages
                                  else old.get("model_disagreements", [])),
-            review_intervals=self.eye.review_intervals(observations, duration),
+            review_intervals=combined_review,
             frame_interval=self.eye.interval,
         )
         self._write_plan(job, plan, fingerprint)
@@ -803,6 +859,28 @@ def _load_editorial_policy(job: Path, *, duration: float, source_sha256: str) ->
         return sorted(result, key=lambda clip: clip.start)
 
     return parse("cut_intervals", "editor-review"), parse("keep_intervals", "editor-keep")
+
+
+def _demote_oversize_waste(
+    waste: list[Clip], duration: float, *, fraction: float,
+) -> tuple[list[Clip], list[Clip]]:
+    """Split model-proposed waste into applied cuts and REVIEW demotions.
+
+    Any single span covering >= `fraction` of the video can never auto-cut
+    (whole-video deletion mode): it is returned in the demoted list for the
+    review queue. Small spans stay applied. Content-free: only span length
+    relative to duration matters, never what the span depicts.
+    """
+    if duration <= 0 or not (0 < fraction < 1):
+        return list(waste), []
+    kept: list[Clip] = []
+    demoted: list[Clip] = []
+    for item in waste:
+        if item.duration >= fraction * duration:
+            demoted.append(item)
+        else:
+            kept.append(item)
+    return kept, demoted
 
 
 def _exclude_protected_intervals(waste: list[Clip], protected: list[Clip]) -> list[Clip]:
