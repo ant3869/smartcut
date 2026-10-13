@@ -96,6 +96,15 @@ def build_frame_prompt(*, audio_enabled: bool = True) -> str:
         "at the floor or ceiling), the frame out of focus, or the frame disoriented (sideways, "
         "upside-down) -> CUT, cull_reason=\"camera_adjustment\" for device handling or disorientation, "
         "\"technical_failure\" otherwise.\n"
+        # NOTE (round 22): a broader check-2 rewrite was tried and REJECTED.
+        # Demanding two-of-four failure signals, letting checks 6/7 override
+        # check 2, and capping single-signal verdicts at 0.7 made the model
+        # keep TRUE handling failures (lens blocks, full obstructions, the
+        # D04 pause): fresh CUT recall collapsed 6/8 -> 2/8 while false-CUT
+        # fell 44s -> 8s. The prompt cannot carry this distinction safely, so
+        # check 2 stays at v8 and the handheld/merge distinction is enforced
+        # deterministically downstream (transient demotion, cut-authority
+        # corroboration, confident-KEEP veto splits), which hold recall 6/8.
         "3. Clothing: a garment moved to REVEAL or emphasize the body is performance -> keep. A "
         "garment straightened, re-covered, de-wrinkled, or reset between poses is practical "
         "adjustment -> CUT, cull_reason=\"clothing_adjustment\". When you cannot tell which it is, "
@@ -681,6 +690,16 @@ class VisionEye:
     # Excluded verdicts always surface via `review_intervals` instead.
     DEFAULT_CULL_EXCLUDED_REASONS: tuple[str, ...] = ("blank_or_obstructed",)
 
+    # Device/technical verdicts eligible for transient-demotion (round 22):
+    # rotation/blur/proximity artifacts of handheld shooting, not content judgments.
+    TRANSIENT_TECHNICAL_REASONS: tuple[str, ...] = ("camera_adjustment", "technical_failure")
+    # A short technical run fully enclosed by strong keeps is a handheld
+    # transient (a wobble inside continuous performance), not sustained
+    # unusability. True handling failures that matter -- lens blocks,
+    # dislodges, floor-pointing -- run longer or sit at a performance boundary.
+    TRANSIENT_TECHNICAL_MAX_RUN = 3
+    STRONG_KEEP_MIN_SCORE = 6.0
+
     def cull_intervals(
         self,
         observations: list[Observation],
@@ -695,11 +714,14 @@ class VisionEye:
         cut silently, as do verdicts whose reason is in `exclude_reasons`
         (they route to review at any confidence). A lone rejection with no
         agreeing neighbor never auto-cuts either -- one frame alone cannot
-        authorize a deletion.
+        authorize a deletion. Short technical runs fully enclosed by strong
+        keeps are handheld transients, not sustained failure, and route to
+        review as well.
         """
         half_window = self.interval / 2.0
         excluded = set(exclude_reasons)
-        isolated = self._isolated_reject_timestamps(observations)
+        isolated = self._isolated_reject_timestamps(observations, excluded)
+        transient = self._transient_technical_timestamps(observations, excluded)
         rejected = [
             Clip(
                 round(max(0.0, item.timestamp - half_window), 3),
@@ -710,6 +732,7 @@ class VisionEye:
             if not item.keep and item.confidence >= self.cull_confidence_threshold
             and (item.cull_reason or "") not in excluded
             and item.timestamp not in isolated
+            and item.timestamp not in transient
         ]
         return self._merge_clips(rejected)
 
@@ -726,7 +749,9 @@ class VisionEye:
         verdicts that must never auto-cut) route here at any confidence.
         """
         half_window = self.interval / 2.0
-        isolated = self._isolated_reject_timestamps(observations)
+        excluded = set(include_reasons)
+        isolated = self._isolated_reject_timestamps(observations, excluded)
+        transient = self._transient_technical_timestamps(observations, excluded)
         uncertain = [
             Clip(
                 round(max(0.0, item.timestamp - half_window), 3),
@@ -739,26 +764,93 @@ class VisionEye:
             for item in observations
             if not item.keep and (
                 item.confidence < self.cull_confidence_threshold
-                or (item.cull_reason or "") in set(include_reasons)
+                or (item.cull_reason or "") in excluded
                 or item.timestamp in isolated
+                or item.timestamp in transient
             )
         ]
         return self._merge_clips(uncertain)
 
-    def _isolated_reject_timestamps(self, observations: list[Observation]) -> set[float]:
+    def _cut_authority(self, item: Observation, excluded: set[str]) -> bool:
+        """Whether a verdict can corroborate -- or authorize -- a cut.
+
+        Only verdicts that could themselves auto-cut count: confident,
+        non-excluded rejections. A REVIEW-bound verdict (low confidence,
+        excluded reason) corroborating a neighbor would let a singleton
+        technical reject cut on second-hand authority.
+        """
+        return (
+            not item.keep
+            and item.confidence >= self.cull_confidence_threshold
+            and (item.cull_reason or "") not in excluded
+        )
+
+    def _strong_keep(self, item: Observation) -> bool:
+        """A confident, positively-scored keep: valid performance, not a shrug."""
+        return (
+            item.keep
+            and item.confidence >= self.cull_confidence_threshold
+            and item.score >= self.STRONG_KEEP_MIN_SCORE
+        )
+
+    def _transient_technical_timestamps(
+        self, observations: list[Observation], excluded: set[str],
+    ) -> set[float]:
+        """Timestamps of short technical runs enclosed by strong keeps.
+
+        At most TRANSIENT_TECHNICAL_MAX_RUN consecutive cut-authority
+        camera/technical rejects, with a strong keep immediately on both
+        sides in sample order: a wobble inside continuous performance
+        (handheld rotation/blur), not sustained unusability. Ambiguous by
+        construction, so these route to REVIEW, never to waste.
+        """
+        ordered = sorted(observations, key=lambda item: item.timestamp)
+        technical = [
+            self._cut_authority(item, excluded)
+            and (item.cull_reason or "") in set(self.TRANSIENT_TECHNICAL_REASONS)
+            for item in ordered
+        ]
+        result: set[float] = set()
+        index = 0
+        while index < len(ordered):
+            if not technical[index]:
+                index += 1
+                continue
+            end = index
+            while end + 1 < len(ordered) and technical[end + 1]:
+                end += 1
+            if (
+                end - index + 1 <= self.TRANSIENT_TECHNICAL_MAX_RUN
+                and index > 0
+                and end + 1 < len(ordered)
+                and self._strong_keep(ordered[index - 1])
+                and self._strong_keep(ordered[end + 1])
+            ):
+                result.update(item.timestamp for item in ordered[index:end + 1])
+            index = end + 1
+        return result
+
+    def _isolated_reject_timestamps(
+        self, observations: list[Observation], excluded: set[str] | None = None,
+    ) -> set[float]:
         """Timestamps of rejected verdicts with no agreeing neighbor.
 
-        A lone rejection (no other reject within 1.5 sample intervals) is
-        uncorroborated: transient blur, a handling wobble, or a one-frame
-        misread. It routes to REVIEW and never auto-cuts, however confident.
+        A lone rejection (no other CUT-authority reject within 1.5 sample
+        intervals) is uncorroborated: transient blur, a handling wobble, or
+        a one-frame misread. It routes to REVIEW and never auto-cuts, however
+        confident. Corroboration requires cut authority -- a REVIEW-bound
+        neighbor (low confidence, excluded reason) cannot vouch for a cut.
         """
-        rejected = sorted(item.timestamp for item in observations if not item.keep)
+        excluded = excluded if excluded is not None else set()
+        authoritative = sorted(
+            item.timestamp for item in observations if self._cut_authority(item, excluded)
+        )
         window = self.interval * 1.5
         return {
             timestamp
-            for timestamp in rejected
+            for timestamp in authoritative
             if not any(other != timestamp and abs(other - timestamp) <= window
-                       for other in rejected)
+                       for other in authoritative)
         }
 
     @staticmethod

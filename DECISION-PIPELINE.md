@@ -192,6 +192,14 @@ always spend. max_windows untouched, cost ≤ baseline.
   budget/set-cover, separate work); 004 0-4 majority miss is
   window geometry, not allocation.
 
+## Round 22: handheld-transient demotion, committed (2026-10-13)
+
+SAFETY TRADE, explicit: false CUT 44s→14s (3 remain), KEEP
+0.960→0.987, deletions 0, recall 6/8→5/8 — lost U01 tail sits in
+REVIEW, visible. ~30s of auto-deleted performance removed for
+~2.5s of true CUT needing human eyes. Prompt v8 byte-identical,
+advisory lane untouched, nothing clip-specific. Suite 656.
+
 ## Round 20: production-cutter safety, committed (2026-10-12)
 
 SAFETY ONLY — restores REVIEW routing in the destructive path. All

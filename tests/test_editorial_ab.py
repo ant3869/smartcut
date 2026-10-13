@@ -42,7 +42,12 @@ def test_production_threshold_not_raw_advisories(tmp_path):
     items = [eye._observation_from_payload({'keep': False, 'confidence': .59, 'score': 1}, 4),
              eye._observation_from_payload({'keep': False, 'confidence': .6, 'score': 1}, 6)]
     cuts = eye.cull_intervals(items, 10)
-    assert [(x.start, x.end) for x in cuts] == [(5, 7)]
+    # Round 22: corroboration requires cut authority, so the sub-threshold
+    # 4s verdict cannot vouch for 6s; the lone authoritative rejection is
+    # isolated and routes to REVIEW instead of cutting.
+    assert [(x.start, x.end) for x in cuts] == []
+    review = eye.review_intervals(items, 10)
+    assert [(x.start, x.end) for x in review] == [(3, 7)]
 
 
 def test_budget_prevents_network(tmp_path):

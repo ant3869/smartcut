@@ -245,6 +245,15 @@ class PipelineBrain:
         model_waste = _exclude_protected_intervals(
             transcript_waste + visual_waste + temporal_waste, editorial_keep + temporal_keeps,
         )
+        # Merge-guard (round 22): a confident model KEEP is a veto point --
+        # no model-proposed span may contain one in its interior. Merging
+        # (here or upstream) must never bridge valid performance to build a
+        # destructive CUT. Veto splits apply after the final merge (which
+        # would otherwise re-join them) but never cut inside a human
+        # editorial span. Slivers below the segment floor stay visible via
+        # dropped_slivers downstream. Human editorial cuts are authoritative
+        # and never split.
+        model_waste = merge_intervals(model_waste, gap=0.0)
         # Fail-safe: no single model-proposed span may auto-delete a large
         # fraction of the video (the whole-video deletion mode). Oversize
         # spans route to REVIEW. Human cuts stay authoritative and are never
@@ -257,6 +266,12 @@ class PipelineBrain:
         )
         # Never bridge a human-protected gap while merging automatic proposals.
         waste = merge_intervals(model_waste + editorial_waste, gap=0.0)
+        waste = _split_waste_at_confident_keeps(
+            waste,
+            observations,
+            confidence_threshold=float(self.config.get("vision_cull_confidence_threshold", 0.8)),
+            protected=editorial_waste,
+        )
         min_seconds = float(self.config.get("full_edit_min_segment_seconds", 0.5))
         # Conservative like the reference cut: keep the whole timeline and only remove
         # identified waste, instead of picking isolated highlight windows that discard
@@ -881,6 +896,40 @@ def _demote_oversize_waste(
         else:
             kept.append(item)
     return kept, demoted
+
+
+def _split_waste_at_confident_keeps(
+    waste: list[Clip], observations: list, *, confidence_threshold: float,
+    protected: list[Clip] | None = None,
+) -> list[Clip]:
+    """Split model-proposed waste at confident model-KEEP timestamps.
+
+    No automatic span may contain a confident keep in its interior: such a
+    span was necessarily built by merging across valid performance (touching
+    windows, cross-modality overlap, or padding). Splitting at the veto
+    point keeps the corroborated parts while freeing the kept frame.
+    Boundary touches (keep exactly at a span edge) are unaffected, as are
+    veto points inside a `protected` (human-authoritative) span.
+    """
+    vetoes = sorted(
+        item.timestamp for item in observations
+        if item.keep and item.confidence >= confidence_threshold
+    )
+    guard = list(protected or [])
+    if not vetoes:
+        return list(waste)
+    result: list[Clip] = []
+    for item in waste:
+        cuts = [
+            point for point in vetoes
+            if item.start < point < item.end
+            and not any(keep.start < point < keep.end for keep in guard)
+        ]
+        bounds = [item.start, *cuts, item.end]
+        for start, end in zip(bounds, bounds[1:]):
+            if end > start:
+                result.append(Clip(round(start, 3), round(end, 3), item.reasons))
+    return sorted(result, key=lambda clip: clip.start)
 
 
 def _exclude_protected_intervals(waste: list[Clip], protected: list[Clip]) -> list[Clip]:

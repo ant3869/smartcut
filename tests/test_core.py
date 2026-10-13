@@ -1160,8 +1160,40 @@ def test_low_confidence_rejections_go_to_review_not_waste(tmp_path):
     waste = eye.cull_intervals(observations, 12.0)
     review = eye.review_intervals(observations, 12.0)
 
-    assert waste == [Clip(5.0, 7.0, ("vision-cull:camera_adjustment",))]
-    assert review == [Clip(3.0, 5.0, ("vision-review:camera_adjustment", "confidence:0.40"))]
+    # Round 22: corroboration requires cut authority. The 0.4 verdict routes
+    # to REVIEW and cannot vouch for its neighbor, so the lone authoritative
+    # 0.9 rejection is isolated and also routes to REVIEW -- one frame alone
+    # cannot authorize a deletion, even second-hand. Touching REVIEW windows
+    # merge (harmless: the lane is non-destructive).
+    assert waste == []
+    assert review == [
+        Clip(3.0, 7.0, ("confidence:0.40", "confidence:0.90",
+                        "vision-review:camera_adjustment")),
+    ]
+
+
+def test_adjacent_authoritative_rejections_still_corroborate(tmp_path):
+    eye = VisionEye(
+        base_url="http://127.0.0.1:1234/v1",
+        model="test-model",
+        interval=2.0,
+        cache_dir=tmp_path,
+    )
+    observations = [
+        Observation(4.0, 7.0, "performing, strong", True, False, "", 0.95),
+        Observation(6.0, 2.0, "handling camera", False, False, "camera_adjustment", 0.9),
+        Observation(8.0, 2.0, "still handling camera", False, False, "camera_adjustment", 0.9),
+        Observation(10.0, 2.0, "still handling camera", False, False, "camera_adjustment", 0.9),
+        Observation(12.0, 2.0, "still handling camera", False, False, "camera_adjustment", 0.9),
+        Observation(14.0, 7.0, "performing again, strong", True, False, "", 0.95),
+    ]
+
+    # Four in a row is sustained unusability, not a transient: stays waste
+    # even though strong keeps stand on both sides.
+    assert eye.cull_intervals(observations, 20.0) == [
+        Clip(5.0, 13.0, ("vision-cull:camera_adjustment",))
+    ]
+    assert eye.review_intervals(observations, 20.0) == []
 
 
 def test_isolated_rejection_routes_to_review_despite_high_confidence(tmp_path):
