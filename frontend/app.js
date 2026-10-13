@@ -7,6 +7,7 @@ import * as Theme from './theme.mjs';
 import {icon} from './icons.mjs';
 import * as Tasks from './tasks.mjs';
 import * as PP from './passes-panel.mjs';
+import * as RQ from './review-queue.mjs';
 
 const $ = (q, root=document) => root.querySelector(q);
 const $$ = (q, root=document) => [...root.querySelectorAll(q)];
@@ -22,8 +23,8 @@ const state = {jobs:[],inbox:[],config:{},schema:{},job:null,source:null,sourceI
   bin:'all',view:'list',search:'',sort:'name',checked:new Set(),tab:'effects',focus:'source',sourceTime:0,time:0,
   in:0,out:2,zoom:1,snap:true,linked:true,tool:'select',dirty:false,editVersion:0,undo:[],redo:[],saving:null,
   gateway:'untested',tasks:[],taskCallbacks:new Map(),handled:new Set(),programMode:'sequence',playing:false,shuttle:0,
-  error:null,retry:null,reviewEditing:null,loading:false,meta:new Map(),waves:new Map(),proposal:-1,
-  prefs:{lanes:true,cc:true,hud:true,auto:{fromPlan:false,waste:true,silence:true,threshold:-40,minSilence:.6,pad:.12,gaps:true,scenes:false,highlights:true,highlightCount:5}},
+  error:null,retry:null,reviewEditing:null,loading:false,meta:new Map(),waves:new Map(),proposal:-1,queue:-1,lastReview:null,
+  prefs:{lanes:true,overlay:true,cc:true,hud:true,auto:{fromPlan:false,waste:true,silence:true,threshold:-40,minSilence:.6,pad:.12,gaps:true,scenes:false,highlights:true,highlightCount:5}},
   passes:null};
 try{const saved=JSON.parse(localStorage.getItem('anna.cutroom.prefs')||'{}');state.prefs={...state.prefs,...saved,auto:{...state.prefs.auto,...saved.auto}};}catch{}
 const savePrefs=()=>{try{localStorage.setItem('anna.cutroom.prefs',JSON.stringify(state.prefs));}catch{}};
@@ -61,7 +62,7 @@ function applyThemeNow(){
 }
 function setTheme(mode){state.themeMode=Theme.normalize(mode);try{localStorage.setItem(Theme.THEME_KEY,state.themeMode);}catch{}applyThemeNow();}
 function syncToggles(){
-  for(const [action,on] of [['toggle-lanes',state.prefs.lanes],['toggle-cc',state.prefs.cc],['toggle-hud',state.prefs.hud]])
+  for(const [action,on] of [['toggle-lanes',state.prefs.lanes],['toggle-overlay',state.prefs.overlay],['toggle-cc',state.prefs.cc],['toggle-hud',state.prefs.hud]])
     $$(`[data-action="${action}"]`).forEach(b=>{if(b.closest('.menu-content'))b.setAttribute('aria-checked',on);else{b.classList.toggle('active',on);b.setAttribute('aria-pressed',on);}});
 }
 function fail(error,retry=null) {
@@ -87,7 +88,7 @@ function shell(){
         ${menu('Markers',[['in','Mark In · I'],['out','Mark Out · O'],['marker','Add sequence marker · M'],['auto-scenes','Markers at scene changes'],['auto-highlights','Markers at AI highlights'],['clear-markers','Clear all markers']])}
         ${menu('Auto',[['auto-edit','Auto-edit sequence…'],['auto-waste','Remove AI-flagged waste'],['auto-silence','Remove silences…'],['auto-gaps','Close all gaps'],['auto-fill','Fill frame'],['transitions','Add transitions…'],['clear-transitions','Clear transitions'],['watermark','Add watermark…'],['remove-watermark','Remove watermark'],['audio-cleanup','Audio Cleanup…'],['beat-cuts','Beat Cuts…'],['music-bed','Music Bed…'],['highlights','Generate highlights…'],['shorts','Generate shorts…'],['next-proposal','Next AI proposal · N']])}
         ${menu('Export',[['export-edl','EDL cut list'],['export-csv','CSV edit list'],['export-otio','OpenTimelineIO'],['export-srt','Captions for this edit (.srt)'],['export-mp4','Render video…']])}
-        ${menu('View',[...Theme.MODES.map(mode=>[`theme-${mode}`,`Theme · ${Theme.label(mode)}`,`role="menuitemradio" data-theme-option="${mode}" aria-checked="${mode===state.themeMode}"`]),['-'],['toggle-lanes','AI lanes on timeline','role="menuitemcheckbox"'],['toggle-cc','Live captions','role="menuitemcheckbox"'],['toggle-hud','AI verdict overlay','role="menuitemcheckbox"']])}
+        ${menu('View',[...Theme.MODES.map(mode=>[`theme-${mode}`,`Theme · ${Theme.label(mode)}`,`role="menuitemradio" data-theme-option="${mode}" aria-checked="${mode===state.themeMode}"`]),['-'],['toggle-lanes','AI lanes on timeline','role="menuitemcheckbox"'],['toggle-overlay','AI decision overlay','role="menuitemcheckbox"'],['toggle-cc','Live captions','role="menuitemcheckbox"'],['toggle-hud','AI verdict overlay','role="menuitemcheckbox"']])}
         ${menu('Help',[['shortcuts','Keyboard shortcuts · ?']])}
       </nav>
       <div class="header-status"><span id="model-label"></span><span id="gateway-status">${badge('Not tested')}</span>${button('connection',withIcon('plug','Test connection'),'quiet')}</div>
@@ -122,9 +123,9 @@ function shell(){
         </section>
       </section>
       <aside class="panel inspector-panel" aria-label="Inspector"><div class="inspector-tabs" role="tablist">${[['effects','Effects','sliders-horizontal'],['review','Review','list-checks'],['pipeline','Pipeline','workflow']].map(([key,label,name])=>`<button role="tab" aria-selected="${key==='effects'}" data-tab="${key}">${icon(name)}<span>${label}</span></button>`).join('')}</div><div id="inspector-content"></div></aside>
-      <section class="panel timeline-panel" aria-label="Timeline"><div class="timeline-heading"><h2>${icon('clapperboard')}Sequence <span id="sequence-name">01</span></h2><div class="timeline-tools">${button('select-tool',icon('mouse-pointer-2'),'icon-button active','title="Selection tool · V" aria-label="Selection tool"')}${button('razor-tool',icon('scissors'),'icon-button','title="Razor tool" aria-label="Razor tool"')}${button('split',withIcon('scissors-line-dashed','Split'),'quiet','title="Split at playhead · C"')}${button('ripple',withIcon('arrow-left-to-line','Ripple'),'quiet','title="Ripple delete · Shift+Delete"')}<span class="transport-divider"></span>${button('snap',withIcon('magnet','Snap'),'quiet active','aria-pressed="true"')}${button('linked',withIcon('link','Linked'),'quiet active','aria-pressed="true"')}${button('toggle-lanes',withIcon('sparkles','AI lanes'),`quiet ${state.prefs.lanes?'active':''}`,`aria-pressed="${state.prefs.lanes}" title="Show AI scores, flags, scenes and transcript on the timeline"`)}${button('undo',icon('undo-2'),'icon-button','aria-label="Undo" title="Undo · Ctrl+Z"')}${button('redo',icon('redo-2'),'icon-button','aria-label="Redo" title="Redo · Ctrl+Y"')}<label class="zoom-control">${icon('zoom-out')}<input type="range" id="timeline-zoom" aria-label="Timeline zoom" min="-5" max="6" step=".1" value="0" title="Timeline zoom · 1/32× to 64×">${icon('zoom-in')}</label>${button('save',withIcon('save','Save'),'quiet','title="Save sequence · Ctrl+S"')}</div></div>
+      <section class="panel timeline-panel" aria-label="Timeline"><div class="timeline-heading"><h2>${icon('clapperboard')}Sequence <span id="sequence-name">01</span></h2><div class="timeline-tools">${button('select-tool',icon('mouse-pointer-2'),'icon-button active','title="Selection tool · V" aria-label="Selection tool"')}${button('razor-tool',icon('scissors'),'icon-button','title="Razor tool" aria-label="Razor tool"')}${button('split',withIcon('scissors-line-dashed','Split'),'quiet','title="Split at playhead · C"')}${button('ripple',withIcon('arrow-left-to-line','Ripple'),'quiet','title="Ripple delete · Shift+Delete"')}<span class="transport-divider"></span>${button('snap',withIcon('magnet','Snap'),'quiet active','aria-pressed="true"')}${button('linked',withIcon('link','Linked'),'quiet active','aria-pressed="true"')}${button('toggle-lanes',withIcon('sparkles','AI lanes'),`quiet ${state.prefs.lanes?'active':''}`,`aria-pressed="${state.prefs.lanes}" title="Show AI scores, flags, scenes and transcript on the timeline"`)}${button('toggle-overlay',withIcon('flag','Decisions'),`quiet ${state.prefs.overlay?'active':''}`,`aria-pressed="${state.prefs.overlay}" title="Show the AI decision overlay: CUT / KEEP / REVIEW flags and accepted styling · G"`)}${button('undo',icon('undo-2'),'icon-button','aria-label="Undo" title="Undo · Ctrl+Z"')}${button('redo',icon('redo-2'),'icon-button','aria-label="Redo" title="Redo · Ctrl+Y"')}<label class="zoom-control">${icon('zoom-out')}<input type="range" id="timeline-zoom" aria-label="Timeline zoom" min="-5" max="6" step=".1" value="0" title="Timeline zoom · 1/32× to 64×">${icon('zoom-in')}</label>${button('save',withIcon('save','Save'),'quiet','title="Save sequence · Ctrl+S"')}</div></div>
         <div class="timeline-body"><div class="track-headers"><div class="ruler-head" id="timeline-time">00:00:00:00</div><div id="track-headers"></div></div><div class="timeline-scroll" id="timeline-scroll"><div id="timeline-canvas" tabindex="0" aria-label="Timeline tracks"></div></div></div>
-        <footer class="timeline-footer"><span id="timeline-summary">Select a sequence to start editing</span><span>Space Play &nbsp; C Split &nbsp; I / O Mark &nbsp; N Next AI proposal &nbsp; ? Shortcuts</span></footer>
+        <footer class="timeline-footer"><span id="timeline-summary">Select a sequence to start editing</span><span id="timeline-legend"></span></footer>
       </section>
     </main><footer class="statusbar"><span id="backend-status">Connecting…</span><button data-action="tasks" id="tasks-status">No active tasks</button><span>LOCAL WORKSPACE <span class="status-dot"></span></span></footer>
     <input type="file" id="file-input" multiple accept=".mp4,.mov,.mkv,.avi,.webm,.mp3,.wav,.m4a,.aac,.flac,.ogg,.png,.jpg,.jpeg,.webp,.bmp" hidden>
@@ -162,7 +163,7 @@ async function load({initial=false}={}){
 }
 async function metadata(path){if(!state.meta.has(path))state.meta.set(path,await api('/api/media?path='+encodeURIComponent(path)));return state.meta.get(path);}
 async function selectAsset(path){
-  const request=++state.selectionRequest;pause();state.source=path;state.sourceInfo=null;state.sourceTime=0;state.in=0;state.out=0;state.reviewEditing=null;state.rotation=0;state.proposal=-1;
+  const request=++state.selectionRequest;pause();state.source=path;state.sourceInfo=null;state.sourceTime=0;state.in=0;state.out=0;state.reviewEditing=null;state.rotation=0;state.proposal=-1;state.queue=-1;state.lastReview=null;
   state.job=state.jobs.find(j=>pathKey(j.source)===pathKey(path))||null;
   renderProject();renderSource();renderTimeline();renderInspector();updateTitles();renderSourceEvidence();
   if(state.job?.source_available===false||assets().find(a=>a.path===path)?.source_available===false)return toast('Original media is offline.','warn');
@@ -399,6 +400,7 @@ function renderTimeline(){
   const scale=state.timelineScale=T.pixelsPerSecond(viewport,Math.max(seconds,state.fitDuration||0),state.zoom);
   const width=Math.max(viewport-2,seconds*scale+60);
   const lanes=state.prefs.lanes&&!!seq&&!!state.job?.observations?.length;$('.timeline-body').classList.toggle('lanes',lanes);
+  $('.timeline-body').classList.toggle('no-overlay',!state.prefs.overlay);
   $('#track-headers').innerHTML=(lanes?'<div class="lane-header" title="AI frame scores, flagged spans and scene changes"><strong>AI</strong><span>score · flags</span></div><div class="lane-header" title="Transcript mapped through your edit"><strong>TX</strong><span>transcript</span></div>':'')+(seq?.tracks||['V2','V1','A1','A2'].map(id=>({id}))).map(t=>`<div class="track-header ${t.id[0]==='A'?'audio':''}"><strong>${t.id}</strong><span>${t.id==='V2'?'Overlay':t.id==='V1'?'Picture':t.id==='A1'?'Source audio':'Music / audio'}</span><button data-track-mute="${t.id}" aria-pressed="${!!t.muted}" aria-label="${t.id[0]==='A'?'Mute':'Hide'} ${t.id}" title="${t.id[0]==='A'?'Mute':'Hide'} ${t.id}" class="${t.muted?'active':''}">${icon(t.id[0]==='A'?(t.muted?'volume-x':'volume-2'):(t.muted?'eye-off':'eye'))}</button><button data-track-lock="${t.id}" aria-pressed="${!!t.locked}" aria-label="Lock ${t.id}" title="Lock ${t.id}" class="${t.locked?'active':''}">${icon(t.locked?'lock':'lock-open')}</button><button data-track-delete="${t.id}" aria-label="Delete track ${t.id}" title="Delete track ${t.id}">${icon('x')}</button></div>`).join('');
   const step=[1,2,5,10,15,30,60,120,300].find(s=>s*scale>=65)||Math.ceil(65/(600*scale))*600;
   const ticks=Array.from({length:Math.ceil(seconds/step)+1},(_,i)=>`<span class="ruler-tick" style="left:${i*step*scale}px">${short(i*step)}</span>`).join('');
@@ -406,12 +408,21 @@ function renderTimeline(){
   $('#timeline-canvas').innerHTML=`<div class="ruler" data-scrub>${ticks}${(seq?.markers||[]).map(m=>`<button class="marker" data-marker="${esc(m.id)}" title="${esc(m.label)}" aria-label="Marker: ${esc(m.label)}" style="left:${m.time*scale}px"></button>`).join('')}</div>`+(lanes?aiLanes(seq,scale):'')+
     (seq?.tracks||['V2','V1','A1','A2'].map(id=>({id}))).map(t=>t.id).sort((a,b)=>(a[0]===b[0]?Number(b.slice(1))-Number(a.slice(1)):a[0]==='V'?-1:1)).map(track=>`<div class="track-row ${track[0]==='A'?'audio':''} ${T.locked(seq||{tracks:[]},track)?'locked':''}" data-track="${track}">${(seq?.clips||[]).filter(c=>c.track===track).map(c=>`<div class="timeline-clip ${c.track[0]==='A'?'audio':''} ${state.selection.has(c.id)?'selected':''} ${!c.enabled?'disabled':''}" data-clip="${c.id}" tabindex="0" role="button" aria-label="${esc(c.name)} on ${track}" style="left:${c.start*scale}px;width:${Math.max(4,T.duration(c)*scale)}px" title="${esc(c.name)} · ${tc(c.source_start)}–${tc(c.source_end)}">${c.track[0]==='A'?`<canvas class="clip-wave" data-wave-clip="${c.id}" aria-hidden="true"></canvas>`:filmstrip(c,scale)}<span class="trim-edge left" data-trim="start" title="Trim start"></span><span class="clip-label">${icon(c.track[0]==='A'?'music':c.kind==='image'?'image':'film')}${esc(c.name||basename(c.source))}</span><span class="clip-detail">${c.speed!==1?c.speed+'× · ':''}${tc(T.duration(c))}</span>${c.id===state.selected?[...new Set(Object.values(c.keyframes||{}).flatMap(frames=>frames.map(k=>k.time)))].filter(time=>time>=0&&time<=T.duration(c)).map(time=>`<i class="clip-keyframe" style="left:${time*scale}px" title="Keyframe at ${tc(time)}"></i>`).join(''):''}<span class="trim-edge right" data-trim="end" title="Trim end"></span></div>`).join('')}${!seq&&track==='V1'?'<span class="timeline-hint">Create or open a project to start editing</span>':''}${transitionMarks(seq,track,scale)}</div>`).join('')+`<div id="playhead" style="left:${state.time*scale}px"><i></i></div>`;
   $('#timeline-summary').textContent=seq?`${seq.clips.filter(c=>c.track.startsWith('V')).length} video clips · ${tc(T.sequenceDuration(seq))} · ${seq.fps} fps${(seq.transitions||[]).length?` · ${seq.transitions.length} transition${seq.transitions.length>1?'s':''}`:''}${(seq.overlays||[]).length?` · watermark (${seq.overlays.map(o=>o.position).join(', ')})`:''}`:'Select a sequence to start editing';
+  const legend=$('#timeline-legend');if(legend)legend.innerHTML=state.job?.observations?.length?overlayLegend():'';
   $$('[data-action="undo"]').forEach(b=>b.disabled=!state.undo.length);$$('[data-action="redo"]').forEach(b=>b.disabled=!state.redo.length);
   paintSelection();drawWaves();
 }
-const isModelProposal=r=>!(r.reasons||[]).some(x=>String(x).startsWith('editor-review'));
+const isModelProposal=RQ.isModelProposal;
 // Every review save or reload replaces state.job, so the job object itself is a safe cache key.
 let proposalCache={job:undefined,list:[]};
+let queueCache={job:undefined,list:[]};
+// Unified Review Queue: waste CUT proposals + REVIEW needs-eyes intervals, with
+// evidence, confidence, rule and human-decision status. REVIEW items are never
+// auto-applied — runAuto only consumes accepted proposals + human cuts.
+function reviewQueue(){
+  if(queueCache.job!==state.job)queueCache={job:state.job,list:state.job?RQ.buildQueue(state.job,{evidenceOf:A.proposalEvidence,statusOf:A.proposalStatus}):[]};
+  return queueCache.list;
+}
 function aiProposals(){
   if(proposalCache.job!==state.job){const review=currentReview(),obs=state.job?.observations||[];proposalCache={job:state.job,list:(state.job?.waste_intervals||[]).filter(isModelProposal).map(r=>({...r,...A.proposalEvidence(r,obs),status:A.proposalStatus(r,review)}))};}
   return proposalCache.list;
@@ -420,13 +431,24 @@ const reasonText=r=>(r.reasons||[]).join(' · ').replace(/vision-(cull|review):/
 // Plans made before frame_interval was recorded were analysed at the configured interval.
 const frameInterval=job=>job?.frame_interval??state.config?.frame_interval_seconds??2;
 // Source-time evidence mapped through the edit, so the AI's opinion follows the material wherever it now sits.
+// Flags carry data-queue so a click jumps to the Review Queue item; titles are
+// the hover summary. The .no-overlay class (toggle-overlay) hides flags and
+// scene ticks without touching clips, so normal editing never breaks.
 function aiLanes(seq,scale){
   const job=state.job,src=job.source,obs=job.observations||[],at=r=>`left:${r.start*scale}px;width:${Math.max(1,(r.end-r.start)*scale)}px`;
-  const heat=A.sampleSpans(obs,job.duration,frameInterval(job)).flatMap(({start,end,observation:o})=>A.sourceToSequence(seq,src,start,end).map(r=>`<i class="heat ${o.keep===false?'cut':''}" style="${at(r)};--h:${(Number(o.score)||0)/10}" title="${esc(`${short(o.timestamp)} · AI ${o.score}/10 · ${o.keep===false?'cut':'keep'} — ${String(o.description||'').slice(0,180)}`)}"></i>`)).join('');
-  const flags=[...aiProposals().map(r=>({...r,kind:'waste'})),...(job.review_intervals||[]).map(r=>({...r,kind:'review'}))].flatMap(r=>A.sourceToSequence(seq,src,r.start,r.end).map(m=>`<i class="flag ${r.kind} ${r.status||''}" style="${at(m)}" ${r.kind==='waste'?`data-proposal-start="${r.start}"`:''} title="${esc(`${r.kind==='waste'?'AI suggests cutting':'Needs your eyes'} · ${reasonText(r)}`)}"></i>`)).join('');
-  const scenes=(job.scene_boundaries||[]).flatMap(b=>A.sourcePoint(seq,src,b)).map(t=>`<i class="scene-tick" style="left:${t*scale}px" title="Scene change"></i>`).join('');
+  const heat=A.sampleSpans(obs,job.duration,frameInterval(job)).flatMap(({start,end,observation:o})=>A.sourceToSequence(seq,src,start,end).map(r=>`<i class="heat ${o.keep===false?'cut':''}" style="${at(r)};--h:${(Number(o.score)||0)/10}" title="${esc(`${short(o.timestamp)} · AI ${o.score}/10 · ${o.keep===false?'CUT — weak frame':'KEEP'} — ${String(o.description||'').slice(0,180)}`)}"></i>`)).join('');
+  const queue=reviewQueue();
+  const flagTitle=(r,kind)=>esc(`${kind==='waste'?'CUT suggestion':'REVIEW — needs your eyes'} · ${short(r.start)}–${short(r.end)} · ${r.status}${r.status==='pending'?' — click to review':''} · ${reasonText(r)}${r.confidence!=null?` · confidence ${Math.round(r.confidence*100)}%`:''}`);
+  const flags=queue.flatMap((r,qi)=>A.sourceToSequence(seq,src,r.start,r.end).map(m=>`<i class="flag ${r.kind} ${r.status}" style="${at(m)}" data-queue="${qi}" title="${flagTitle(r,r.kind)}"></i>`)).join('');
+  const scenes=(job.scene_boundaries||[]).flatMap(b=>A.sourcePoint(seq,src,b)).map((t,i)=>`<i class="scene-tick" style="left:${t*scale}px" title="Phase ${i+1} boundary · ${short(job.scene_boundaries[i])} in source"></i>`).join('');
   const words=(job.transcript_segments||[]).flatMap(s=>A.sourceToSequence(seq,src,s.start,s.end).map(r=>`<span class="tx" style="${at(r)}" title="${esc(s.text)}">${(r.end-r.start)*scale>=30?esc(s.text):''}</span>`)).join('');
   return `<div class="lane-row ai-lane" data-lane="ai">${heat}${flags}${scenes}</div><div class="lane-row tx-lane" data-lane="tx">${words}</div>`;
+}
+function overlayLegend(){
+  const counts=RQ.queueCounts(reviewQueue());
+  const bits=[['cut',counts.suggestions,'CUT'],['review',counts.reviewNeeded,'REVIEW'],['accepted',counts.accepted,'accepted'],['rejected',counts.rejected,'kept']];
+  if(!state.prefs.overlay)return '<span class="overlay-legend off">Decision overlay off · G to show</span>';
+  return `<span class="overlay-legend" role="img" aria-label="AI decision overlay: ${counts.suggestions} cut suggestions, ${counts.reviewNeeded} need review, ${counts.accepted} accepted, ${counts.rejected} kept">${bits.map(([k,n,l])=>`<i class="legend-${k}"></i>${l} ${n}`).join('<span aria-hidden="true"> · </span>')}</span>`;
 }
 function filmstrip(c,scale){
   const width=T.duration(c)*scale;if(width<40||!state.sequence)return '';
@@ -1002,27 +1024,77 @@ async function fillFrame(fit=false){
 }
 async function decideProposals(list,verdict){
   if(!list.length)return toast('No pending AI proposals','warn');const review=T.clone(currentReview());
+  state.lastReview=T.clone(review);
   for(const p of list)(verdict==='accept'?review.cut_intervals:review.keep_intervals).push({start:p.start,end:p.end,reason:`${verdict==='accept'?'Accepted':'Rejected'} AI cut: ${reasonText(p)}`});
   const result=await post(jobURL('review'),review);state.job=result.job;state.jobs=state.jobs.map(j=>j.id===result.job.id?result.job:j);
   renderInspector();renderSourceEvidence();renderTimeline();overlayKey='';renderOverlay();
   const many=list.length>1;toast(`${many?list.length+' proposals':'Proposal'} ${verdict==='accept'?(many?'accepted as cuts':'accepted as a cut'):'rejected and protected'} · Auto-edit or Re-plan applies ${many?'them':'it'}`,'ok');
 }
-function stepProposal(direction=1){
-  if(!state.job)throw new Error('Select an analyzed source first');const all=aiProposals();if(!all.length)return toast('This source has no AI cut proposals','warn');
-  const pending=all.map((p,i)=>[p,i]).filter(([p])=>p.status==='pending'),pool=pending.length?pending:all.map((p,i)=>[p,i]);
-  const ordered=direction>0?pool:[...pool].reverse(),hit=ordered.find(([,i])=>direction>0?i>state.proposal:i<state.proposal)||ordered[0];
-  focusProposal(hit[1]);if(!pending.length)toast('Every AI proposal has a decision','ok');
+// One queue decision (Accept-Cut or Keep), optionally with an adjusted range.
+// REVIEW items resolve to an explicit human mark — they are never applied
+// automatically; only accepted CUT proposals + human cuts feed runAuto.
+async function decideQueue(item,verdict,range=null){
+  if(!item)return stepQueue(1);
+  const r={start:range?.start??item.start,end:range?.end??item.end};
+  const problem=RQ.validateAdjust(r.start,r.end,state.job?.duration);
+  if(problem)throw new Error(problem);
+  const review=T.clone(currentReview());
+  state.lastReview=T.clone(review);
+  const adjusted=range&&(Math.abs(range.start-item.start)>.001||Math.abs(range.end-item.end)>.001);
+  (verdict==='accept'?review.cut_intervals:review.keep_intervals).push({start:r.start,end:r.end,
+    reason:`${verdict==='accept'?'Accepted':'Kept'} ${item.kind==='review'?'review flag':'AI cut'}: ${item.text}${adjusted?' (range adjusted)':''}`});
+  const result=await post(jobURL('review'),review);state.job=result.job;state.jobs=state.jobs.map(j=>j.id===result.job.id?result.job:j);
+  renderInspector();renderSourceEvidence();renderTimeline();overlayKey='';renderOverlay();
+  toast(`Item ${verdict==='accept'?'accepted as a cut':'kept and protected'}${adjusted?' with adjusted range':''} · Apply or Re-plan to use it`,'ok');
+  if(reviewQueue().some(x=>x.status==='pending'))stepQueue(1);
 }
+function focusQueue(index){
+  const q=reviewQueue(),item=q[index];if(!item)return;state.queue=index;state.in=item.start;state.out=item.end;state.reviewEditing=null;state.tab='review';
+  const pi=item.kind==='cut'?aiProposals().findIndex(p=>Math.abs(p.start-item.start)<.001&&Math.abs(p.end-item.end)<.001):-1;
+  state.proposal=pi;
+  if(state.source===state.job.source)seekSource(item.start);
+  const inSequence=state.sequence&&state.source===state.job.source&&A.sourceToSequence(state.sequence,state.job.source,item.start,item.end)[0];
+  if(inSequence)seekProgram(inSequence.start);
+  renderInspector();$('.queue-item.current')?.scrollIntoView({block:'nearest'});
+}
+function stepQueue(direction=1){
+  if(!state.job)throw new Error('Select an analyzed source first');const all=reviewQueue();if(!all.length)return toast('This source has nothing to review','warn');
+  const pending=all.map((item,i)=>[item,i]).filter(([item])=>item.status==='pending'),pool=pending.length?pending:all.map((item,i)=>[item,i]);
+  const ordered=direction>0?pool:[...pool].reverse(),hit=ordered.find(([,i])=>direction>0?i>state.queue:i<state.queue)||ordered[0];
+  focusQueue(hit[1]);if(!pending.length)toast('Every queue item has a decision','ok');
+}
+function stepProposal(direction=1){return stepQueue(direction);}
 function focusProposal(index){
-  const p=aiProposals()[index];if(!p)return;state.proposal=index;state.in=p.start;state.out=p.end;state.reviewEditing=null;state.tab='review';
-  if(state.source===state.job.source)seekSource(p.start);const inSequence=state.sequence&&A.sourceToSequence(state.sequence,state.job.source,p.start,p.end)[0];if(inSequence)seekProgram(inSequence.start);
-  renderInspector();$('.proposal.current')?.scrollIntoView({block:'nearest'});
+  const p=aiProposals()[index];if(!p)return;
+  const qi=reviewQueue().findIndex(item=>item.kind==='cut'&&Math.abs(item.start-p.start)<.001&&Math.abs(item.end-p.end)<.001);
+  focusQueue(qi>=0?qi:0);
 }
-function decideCurrent(verdict){const p=aiProposals()[state.proposal];if(!p)return stepProposal(1);return decideProposals([p],verdict).then(()=>{if(aiProposals().some(x=>x.status==='pending'))stepProposal(1);});}
-// Play the current proposal (or In→Out) with a second of pre-roll, stopping just after the out point.
+function decideCurrent(verdict){const item=reviewQueue()[state.queue];if(!item)return stepQueue(1);return decideQueue(item,verdict);}
+// Before/after preview for the queue header: a waste-only dry run over a clone
+// of the sequence (runAuto never commits) — accepted CUT proposals + human cuts
+// in, REVIEW intervals never consulted. Reuses the exact apply path.
+let queueDiffToken=0;
+async function updateQueueDiff(){
+  const out=$('#queue-diff');if(!out)return;const token=++queueDiffToken;
+  if(!state.job||!state.sequence||state.source!==state.job.source){out.innerHTML='<p>Load the analyzed source in the Source monitor for a before/after preview.</p>';return;}
+  out.classList.add('busy');
+  try{
+    const {next,before,after}=await runAuto({waste:true});
+    if(token!==queueDiffToken)return;
+    const removed=A.removedMap(state.sequence,next),span=Math.max(.001,before.duration),saved=before.duration-after.duration;
+    const bar=removed.length?`<div class="auto-diff" role="img" aria-label="${removed.length} removed stretches if accepted cuts are applied">${removed.map(r=>`<i style="left:${r.start/span*100}%;width:${Math.max(.15,(r.end-r.start)/span*100)}%" title="${tc(r.start)} – ${tc(r.end)}"></i>`).join('')}</div>`:'<p>Applying accepted cuts changes nothing — the sequence already reflects every decision.</p>';
+    out.innerHTML=`<p><b>Before</b> ${tc(before.duration)} · ${before.clips} clips → <b>After</b> ${tc(after.duration)} · ${after.clips} clips · −${secs(saved)} if accepted cuts are applied.</p>${bar}<p class="field-note">REVIEW items are never applied automatically — each needs an explicit Accept.</p>`;
+  }catch(error){if(token===queueDiffToken)out.innerHTML=`<p class="error-text">${esc(error.message)}</p>`;}
+  finally{if(token===queueDiffToken)out.classList.remove('busy');}
+}
+function adjustDialog(index){
+  const item=reviewQueue()[index];if(!item)return;
+  openDialog(`${dialogHead('REVIEW','Adjust review range')}<form id="adjust-form" data-adjust-index="${index}"><div class="dialog-body"><p>${item.kind==='cut'?'CUT suggestion':'REVIEW flag'} · ${esc(item.text)}</p><div class="export-grid"><label class="stacked">In (seconds)<input name="start" type="number" min="0" step=".01" value="${round(item.start)}" required></label><label class="stacked">Out (seconds)<input name="end" type="number" min="0" step=".01" value="${round(item.end)}" required></label></div><div class="stacked"><span>Decision for this range</span><label class="toggle-row">Accept as a cut<input type="radio" name="verdict" value="accept" checked></label><label class="toggle-row">Keep and protect<input type="radio" name="verdict" value="reject"></label></div><output id="adjust-error" class="auto-preview" aria-live="polite"></output></div><footer class="dialog-footer">${button('close-dialog','Cancel')}<button class="primary" type="submit">Save decision</button></footer></form>`,'adjust');
+}
+// Play the current queue item (or In→Out) with a second of pre-roll, stopping just after the out point.
 function audition(){
   if(!state.job||state.source!==state.job.source)throw new Error('Load the analyzed source in the Source monitor to audition');
-  const p=aiProposals()[state.proposal],range=p||{start:Math.min(state.in,state.out),end:Math.max(state.in,state.out)};
+  const item=reviewQueue()[state.queue],range=item||{start:Math.min(state.in,state.out),end:Math.max(state.in,state.out)};
   seekSource(Math.max(0,range.start-1));play('source');state.stopAt=range.end+.4;
 }
 function editPoint(direction){
@@ -1043,7 +1115,7 @@ function exportCaptions(){
   document.body.append(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(a.href),2000);toast(`${captions.length} captions exported, timed to this edit`,'ok');
 }
 function shortcutsDialog(){
-  const keys=[['Space','Play / pause'],['J K L','Shuttle reverse, stop, forward'],['← / →','Previous / next frame'],['↑ / ↓','Previous / next edit point or marker'],['I / O','Mark In / Out'],['P','Audition the AI proposal or In→Out'],['C','Split at playhead'],['V','Selection tool'],['M','Add marker (double-click a marker to edit)'],['Drag empty track space','Box-select clips across tracks'],['Shift / Ctrl + click','Add or remove a clip from selection'],['Escape','Cancel drag or box selection'],['Delete','Lift selected clips'],['Shift + Delete','Ripple delete'],['= / − / \\','Zoom in / out / fit (Ctrl + wheel zooms at the cursor)'],['Ctrl + Z / Y','Undo / redo'],['Ctrl + S','Save project'],['N / Shift + N','Next / previous AI proposal'],['A','Accept proposal as a cut'],['X','Reject proposal and protect it'],['?','This list']];
+  const keys=[['Space','Play / pause'],['J K L','Shuttle reverse, stop, forward'],['← / →','Previous / next frame'],['↑ / ↓','Previous / next edit point or marker'],['I / O','Mark In / Out'],['P','Preview the queue item or In→Out'],['C','Split at playhead'],['V','Selection tool'],['M','Add marker (double-click a marker to edit)'],['Drag empty track space','Box-select clips across tracks'],['Shift / Ctrl + click','Add or remove a clip from selection'],['Escape','Cancel drag or box selection'],['Delete','Lift selected clips'],['Shift + Delete','Ripple delete'],['= / − / \\','Zoom in / out / fit (Ctrl + wheel zooms at the cursor)'],['Ctrl + Z / Y','Undo / redo'],['Ctrl + S','Save project'],['N / Shift + N','Next / previous review queue item'],['A','Accept queue item as a cut'],['X','Keep queue item and protect it'],['P','Preview the queue item or In→Out'],['G','Show / hide the AI decision overlay'],['?','This list']];
   openDialog(`${dialogHead('HELP','Keyboard shortcuts')}<div class="dialog-body"><dl class="shortcut-list">${keys.map(([k,v])=>`<dt><kbd>${esc(k)}</kbd></dt><dd>${esc(v)}</dd>`).join('')}</dl></div><footer class="dialog-footer">${button('close-dialog','Done','primary')}</footer>`,'help');
 }
 
@@ -1066,8 +1138,9 @@ function stageSummary(group){const c=state.config;return esc(({Connection:c.visi
 function currentReview(){return state.job?.review||{source_sha256:state.job?.source_sha256||state.job?.source_fingerprint?.sha256||'',timebase:'source',cut_intervals:[],keep_intervals:[]};}
 function renderReview(){
   const job=state.job,review=currentReview();
-  $('#inspector-content').innerHTML=!job?'<div class="empty-state"><h3>No review yet</h3><p>Analyze a source to inspect its evidence.</p></div>':`${aiSummary()}<div class="inspector-section"><h3>Source-time decisions</h3><p>Mark a source range with I / O. Keep and Protect override model cuts; explicit human cuts take precedence.</p><div class="range-fields"><label>In (s)<input id="review-in" type="number" min="0" step=".01" value="${round(state.in)}"></label><label>Out (s)<input id="review-out" type="number" min="0" step=".01" value="${round(state.out)}"></label></div><input id="review-reason" placeholder="Reason for this decision" aria-label="Review reason" value="${esc(state.reviewEditing?.reason||'')}"><div class="review-buttons">${button('keep','Keep','ok')}${button('cut','Cut','danger')}${button('protect','Protect')}</div>${state.reviewEditing?button('remove-review','Remove selected decision','wide danger'):''}${button('replan','Re-plan with my decisions','wide accent')}</div>${proposalSection()}<details class="inspector-section" open><summary>Needs your eyes <small>${job.review_intervals?.length||0}</small></summary>${(job.review_intervals||[]).map((r,i)=>`<button class="evidence-item" data-queue="${i}"><span>${tc(r.start)} → ${tc(r.end)}</span><small>${esc((r.reasons||[]).join(' · '))}</small></button>`).join('')||'<p>No uncertain intervals.</p>'}</details><details class="inspector-section" open><summary>Your decisions</summary>${['cut','keep'].flatMap(kind=>(review[kind+'_intervals']||[]).map((r,i)=>`<button class="decision-row ${kind}" data-review-kind="${kind}" data-review-index="${i}"><i></i><span>${tc(r.start)} – ${tc(r.end)}<small>${esc(r.reason||kind)}</small></span></button>`)).join('')||'<p>No decisions saved yet.</p>'}</details><details class="inspector-section" open><summary>Nearby evidence</summary><div id="nearby-evidence"></div></details><details class="inspector-section"><summary>Transcript <small>${job.transcript_segments?.length||0}</small></summary>${(job.transcript_segments||[]).map(s=>`<button class="transcript-line" data-source-time="${s.start}"><time>${short(s.start)}</time>${esc(s.text)}</button>`).join('')||'<p>No transcript available.</p>'}${button('transcribe','Re-transcribe (.srt)','wide')}</details><details class="inspector-section"><summary>Caption</summary><p>${esc(job.caption||'No caption generated. Configure a performer and persona in Voice settings.')}</p></details>`;
-  renderEvidence();
+  $('#inspector-content').innerHTML=!job?'<div class="empty-state"><h3>No review yet</h3><p>Analyze a source to inspect its evidence.</p></div>':`${aiSummary()}<div class="inspector-section"><h3>Source-time decisions</h3><p>Mark a source range with I / O. Keep and Protect override model cuts; explicit human cuts take precedence.</p><div class="range-fields"><label>In (s)<input id="review-in" type="number" min="0" step=".01" value="${round(state.in)}"></label><label>Out (s)<input id="review-out" type="number" min="0" step=".01" value="${round(state.out)}"></label></div><input id="review-reason" placeholder="Reason for this decision" aria-label="Review reason" value="${esc(state.reviewEditing?.reason||'')}"><div class="review-buttons">${button('keep','Keep','ok')}${button('cut','Cut','danger')}${button('protect','Protect')}</div>${state.reviewEditing?button('remove-review','Remove selected decision','wide danger'):''}${button('replan','Re-plan with my decisions','wide accent')}</div>${workflowStepper()}${queueSection()}<details class="inspector-section" open><summary>Your decisions</summary>${['cut','keep'].flatMap(kind=>(review[kind+'_intervals']||[]).map((r,i)=>`<button class="decision-row ${kind}" data-review-kind="${kind}" data-review-index="${i}"><i></i><span>${tc(r.start)} – ${tc(r.end)}<small>${esc(r.reason||kind)}</small></span></button>`)).join('')||'<p>No decisions saved yet.</p>'}</details><details class="inspector-section" open><summary>Nearby evidence</summary><div id="nearby-evidence"></div></details><details class="inspector-section"><summary>Transcript <small>${job.transcript_segments?.length||0}</small></summary>${(job.transcript_segments||[]).map(s=>`<button class="transcript-line" data-source-time="${s.start}"><time>${short(s.start)}</time>${esc(s.text)}</button>`).join('')||'<p>No transcript available.</p>'}${button('transcribe','Re-transcribe (.srt)','wide')}</details><details class="inspector-section"><summary>Caption</summary><p>${esc(job.caption||'No caption generated. Configure a performer and persona in Voice settings.')}</p></details>`;
+ renderEvidence();
+  updateQueueDiff();
 }
 function aiSummary(){
   const job=state.job,obs=job?.observations||[];if(!obs.length)return '';
@@ -1078,17 +1151,57 @@ function aiSummary(){
     <div class="score-histogram" role="img" aria-label="Frame score distribution">${counts.map((n,i)=>`<i style="height:${Math.max(n?8:2,n/peak*100)}%;--h:${(i+1)/10}" title="${n} frame${n===1?'':'s'} scored ${i+1}/10"></i>`).join('')}</div><div class="histogram-axis"><span>1</span><span>score</span><span>10</span></div>
     ${pending?button('next-proposal',`Review ${pending} pending proposal${pending>1?'s':''} · N`,'wide accent'):''}</div>`;
 }
-function proposalSection(){
-  const all=aiProposals(),pending=all.filter(p=>p.status==='pending');if(!all.length)return '';
-  const done=all.length-pending.length,seconds=A.total(pending),strong=pending.filter(p=>p.strength==='strong');
-  const chip=p=>`<span class="strength ${p.strength}" title="${p.frames?`${p.frames} frame${p.frames>1?'s':''} inside, mean score ${p.meanScore}/10`:'No sampled frame inside; transcript or merge evidence'}">${p.strength==='strong'?'Strong':p.strength==='weak'?'Weak · scored '+p.meanScore:'Likely'}</span>`;
-  return `<details class="inspector-section proposals" open><summary>AI cut proposals <small>${pending.length} pending · ${done}/${all.length} decided</small></summary><div class="proposal-meter" role="img" aria-label="${done} of ${all.length} proposals decided"><i style="width:${all.length?done/all.length*100:0}%"></i></div><p>Accept to make a model cut authoritative; reject to protect the span. <kbd>N</kbd> next · <kbd>A</kbd> accept · <kbd>X</kbd> reject.</p>${all.map((p,i)=>`<div class="proposal ${p.status} ${i===state.proposal?'current':''}"><button class="proposal-seek" data-proposal="${i}"><span>${tc(p.start)} → ${tc(p.end)} ${chip(p)}</span><small>${esc(reasonText(p))}</small></button>${p.status==='pending'?`${button('accept-proposal',icon('check'),'icon-button ok',`data-index="${i}" aria-label="Accept proposal ${i+1} as a cut" title="Accept · A"`)}${button('reject-proposal',icon('x'),'icon-button',`data-index="${i}" aria-label="Reject proposal ${i+1}" title="Reject and protect · X"`)}`:`<span class="proposal-state">${p.status}</span>`}</div>`).join('')}${pending.length?`<div class="review-buttons">${strong.length&&strong.length<pending.length?button('accept-strong',`Accept ${strong.length} strong`,'danger','title="Proposals whose own frames scored 3/10 or lower"'):''}${button('accept-all',`Accept all ${pending.length} · −${secs(seconds)}`,'danger')}${button('reject-all','Reject all','ok')}</div>`:''}</details>`;
+function workflowStepper(){
+  const job=state.job;if(!job||!A.hasPlan(job))return '';
+  const q=reviewQueue(),counts=RQ.queueCounts(q);
+  const accepted=q.filter(i=>i.status==='accepted'&&i.kind==='cut');
+  const applied=accepted.length&&state.sequence&&state.source===job.source
+    ?RQ.appliedCheck(accepted,state.sequence,state.source,A.sourceToSequence):[];
+  const stages=RQ.workflowState({analyzed:true,pending:counts.pending,accepted:counts.accepted,
+    applied:accepted.length?applied.every(Boolean):null,renderClean:!state.dirty});
+  const go={analyze:'analyze',review:'queue-focus',apply:'apply-accepted',render:'render'};
+  const hint={analyze:'Analyze a source for AI suggestions',review:'Work the queue below',apply:'Apply accepted cuts to the sequence',render:'Render uses the current sequence edits'};
+  return `<div class="inspector-section workflow-steps"><h3>Workflow</h3><ol>${stages.map(s=>`<li class="${s.state}"><button type="button" data-action="${go[s.id]}" title="${hint[s.id]}"><strong>${s.label}</strong><small>${esc(s.detail)}</small></button></li>`).join('')}</ol>`
+    +`<dl class="workflow-counts"><div><dt>${counts.suggestions}</dt><dd>suggestions</dd></div><div><dt>${counts.reviewNeeded}</dt><dd>review-needed</dd></div><div><dt>${counts.accepted}</dt><dd>accepted</dd></div><div><dt>${counts.rejected}</dt><dd>rejected</dd></div><div><dt>${accepted.length?applied.filter(Boolean).length+'/'+accepted.length:'—'}</dt><dd>applied-to-sequence</dd></div><div><dt>${state.dirty?'unsaved':'saved'}</dt><dd>render-uses-edits</dd></div></dl></div>`;
+}
+// Before/after context for one queue item: neighbouring transcript (what is
+// said around it) and where the range plays in the current sequence, if at all.
+function queueContext(item){
+  const job=state.job,segs=(job?.transcript_segments||[]).filter(s=>s.end>item.start-8&&s.start<item.end+8);
+  const line=segs.length?segs.map(s=>`${s.start<item.start&&s.end<=item.start?'‹ ':s.start>=item.end?' ›':''}${esc(String(s.text||'').slice(0,90))}`).join(' · '):'No transcript nearby.';
+  let seq='';
+  if(state.sequence&&state.source===job.source){
+    const at=A.sourceToSequence(state.sequence,state.source,item.start,item.end);
+    seq=at.length?`Plays at ${at.map(m=>`${short(m.start)}–${short(m.end)}`).join(', ')} in the sequence.`:'Not in the sequence — already applied or never placed.';
+  }else seq='Load the analyzed source to map this range to the sequence.';
+  return `<small class="queue-context">${line}</small><small class="queue-context">${esc(seq)}</small>`;
+}
+function queueSection(){
+  const job=state.job,q=reviewQueue();if(!job)return '';
+  if(!q.length)return A.hasPlan(job)?'<div class="inspector-section"><h3>Review queue</h3><div class="empty-state"><h3>Nothing to review</h3><p>The AI flagged no cuts and needs no second look on this source. Your manual decisions above still apply.</p></div></div>':'';
+  const counts=RQ.queueCounts(q),done=q.length-counts.pending;
+  const chip=item=>`<span class="strength ${item.strength}" title="${item.frames?`${item.frames} frames inside, mean score ${item.meanScore}/10`:'No sampled frame inside; transcript or merge evidence'}${item.confidence!=null?` · confidence ${Math.round(item.confidence*100)}%`:''}">${item.strength==='strong'?'Strong':item.strength==='weak'?'Weak · '+item.meanScore:'Likely'}</span>`;
+  const conf=item=>item.confidence!=null?` · confidence ${Math.round(item.confidence*100)}%`:'';
+  return `<details class="inspector-section queue" open><summary>Review queue <small>${counts.pending} pending · ${done}/${q.length} decided</small></summary>`
+    +`<div class="proposal-meter" role="img" aria-label="${done} of ${q.length} queue items decided"><i style="width:${q.length?done/q.length*100:0}%"></i></div>`
+    +`<p>Accept to cut, Keep to protect. REVIEW items need your eyes and are <b>never</b> applied automatically. <kbd>N</kbd> next · <kbd>A</kbd> accept · <kbd>X</kbd> keep · <kbd>P</kbd> preview.</p>`
+    +`<output id="queue-diff" class="auto-preview" aria-live="polite">Calculating before/after…</output>`
+    +`<div class="review-buttons">${button('queue-prev','← Prev')}${button('queue-next','Next →','accent')}${button('queue-preview','Preview · P')}${state.lastReview?button('undo-decision','Undo decision'):''}</div>`
+    +`<div class="queue-list" role="list" tabindex="0" aria-label="Review queue, ${q.length} items">${q.map((item,i)=>`
+      <div class="proposal queue-item ${item.kind} ${item.status} ${i===state.queue?'current':''}" role="listitem" aria-current="${i===state.queue}">
+        <button class="proposal-seek" data-queue="${i}" title="Jump the timeline to this range"><span>${item.kind==='cut'?'CUT':'REVIEW'} · ${tc(item.start)} → ${tc(item.end)} · ${(item.end-item.start).toFixed(1)}s ${chip(item)}</span><small>${esc(item.text)}</small><small class="queue-meta">rule ${esc(item.rule)}${conf(item)} · proposed: ${item.action}</small>${queueContext(item)}</button>
+        ${item.status==='pending'
+          ?`${button('queue-accept',icon('check'),'icon-button ok',`data-index="${i}" aria-label="Accept item ${i+1} as a cut" title="Accept · A"`)}${button('queue-keep',icon('x'),'icon-button',`data-index="${i}" aria-label="Keep item ${i+1} and protect it" title="Keep · X"`)}${button('queue-adjust',icon('sliders-horizontal'),'icon-button',`data-index="${i}" aria-label="Adjust range for item ${i+1}" title="Adjust In/Out"`)}`
+          :`<span class="proposal-state">${item.status}</span>`}
+      </div>`).join('')}</div>`
+    +`${counts.pendingCuts?`<div class="review-buttons">${button('accept-all',`Accept ${counts.pendingCuts} pending cut${counts.pendingCuts>1?'s':''}`,'danger',`title="Only CUT proposals — REVIEW items are never bulk-applied"`)}${button('reject-all','Keep all pending','ok')}</div>`:counts.pending?`<p>Only REVIEW items remain — each needs an explicit decision.</p>`:`<p>Every queue item has a decision. Apply them or adjust the range.</p>`}</details>`;
 }
 function renderEvidence(){const node=$('#nearby-evidence');if(!node)return;const items=(state.job?.observations||[]).filter(o=>Math.abs(o.timestamp-state.sourceTime)<4);node.innerHTML=items.map(o=>`<div class="evidence-card">${badge(o.keep?'Keep':'Cut',o.keep?'ok':'warn')}<time>${short(o.timestamp)}</time><p>${esc(o.description)}</p><small>Score ${o.score}/10 · confidence ${Math.round((o.confidence??1)*100)}%</small></div>`).join('')||'<p>No observations near this frame.</p>';}
 async function saveReview(kind){
   if(!state.job||state.source!==state.job.source)throw new Error('Select the sequence’s original source for source-time review');
   const start=Number($('#review-in').value),finish=Number($('#review-out').value);if(!(start>=0&&finish>start&&finish<=state.job.duration))throw new Error('Choose an ordered range within the source duration');
   const review=T.clone(currentReview());if(state.reviewEditing)review[state.reviewEditing.kind+'_intervals'].splice(state.reviewEditing.index,1);
+  state.lastReview=T.clone(review);
   const field=kind==='cut'?'cut_intervals':'keep_intervals',reason=$('#review-reason').value.trim()||(kind==='protect'?'Protected content':kind==='keep'?'Keep content':'Editor cut');
   review[field].push({start,end:finish,reason});
   const result=await post(jobURL('review'),review);state.job=result.job;state.reviewEditing=null;renderInspector();renderSourceEvidence();renderTimeline();toast('Review decision saved · Re-plan to apply it');
@@ -1307,7 +1420,14 @@ const actions={
   'remove-bed':()=>operation('Remove bed',async()=>{
     needSequence();const result=await api(projectURL('audio/bed'),{method:'DELETE',body:JSON.stringify({sequence:state.sequence})});
     closeDialog();commit('Music bed removed',result.sequence);toast(`Removed ${result.removed} clips`);}),
-  'next-proposal':()=>stepProposal(1),'accept-proposal':t=>{focusProposal(Number(t.dataset.index));return decideCurrent('accept');},'reject-proposal':t=>{focusProposal(Number(t.dataset.index));return decideCurrent('reject');},
+  'next-proposal':()=>stepQueue(1),'accept-proposal':t=>{focusProposal(Number(t.dataset.index));return decideCurrent('accept');},'reject-proposal':t=>{focusProposal(Number(t.dataset.index));return decideCurrent('reject');},
+  'queue-prev':()=>stepQueue(-1),'queue-next':()=>stepQueue(1),'queue-focus':()=>{state.tab='review';renderInspector();$('.queue-list')?.scrollIntoView({block:'nearest'});},
+  'queue-accept':t=>{const i=Number(t.dataset.index);focusQueue(i);return decideQueue(reviewQueue()[i],'accept');},
+  'queue-keep':t=>{const i=Number(t.dataset.index);focusQueue(i);return decideQueue(reviewQueue()[i],'reject');},
+  'queue-adjust':t=>adjustDialog(Number(t.dataset.index)),'queue-preview':()=>audition(),
+  'apply-accepted':()=>operation('Apply accepted cuts',()=>quickAuto({waste:true})),
+  'undo-decision':async()=>{if(!state.lastReview)return toast('Nothing to undo','warn');const result=await post(jobURL('review'),state.lastReview);state.job=result.job;state.jobs=state.jobs.map(j=>j.id===result.job.id?result.job:j);state.lastReview=null;renderInspector();renderSourceEvidence();renderTimeline();overlayKey='';renderOverlay();toast('Decision undone','ok');},
+  'toggle-overlay':()=>{state.prefs.overlay=!state.prefs.overlay;savePrefs();syncToggles();renderTimeline();},
   'accept-all':()=>decideProposals(aiProposals().filter(p=>p.status==='pending'),'accept'),'accept-strong':()=>decideProposals(aiProposals().filter(p=>p.status==='pending'&&p.strength==='strong'),'accept'),'reject-all':()=>decideProposals(aiProposals().filter(p=>p.status==='pending'),'reject'),
   'toggle-lanes':()=>{state.prefs.lanes=!state.prefs.lanes;savePrefs();syncToggles();renderTimeline();},
   'toggle-cc':()=>{state.prefs.cc=!state.prefs.cc;savePrefs();syncToggles();overlayKey='';renderOverlay();},
@@ -1418,7 +1538,7 @@ function bind(){
     if(target?.dataset.marker){const m=state.sequence.markers.find(m=>m.id===target.dataset.marker);if(m)seekProgram(m.time);}
     if(target?.dataset.cut!==undefined)seekProgram(Number(target.dataset.cut));
     if(target?.dataset.sourceTime)seekSource(Number(target.dataset.sourceTime));
-    if(target?.dataset.queue!==undefined){const r=state.job.review_intervals[Number(target.dataset.queue)];state.in=r.start;state.out=r.end;state.reviewEditing=null;seekSource(r.start);renderReview();}
+    if(target?.dataset.queue!==undefined){focusQueue(Number(target.dataset.queue));return;}
     if(target?.dataset.reviewKind){const kind=target.dataset.reviewKind,index=Number(target.dataset.reviewIndex),r=currentReview()[kind+'_intervals'][index];state.reviewEditing={kind,index,reason:r.reason};state.in=r.start;state.out=r.end;seekSource(r.start);renderReview();}
   });
   $('#media-search').addEventListener('input',e=>{state.search=e.target.value;renderProject();});
@@ -1472,6 +1592,7 @@ document.addEventListener('change',e=>{
     if(e.target.id==='passes-intro-form'){const f=new FormData(e.target);await savePasses({'intro-outro':{settings:{preset:String(f.get('preset')),intro_path:String(f.get('intro_path')||''),intro_duration:Number(f.get('intro_duration'))||3,outro_path:String(f.get('outro_path')||''),outro_duration:Number(f.get('outro_duration'))||3},status:'ready'}});closeDialog();toast('Intro / Outro settings saved on the pass','ok');}
     if(e.target.id==='passes-qc-form'){const f=new FormData(e.target);await savePasses({qc:{settings:{deep:f.has('deep'),block:f.has('block')},status:'ready'}});closeDialog();toast('QC settings saved on the pass','ok');}
     if(e.target.id==='marker-form'){const f=new FormData(e.target),id=e.target.dataset.markerForm;closeDialog();edit('Marker updated',s=>{const m=s.markers.find(x=>x.id===id);if(!m)throw new Error('Marker no longer exists');m.label=String(f.get('label')).trim().slice(0,200)||'Marker';m.time=Math.max(0,Number(f.get('time'))||0);});}
+    if(e.target.id==='adjust-form'){const f=new FormData(e.target),index=Number(e.target.dataset.adjustIndex),item=reviewQueue()[index];if(!item)throw new Error('Queue item no longer exists');const start=Number(f.get('start')),end=Number(f.get('end')),problem=RQ.validateAdjust(start,end,state.job?.duration);if(problem){$('#adjust-error').innerHTML=`<p class="error-text">${esc(problem)}</p>`;return;}closeDialog();await decideQueue(item,String(f.get('verdict'))==='reject'?'reject':'accept',{start,end});}
   });});
   document.addEventListener('change',e=>{
     const toggle=e.target.closest('[data-pass-enabled]');
@@ -1504,7 +1625,7 @@ document.addEventListener('change',e=>{
     const key=e.key.toLowerCase();
     if((e.ctrlKey||e.metaKey)&&['z','y','s'].includes(key)){e.preventDefault();operation('Keyboard edit',()=>key==='s'?actions['save-project']():undo(key==='y'||e.shiftKey));return;}
     if(e.ctrlKey||e.metaKey||e.altKey)return;
-    const map={' ':'play',j:'reverse',k:'pause',l:'forward',c:'split',v:'select-tool',i:'in',o:'out',m:'marker',delete:e.shiftKey?'ripple':'delete',backspace:'delete',n:e.shiftKey?'prev-proposal':'next-proposal',a:'accept-current',x:'reject-current','?':'shortcuts',p:'audition',arrowup:'prev-edit',arrowdown:'next-edit',arrowleft:'frame-back',arrowright:'frame-next','\\':'zoom-fit','=':'zoom-in','+':'zoom-in','-':'zoom-out'};
+    const map={' ':'play',j:'reverse',k:'pause',l:'forward',c:'split',v:'select-tool',i:'in',o:'out',m:'marker',g:'toggle-overlay',delete:e.shiftKey?'ripple':'delete',backspace:'delete',n:e.shiftKey?'prev-proposal':'next-proposal',a:'accept-current',x:'reject-current','?':'shortcuts',p:'audition',arrowup:'prev-edit',arrowdown:'next-edit',arrowleft:'frame-back',arrowright:'frame-next','\\':'zoom-fit','=':'zoom-in','+':'zoom-in','-':'zoom-out'};
     if(!map[key]){if(e.key==='Enter'&&e.target.dataset.source)operation('Select source',()=>selectAsset(e.target.dataset.source));return;}
     e.preventDefault();operation('Keyboard edit',()=>{if(map[key]==='play')togglePlay();else if(map[key]==='reverse')shuttle(-1);else if(map[key]==='forward')shuttle(1);else if(map[key]==='pause')pause();else return actions[map[key]]();});
   });
@@ -1517,8 +1638,12 @@ document.addEventListener('change',e=>{
 }
 function timelinePointer(e){
   if(e.button!==0||!state.sequence||e.target.closest('button,input,select,textarea,a,[contenteditable="true"]'))return;
-  const el=e.target.closest('[data-clip]'),flag=e.target.closest('[data-proposal-start]');
-  if(flag){const index=aiProposals().findIndex(p=>p.start===Number(flag.dataset.proposalStart));if(index>=0){pause();focusProposal(index);return;}}
+  const el=e.target.closest('[data-clip]'),flag=e.target.closest('[data-queue],[data-proposal-start]');
+  if(flag&&!el){
+    const qi=flag.dataset.queue!==undefined?Number(flag.dataset.queue):-1;
+    if(qi>=0){pause();focusQueue(qi);return;}
+    const index=aiProposals().findIndex(p=>p.start===Number(flag.dataset.proposalStart));if(index>=0){pause();focusProposal(index);return;}
+  }
   if(!el){
     if(e.target.closest('.track-row')&&state.tool==='select'){startMarquee(e);return;}
     pause();const update=event=>seekProgram(timelineAt(event));update(e);const done=()=>{window.removeEventListener('pointermove',update);window.removeEventListener('pointerup',done);window.removeEventListener('pointercancel',done);};window.addEventListener('pointermove',update);window.addEventListener('pointerup',done);window.addEventListener('pointercancel',done);return;

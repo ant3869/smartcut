@@ -979,3 +979,38 @@ dialog[data-kind=auto] .dialog-body { max-height: calc(100dvh - 250px); }
 .pass-actions { display: flex; gap: 4px; }
 .pass-recipes { display: flex; gap: 10px; align-items: end; margin-bottom: 8px; flex-wrap: wrap; }
 .pass-recipe-actions { display: flex; gap: 4px; flex-wrap: wrap; }
+
+/* ---------- Review-first workflow: stepper, queue, overlay legend ---------- */
+.workflow-steps ol { display: grid; grid-template-columns: repeat(4, 1fr); gap: 6px; margin: 0 0 10px; padding: 0; list-style: none; }
+.workflow-steps li button { display: flex; flex-direction: column; align-items: flex-start; gap: 2px; width: 100%; min-height: 0; padding: 7px 9px; border: 1px solid var(--color-bd-subtle); border-radius: 8px; background: var(--color-bg-subtle); text-align: left; }
+.workflow-steps li button:hover { border-color: color-mix(in srgb, var(--color-accent-soft) 45%, var(--color-bd)); }
+.workflow-steps li strong { font-size: 11px; letter-spacing: 0.06em; text-transform: uppercase; }
+.workflow-steps li small { color: var(--color-fg-muted); font-size: 10px; }
+.workflow-steps li.done button { border-color: color-mix(in srgb, var(--color-ok) 40%, var(--color-bd)); }
+.workflow-steps li.done strong { color: var(--color-ok); }
+.workflow-steps li.current button { border-color: color-mix(in srgb, var(--color-accent-soft) 55%, var(--color-bd)); background: color-mix(in srgb, var(--color-accent) 8%, var(--color-bg-subtle)); }
+.workflow-steps li.current strong { color: var(--color-accent-soft); }
+.workflow-steps li.todo { opacity: .65; }
+.workflow-counts { display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px; margin: 0; }
+.workflow-counts div { padding: 6px 8px; border: 1px solid var(--color-bd-subtle); border-radius: 6px; background: var(--color-bg); text-align: center; }
+.workflow-counts dt { color: var(--color-fg); font: 600 13px var(--mono); }
+.workflow-counts dd { margin: 2px 0 0; color: var(--color-fg-dim); font-size: 10px; }
+.queue-list { max-height: 420px; margin-top: 8px; overflow-y: auto; }
+.queue-item.review { box-shadow: inset 3px 0 0 color-mix(in srgb, var(--color-warn) 65%, transparent); }
+.queue-item.review.accepted { box-shadow: inset 3px 0 0 var(--color-err); opacity: .62; }
+.queue-item.review.rejected { box-shadow: inset 3px 0 0 var(--color-ok); opacity: .62; }
+.queue-meta { color: var(--color-fg-dim); font-size: 10px; }
+.queue-context { display: block; color: var(--color-fg-dim); font-size: 10px; line-height: 1.5; }
+/* Decision overlay: flags are display-only marks — pointer events stay with
+   clips and the ruler, so toggling or clicking the overlay never breaks edits. */
+.timeline-body.no-overlay .ai-lane .flag,
+.timeline-body.no-overlay .ai-lane .scene-tick { display: none; }
+.ai-lane .flag { cursor: pointer; }
+.ai-lane .flag.review { outline: 1px dashed color-mix(in srgb, var(--color-warn) 70%, transparent); outline-offset: -1px; }
+.overlay-legend { display: inline-flex; align-items: center; gap: 5px; white-space: nowrap; font: 10px var(--font); }
+.overlay-legend i { width: 10px; height: 6px; border-radius: 2px; }
+.overlay-legend .legend-cut { background: rgb(var(--color-err-rgb) / .75); }
+.overlay-legend .legend-review { background: rgb(var(--color-warn-rgb) / .55); }
+.overlay-legend .legend-accepted { background: var(--color-err); }
+.overlay-legend .legend-rejected { background: var(--color-ok); }
+.overlay-legend.off { color: var(--color-fg-dim); }

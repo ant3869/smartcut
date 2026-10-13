@@ -192,6 +192,17 @@ always spend. max_windows untouched, cost ≤ baseline.
   budget/set-cover, separate work); 004 0-4 majority miss is
   window geometry, not allocation.
 
+## Product Pass 1: review-first UX, committed (2026-10-13)
+
+Review Queue on real project state (CUT/KEEP/REVIEW explicit,
+REVIEW non-destructive till human resolves), timeline jump,
+Accept/Keep/Adjust/Prev/Next + shortcuts, undo, persisted
+decisions, toggleable AI overlay with phase markers, stepper
+with live counts, accepted-edits-only Apply/Render, before/after
+via existing render infra. Normal editing intact, no cutter
+changes. Browser 28/28 + 8/8, JS 93/93, Python 656/656, zero
+page errors.
+
 ## Round 22: handheld-transient demotion, committed (2026-10-13)
 
 SAFETY TRADE, explicit: false CUT 44s→14s (3 remain), KEEP
