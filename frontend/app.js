@@ -23,7 +23,7 @@ const state = {jobs:[],inbox:[],config:{},schema:{},job:null,source:null,sourceI
   bin:'all',view:'list',search:'',sort:'name',checked:new Set(),tab:'effects',focus:'source',sourceTime:0,time:0,
   in:0,out:2,zoom:1,snap:true,linked:true,tool:'select',dirty:false,editVersion:0,undo:[],redo:[],saving:null,
   gateway:'untested',tasks:[],taskCallbacks:new Map(),handled:new Set(),programMode:'sequence',playing:false,shuttle:0,
-  error:null,retry:null,reviewEditing:null,loading:false,meta:new Map(),waves:new Map(),proposal:-1,queue:-1,lastReview:null,
+  error:null,retry:null,reviewEditing:null,loading:false,importing:false,qc:null,meta:new Map(),waves:new Map(),proposal:-1,queue:-1,lastReview:null,
   prefs:{lanes:true,overlay:true,cc:true,hud:true,auto:{fromPlan:false,waste:true,silence:true,threshold:-40,minSilence:.6,pad:.12,gaps:true,scenes:false,highlights:true,highlightCount:5}},
   passes:null};
 try{const saved=JSON.parse(localStorage.getItem('anna.cutroom.prefs')||'{}');state.prefs={...state.prefs,...saved,auto:{...state.prefs.auto,...saved.auto}};}catch{}
@@ -96,11 +96,11 @@ function shell(){
       ${button('settings',icon('settings'),'icon-button','aria-label="Pipeline settings" title="Pipeline settings"')}
     </header>
     <div id="error-banner" class="error-banner" role="alert" hidden>${icon('triangle-alert')}<span id="error-message"></span>${button('retry',withIcon('refresh-cw','Retry'),'danger','id="retry-error"')}${button('dismiss-error',icon('x'),'icon-button','aria-label="Dismiss error"')}</div>
-    <div class="workspace-bar"><div class="page-title"><span class="page-icon" aria-hidden="true">${icon('clapperboard')}</span><div><span class="workspace-name">Editing</span><div class="page-heading"><h1 id="project-name">Untitled project</h1><span id="save-state"></span></div></div></div><div class="pipeline-actions">${button('import',withIcon('upload','Import'))}${button('passes',withIcon('layers','Passes'),'accent','title="Ordered processing passes"')}${button('analyze',withIcon('sparkles','Analyze'),'accent')}${button('analyze-all',withIcon('layers','Analyze all'))}${button('auto-edit',withIcon('zap','Auto-edit'),'accent','title="Apply AI cuts, silence removal and markers as one undoable edit"')}${button('replan',withIcon('refresh-cw','Re-plan with my decisions'))}${button('preview',withIcon('film','Preview reel…'))}${button('render',withIcon('circle-check','Export / Render'),'primary')}</div></div>
+    <div class="workspace-bar"><div class="page-title"><span class="page-icon" aria-hidden="true">${icon('clapperboard')}</span><div><nav class="journey" aria-label="Workflow: project to export" id="journey"></nav><div class="page-heading"><h1 id="project-name">Untitled project</h1><span id="save-state"></span></div></div></div><div class="pipeline-actions">${button('import',withIcon('upload','Import'))}${button('passes',withIcon('layers','Passes'),'accent','title="Ordered processing passes"')}${button('analyze',withIcon('sparkles','Analyze'),'accent')}${button('analyze-all',withIcon('layers','Analyze all'))}${button('auto-edit',withIcon('zap','Auto-edit'),'accent','title="Apply AI cuts, silence removal and markers as one undoable edit"')}${button('replan',withIcon('refresh-cw','Re-plan with my decisions'))}${button('preview',withIcon('film','Preview reel…'))}${button('render',withIcon('circle-check','Export / Render'),'primary')}</div></div>
     <main class="workspace" id="review">
       <aside class="panel project-panel" aria-label="Project panel"><div class="project-switcher">${button('new-project',withIcon('plus','New project'),'primary')}${button('open-project',withIcon('folder-open','Open…'))}</div>
         <div class="panel-title"><h2>${icon('folder')}Project assets</h2><span id="asset-count"></span></div>
-        <div class="asset-actions">${button('import',withIcon('upload','Import media'),'wide')}${button('add-existing','Add existing media…','quiet')}${button('remove-asset','Remove selected asset','quiet','title="Remove from this project; keep the original file"')}</div>
+        <div class="asset-actions">${button('import',withIcon('upload','Import media'),'wide')}${button('add-existing','Add from earlier imports…','quiet','title="Link files already on this computer into this project"')}${button('remove-asset','Remove selected asset','quiet','title="Remove from this project; keep the original file"')}</div>
         <div class="bin-tree" role="group" aria-label="Asset filters">${[['all','All assets','layers'],['video','Video','film'],['audio','Audio','music'],['image','Images','image']].map(([key,label,name])=>`<button data-bin="${key}" class="${key==='all'?'active':''}">${icon(name)}<span>${label}</span><small id="count-${key}"></small></button>`).join('')}</div>
         <div class="project-tools"><div class="search-field">${icon('search')}<input id="media-search" type="search" aria-label="Search project" placeholder="Search media…"></div><div class="segmented">${button('list-view',icon('list'),'active','aria-label="List view" title="List view"')}${button('icon-view',icon('layout-grid'),'','aria-label="Icon view" title="Icon view"')}</div></div>
         <div class="media-table-head"><button data-sort="name">Name</button><button data-sort="duration">Duration</button></div>
@@ -172,7 +172,7 @@ async function selectAsset(path){
   syncTransport();renderInspector();updateTitles();
 }
 function newProjectDialog(){openDialog(`${dialogHead('PROJECT','New project')}<form id="new-project-form"><div class="dialog-body"><label class="stacked">Project name<input name="name" required maxlength="100" placeholder="My edit" autofocus></label><p>Create a project, import media, then drag assets onto the timeline. Analysis is optional.</p></div><footer class="dialog-footer">${button('close-dialog','Cancel')}<button type="submit" class="primary">Create project</button></footer></form>`,'new-project');}
-async function openProjectDialog(){await load();openDialog(`${dialogHead('PROJECT','Open project')}<div class="dialog-body project-choices">${state.projects.map(p=>button('choose-project',`<strong>${esc(p.name)}</strong><small>${p.assets.length} assets · ${p.sequence.clips.length} timeline clips</small>`,'project-choice',`data-id="${p.id}"`)).join('')||'<p>No projects yet. Create your first project to start editing.</p>'}${state.jobs.some(j=>j.clips?.length&&j.source_available)?`<details><summary>Existing edits · open as a project</summary>${state.jobs.filter(j=>j.clips?.length&&j.source_available).map(j=>button('open-legacy',esc(basename(j.source)),'project-choice',`data-id="${esc(j.id)}"`)).join('')}</details>`:''}</div><footer class="dialog-footer">${button('new-project','New project','primary')}${button('close-dialog','Cancel')}</footer>`,'open-project');}
+async function openProjectDialog(){await load();openDialog(`${dialogHead('PROJECT','Open project')}<div class="dialog-body project-choices">${state.projects.map(p=>button('choose-project',`<strong>${esc(p.name)}</strong><small>${p.assets.length} assets · ${p.sequence.clips.length} timeline clips</small>`,'project-choice',`data-id="${p.id}"`)).join('')||'<p>No projects yet. Create your first project to start editing.</p>'}${state.jobs.some(j=>j.clips?.length&&j.source_available)?`<details><summary>Earlier single-source edits (legacy)</summary>${state.jobs.filter(j=>j.clips?.length&&j.source_available).map(j=>button('open-legacy',esc(basename(j.source)),'project-choice',`data-id="${esc(j.id)}"`)).join('')}</details>`:''}</div><footer class="dialog-footer">${button('new-project','New project','primary')}${button('close-dialog','Cancel')}</footer>`,'open-project');}
 async function openProject(id){
   await saveSequence();const project=await api('/api/projects/'+encodeURIComponent(id));pause();clearError();
   state.selectionRequest++;state.project=project;state.sequence=project.sequence;state.fitDuration=Math.max(10,T.sequenceDuration(project.sequence));state.source=null;state.sourceInfo=null;state.job=null;state.selected=null;state.selection.clear();state.checked.clear();state.undo=[];state.redo=[];state.dirty=false;state.time=0;state.zoom=1;state.search='';state.bin='all';state.programMode='sequence';
@@ -188,7 +188,7 @@ async function addAssets(paths,projectId=state.project?.id){
   const url='/api/projects/'+encodeURIComponent(projectId)+'/assets';await post(url+'?dry_run=true',{paths});const project=await post(url,{paths});
   if(state.project?.id===projectId){state.project=project;renderProject();updateTitles();}return project;
 }
-function existingMediaDialog(){if(!state.project)return newProjectDialog();const current=new Set(assets().map(a=>pathKey(a.path))),available=libraryAssets().filter(a=>!current.has(pathKey(a.path))&&a.job?.source_available!==false);openDialog(`${dialogHead('PROJECT ASSETS','Add existing media')}<form id="existing-media-form"><div class="dialog-body project-choices"><p>Reuse media already imported on this computer.</p>${available.map(a=>`<label class="project-choice"><input type="checkbox" name="paths" value="${esc(a.path)}">${esc(a.name)}</label>`).join('')||'<p>All available media is already in this project.</p>'}</div><footer class="dialog-footer">${button('close-dialog','Cancel')}<button type="submit" class="primary">Add to project</button></footer></form>`,'existing-media');}
+function existingMediaDialog(){if(!state.project)return newProjectDialog();const current=new Set(assets().map(a=>pathKey(a.path))),available=libraryAssets().filter(a=>!current.has(pathKey(a.path))&&a.job?.source_available!==false);openDialog(`${dialogHead('PROJECT ASSETS','Add media from earlier imports')}<form id="existing-media-form"><div class="dialog-body project-choices"><p>Files already on this computer. Adding links them into this project — the originals stay where they are, and removing an asset never deletes its file.</p>${available.map(a=>`<label class="project-choice"><input type="checkbox" name="paths" value="${esc(a.path)}">${esc(a.name)}</label>`).join('')||'<p>All available media is already in this project.</p>'}</div><footer class="dialog-footer">${button('close-dialog','Cancel')}<button type="submit" class="primary">Add to project</button></footer></form>`,'existing-media');}
 async function removeAsset(){if(!state.source||!state.project)throw new Error('Select a project asset first');await saveSequence();state.project=await api(projectURL('assets')+'?path='+encodeURIComponent(state.source),{method:'DELETE'});state.selectionRequest++;state.source=null;state.sourceInfo=null;state.job=null;renderProject();renderSource();renderInspector();renderTimeline();renderSourceEvidence();updateTitles();toast('Removed from project · original file kept');}
 function updateTitles(){
   $('#project-name').textContent=state.project?.name||'Create or open a project';
@@ -197,9 +197,36 @@ function updateTitles(){
   $('#source-name').textContent=state.source?basename(state.source):'No source selected';
   $('#source-format').textContent=state.sourceInfo?`${state.sourceInfo.width} × ${state.sourceInfo.height}`:'SOURCE';
   $('#program-format').textContent=state.sequence?`${state.sequence.width} × ${state.sequence.height} / ${state.sequence.fps} FPS`:'SEQUENCE';
+  renderJourney();
   syncTransport();
 }
 function emptyMonitor(title,message,action,label){return `<div class="empty-state"><span class="empty-glyph">${icon(action==='import'?'upload':action==='analyze'?'sparkles':action==='render'?'film':'clapperboard')}</span><h3>${title}</h3><p>${message}</p>${action?button(action,label,'quiet'):''}</div>`;}
+// Journey rail: one guided path Project/Media → Editor → Review → Passes → QC → Export.
+// Each step jumps to the existing surface (no duplicate panels); the rail only
+// orders them and shows where the project stands.
+const JOURNEY=[
+  ['project','1 · Project / Media','journey-project','Project assets, import and timeline placement'],
+  ['edit','2 · Editor','journey-edit','Timeline, monitors and clip effects'],
+  ['review','3 · Review','journey-review','AI proposals and your decisions'],
+  ['passes','4 · Passes','journey-passes','Ordered processing passes'],
+  ['qc','5 · QC','journey-qc','Deterministic pre-export check'],
+  ['export','6 · Export','journey-export','Render dialog and real render path'],
+];
+function journeyState(id){
+  const seq=state.sequence;
+  if(id==='project')return state.project?(assets().length?'done':'current'):'current';
+  if(!state.project)return 'todo';
+  if(id==='edit')return seq?.clips.length?'done':'current';
+  if(id==='review'){if(!state.job)return seq?.clips.length?'current':'todo';const q=reviewQueue();return q.some(i=>i.status==='pending')?'current':'done';}
+  if(id==='passes'){const st=Object.values(state.passes?.state||{});if(st.some(s=>s.status==='complete'||s.status==='warning'))return 'done';if(st.some(s=>s.status==='running'||s.status==='ready'))return 'current';return seq?.clips.length?'current':'todo';}
+  if(id==='qc'){if(!state.qc)return seq?.clips.length?'current':'todo';return state.qc.summary.errors?'current':'done';}
+  if(id==='export')return state.project?.final_output?'done':seq?.clips.length?'current':'todo';
+  return 'todo';
+}
+function renderJourney(){
+  const nav=$('#journey');if(!nav)return;
+  nav.innerHTML=JOURNEY.map(([id,label,action,hint])=>`<button type="button" data-action="${action}" class="journey-step ${journeyState(id)}" title="${hint}">${esc(label)}</button>`).join('');
+}
 function loadingMedia(element){
   const stage=element.closest('.monitor-stage');stage.classList.add('loading');
   const ready=()=>stage.classList.remove('loading');element.addEventListener('loadeddata',ready,{once:true});element.addEventListener('load',ready,{once:true});
@@ -747,9 +774,10 @@ async function applyBed(form){
 // Every runner below calls the SAME function or endpoint the Auto menu uses.
 // Nothing here reimplements a pass; the panel only orders, configures and runs.
 async function loadPasses(){
-  if(!state.project){state.passes=null;return;}
+  if(!state.project){state.passes=null;renderJourney();return;}
   try{state.passes=await api(projectURL('passes'));}
   catch(e){state.passes=null;toast(`Passes unavailable: ${e.message}`,'warn');}
+  renderJourney();
 }
 async function savePasses(patch){
   needSequence();
@@ -774,9 +802,28 @@ const passRunners={
   applyTransitions:async(s,ctx)=>{needSequence();const result=await post(projectURL('transitions/apply'),{sequence:state.sequence,options:{type:'cross-dissolve',duration:.5,scope:'all',audio:'crossfade',crossfade_duration:.25,trim_for_handles:true,...s}});passCommit(`Transitions · ${result.summary.will_apply} applied`,result.sequence,ctx?.epoch);return `${result.summary.will_apply} applied${result.summary.skipped?` · ${result.summary.skipped} skipped`:''}`;},
   applyIntroOutro:async(s,ctx)=>{needSequence();if(!s.preset&&!s.intro_path&&!s.outro_path)throw new Error('Pick a preset first');const result=await post(projectURL('intro-outro/apply'),{sequence:state.sequence,options:s});passCommit('Intro / outro applied',result.sequence,ctx?.epoch);return `intro ${result.summary.intro_duration??0}s · outro ${result.summary.outro_duration??0}s`;},
   applyWatermark:async(s,ctx)=>{needSequence();if(!s.path)throw new Error('Configure the watermark image first');const result=await api(projectURL('watermark'),{method:'PUT',body:JSON.stringify({sequence:state.sequence,overlay:{position:'bottom-right',scale:.15,opacity:.85,keep_aspect:true,replace_existing:true,...s}})});passCommit('Watermark applied',result.sequence,ctx?.epoch);return `watermark · ${result.overlay.position}`;},
-  runQc:async(s)=>{needSequence();const result=await post(projectURL('qc/run'),{sequence:state.sequence,deep:s.deep!==false});const summary=`${result.summary.errors} errors · ${result.summary.warnings} warnings`;if(result.summary.errors&&s.block!==false)throw new Error(summary);return summary;},
+  runQc:async(s)=>{needSequence();const result=await post(projectURL('qc/run'),{sequence:state.sequence,deep:s.deep!==false});state.qc={...result,at:Date.now()};renderJourney();const summary=`${result.summary.errors} errors · ${result.summary.warnings} warnings`;if(result.summary.errors&&s.block!==false)throw new Error(summary);return summary;},
   openRender:async(s)=>{await renderDialog(s.preset);return s.preset?`render dialog · ${s.preset}`:'render dialog opened';},
 };
+function qcStatusOf(result){if(!result)return 'unconfigured';if(result.summary.errors)return 'error';if(result.summary.warnings)return 'warning';return 'complete';}
+// First-class QC panel over the deterministic backend (pipeline/qc.py +
+// signal QC). Read-only findings with Error/Warning/Info severities; every
+// finding jumps to its timeline region, clip, or the export setting it names.
+// No AI QC is invented here — only what POST qc/run returned.
+const QC_SETTING_CODES=new Set(['bad-codec','container-mismatch','aspect-mismatch','bad-destination','output-exists']);
+function qcFindingRow(f){
+  const jump=f.time!=null?button('qc-jump',`Jump to ${tc(f.time)}`,'quiet',`data-time="${f.time}"${f.clip_id?` data-clip="${esc(f.clip_id)}"`:''}`):f.clip_id?button('qc-jump','Select clip','quiet',`data-clip="${esc(f.clip_id)}"`):'';
+  const setting=QC_SETTING_CODES.has(f.code)?button('qc-export','Open export settings','quiet'):'';
+  return `<div class="qc-finding ${f.level}"><span class="qc-level ${f.level}">${f.level}</span><span class="qc-main"><strong>${esc(f.code)}</strong><span>${esc(f.message)}</span></span><span class="qc-actions">${jump}${setting}</span></div>`;
+}
+function qcDialog(){
+  needSequence();
+  const qc=state.qc;
+  const group=(title,list)=>list.length?`<details class="inspector-section" open><summary>${title} <small>${list.length}</small></summary><div class="qc-list">${list.map(qcFindingRow).join('')}</div></details>`:'';
+  const head=qc?`<p>${badge(qc.summary.errors?qc.summary.errors+' errors':qc.summary.warnings?qc.summary.warnings+' warnings':'QC clean',qc.summary.errors?'error':qc.summary.warnings?'warn':'ok')} <small>${qc.summary.warnings} warnings · ${qc.summary.infos} info · ran ${new Date(qc.at).toLocaleTimeString()}</small></p>`:'<p>No QC run yet on this sequence. The check is read-only — it never edits the timeline.</p>';
+  const clean=qc&&!qc.summary.errors&&!qc.summary.warnings?`<div class="empty-state"><span class="empty-glyph">${icon('circle-check')}</span><h3>QC clean</h3><p>Every deterministic check passed. Render when ready.</p>${button('journey-export',withIcon('circle-check','Export / Render'),'primary')}</div>`:'';
+  openDialog(`${dialogHead('QUALITY','QC · pre-export check')}<div class="dialog-body">${head}${clean}${group('Errors',qc?.errors||[])}${group('Warnings',qc?.warnings||[])}${group('Info',qc?.infos||[])}</div><footer class="dialog-footer"><span>${passBusy?'A pass is running…':'Read-only · gaps, overlaps, slivers, media, handles, overlays, export, signal.'}</span>${button('qc-settings','Settings','quiet')}${button('close-dialog','Close')}<button type="button" class="primary" data-action="qc-run" ${passBusy?'disabled':''}>${qc?'Run QC again':'Run QC'}</button></footer>`,'qc');
+}
 const passConfigure={
   'ai-edit':()=>passesAiDialog(),'silence':()=>passesSilenceDialog(),
   'transitions':()=>passesTransitionsDialog(),'watermark':()=>passesWatermarkDialog(),
@@ -868,7 +915,7 @@ function passRow(def){
     <span class="pass-main"><strong>${esc(def.label)}</strong><small>${esc(def.description)} ${kindBadge}</small>
     ${entry.summary?`<small class="pass-summary">${esc(entry.summary)}</small>`:''}</span>
     <span class="pass-status ${status}">${status}</span>
-    <span class="pass-actions">${button('pass-configure','Settings','quiet',`data-id="${def.id}" title="${cfgTitle}" ${cfgDis}`)}${button('pass-run','Run','accent',`data-id="${def.id}" title="${runTitle}" ${canRun&&!passBusy?'':'disabled'}`)}${canClear?button('pass-clear','Clear','quiet',`data-id="${def.id}" ${passBusy?'disabled':''}`):''}</span>
+    <span class="pass-actions">${button('pass-configure','Settings','quiet',`data-id="${def.id}" title="${cfgTitle}" ${cfgDis}`)}${button('pass-run','Run','accent',`data-id="${def.id}" title="${runTitle}" ${canRun&&!passBusy?'':'disabled'}`)}${def.id==='qc'&&state.qc?button('qc','Results','quiet','title="Open the QC findings panel"'):''}${canClear?button('pass-clear','Clear','quiet',`data-id="${def.id}" ${passBusy?'disabled':''}`):''}</span>
   </div>`;
 }
 function passesDialog(){
@@ -888,6 +935,7 @@ function passesDialog(){
 async function refreshPassesPanel(){
   if(!state.project)return;
   state.passes=await api(projectURL('passes'));
+  renderJourney();
   if($('#passes-rows'))passesDialog();
 }
 async function withPassLock(fn){
@@ -898,33 +946,37 @@ async function withPassLock(fn){
 }
 async function runSinglePass(id){
   if(passBusy){toast('A pass is already running','warn');return;}
-  passBusy=true;passProject=state.project?.id;const epoch=state.editVersion;
+  passBusy=true;passProject=state.project?.id;const epoch=state.editVersion,t0=performance.now();
+  const elapsed=()=>`${((performance.now()-t0)/1000).toFixed(1)}s`;
   try{
   await savePasses({[id]:{status:'running'}});
   if($('#passes-rows'))await refreshPassesPanel();
   try{
     const summary=await PP.runPass(id,state.passes.state,{runners:passRunners,epoch});
     if(!passAlive()){toast('Project changed during the run — status not saved','warn');return;}
-    await savePasses({[id]:{status:'complete',summary:String(summary??'')}});
-    toast(`${id} · ${summary}`,'ok');
+    const timed=`${summary} · ${elapsed()}`;
+    const status=id==='qc'?qcStatusOf(state.qc):'complete';
+    await savePasses({[id]:{status,summary:timed}});
+    toast(`${id} · ${timed}`,status==='error'?'error':'ok');
   }catch(e){
-    if(passAlive())await savePasses({[id]:{status:'error',summary:String(e.message||e)}});
+    if(passAlive())await savePasses({[id]:{status:'error',summary:`${String(e.message||e)} · ${elapsed()}`}});
     throw e;
-  }finally{if($('#passes-rows'))await refreshPassesPanel();}
+  }finally{if($('#passes-rows'))await refreshPassesPanel();if($('#dialog')?.dataset.kind==='qc'&&id==='qc'&&passAlive())qcDialog();}
   }finally{passBusy=false;passProject=null;}
 }
 async function runAllPasses(){
   if(passBusy){toast('A pass is already running','warn');return;}
-  passBusy=true;passProject=state.project?.id;const epoch=state.editVersion;
+  passBusy=true;passProject=state.project?.id;const epoch=state.editVersion,t0=performance.now();
   try{
   if($('#passes-rows'))await refreshPassesPanel();
   const stopOnError=$('#passes-stop')?.checked!==false;
   const report=await PP.runEnabled(state.passes.state,{runners:passRunners,stopOnError,job:state.job,epoch,version:()=>state.editVersion,
     onStatus:(id,status,summary)=>{if(passAlive())savePasses({[id]:{status,summary:String(summary??'')}}).catch(()=>{});}});
   for(const [id,r] of Object.entries(report.results))
-    await savePasses({[id]:r.skipped?{summary:r.summary}:r.ok?{status:id==='qc'&&/[1-9]\d* error/.test(r.summary||'')?'error':'complete',summary:r.summary}:{status:'error',summary:r.error}});
+    await savePasses({[id]:r.skipped?{summary:r.summary}:r.ok?{status:id==='qc'?qcStatusOf(state.qc):'complete',summary:r.summary}:{status:'error',summary:r.error}});
   await refreshPassesPanel();
-  toast(report.terminated?`Render is terminal · later passes skipped`:report.stopped?`Stopped at ${report.stopped}`:`All enabled passes ran`,'ok');
+  const total=`${((performance.now()-t0)/1000).toFixed(1)}s`;
+  toast(report.terminated?`Render is terminal · later passes skipped · ${total}`:report.stopped?`Stopped at ${report.stopped} · ${total}`:`All enabled passes ran · ${total}`,'ok');
   if(!passAlive())toast('Project changed during the run — statuses not saved','warn');
   }finally{passBusy=false;passProject=null;if(passAlive())await refreshPassesPanel();}}
 async function applyRecipe(name){
@@ -940,7 +992,8 @@ async function applyRecipe(name){
     if(patch[id])patch[id].settings=settings;
   await savePasses(patch);
   await refreshPassesPanel();
-  toast(`Recipe ${name} applied`,'ok');
+  const preset=recipe.settings?.render?.preset;
+  toast(`Recipe ${name} applied${preset?` · export preset ${preset} opens with Render`:''}`,'ok');
 }
 // ---- Spotlight: highlight + shorts generation over saved AI evidence. ----
 function spotlightSourceFields(){
@@ -1303,7 +1356,7 @@ async function renderDialog(preset){
   if(!capabilities.video_codecs.length)throw new Error('No supported FFmpeg video encoder was found');
   const seq=state.sequence,folder=pathKey(state.config.output_dir||'vault')+'/projects/'+state.project.id;
   const codecs=capabilities.video_codecs.map(v=>`<option value="${v}">${{libx264:'MP4 / H.264',libx265:'MP4 / H.265','libvpx-vp9':'WebM / VP9'}[v]}</option>`).join('');
-  openDialog(`${dialogHead('EXPORT','Render video')}<form id="render-form"><div class="dialog-body"><label class="stacked">Preset<select name="preset">${Object.entries({sequence:'Match sequence','youtube-1080':'YouTube 1080p','youtube-4k':'YouTube 4K',shorts:'TikTok / Reels / Shorts',instagram:'Instagram Feed',square:'Square',custom:'Custom'}).map(([v,l])=>`<option value="${v}" ${preset===v?'selected':''}>${l}</option>`).join('')}</select></label><label class="stacked">File name<input name="filename" value="timeline_sequence.mp4" required></label><label class="stacked">Output folder on this computer<input name="output_folder" value="${esc(folder)}" required></label><label class="stacked">Video format<select name="video_codec">${codecs}</select></label><div class="export-grid"><label class="stacked">Width<input name="width" type="number" min="64" max="4096" step="2" value="${seq.width}" required></label><label class="stacked">Height<input name="height" type="number" min="64" max="4096" step="2" value="${seq.height}" required></label><label class="stacked">Frame rate<select name="fps">${[23.976,24,25,29.97,30,50,59.94,60].map(f=>`<option value="${f}" ${f===seq.fps?'selected':''}>${f}</option>`).join('')}${![23.976,24,25,29.97,30,50,59.94,60].includes(seq.fps)?`<option value="${seq.fps}" selected>${seq.fps}</option>`:''}</select></label><label class="stacked">Quality<select name="quality">${[['draft','Draft'],['standard','Standard'],['high','High'],['very-high','Very High'],['custom','Custom']].map(([v,l])=>`<option value="${v}" ${v==='high'?'selected':''}>${l}</option>`).join('')}</select></label></div><div id="export-custom" class="export-grid" hidden><label class="stacked">CRF<input name="crf" type="number" min="0" max="51" value="20"></label><label class="stacked">Encoder preset<select name="encoder_preset">${['ultrafast','superfast','veryfast','faster','fast','medium','slow','slower'].map(v=>`<option ${v==='fast'?'selected':''}>${v}</option>`).join('')}</select></label></div><label class="stacked">Audio bitrate<select name="audio_bitrate">${[128,192,256,320].map(v=>`<option value="${v}" ${v===320?'selected':''}>${v} kbps</option>`).join('')}</select></label><fieldset class="pass-fieldset"><legend>Render passes</legend><label class="toggle-row">Timeline edits<input type="checkbox" checked disabled><small>always rendered</small></label><label class="toggle-row">Transitions<input type="checkbox" name="pass_transitions" ${seq.transitions?.length?'checked':''} ${seq.transitions?.length?'':'disabled'}><small>${seq.transitions?.length?seq.transitions.length+' applied · Auto ▸ Add transitions to change':'no transitions applied'}</small></label><label class="toggle-row">Watermark<input type="checkbox" name="pass_watermark" ${seq.overlays?.length?'checked':''} ${seq.overlays?.length?'':'disabled'}><small>${seq.overlays?.length?esc(seq.overlays.map(o=>o.position).join(', '))+' · Auto ▸ Add watermark to change':'no watermark applied'}</small></label><label class="toggle-row">Audio cleanup<input type="checkbox" name="pass_cleanup" ${seq.cleanup?'checked':''} ${seq.cleanup?'':'disabled'}><small>${seq.cleanup?'Auto ▸ Audio Cleanup to change':'no cleanup applied'}</small></label><label class="toggle-row">Music bed<input type="checkbox" name="pass_music_bed" ${seq.music_bed?'checked':''} ${seq.music_bed?'':'disabled'}><small>${seq.music_bed?seq.music_bed.clip_ids.length+' clips · Auto ▸ Music Bed to change':'no bed applied'}</small></label></fieldset><div id="export-summary" class="export-summary"></div></div><footer class="dialog-footer">${button('apply-output-sequence','Apply size to sequence','quiet','id="apply-output-sequence" hidden')}${button('close-dialog','Cancel')}<button type="submit" class="primary">Start render</button></footer></form>`,'render');
+  openDialog(`${dialogHead('EXPORT','Render video')}<form id="render-form"><div class="dialog-body"><label class="stacked">Preset<select name="preset">${Object.entries({sequence:'Match sequence','youtube-1080':'YouTube 1080p','youtube-4k':'YouTube 4K',shorts:'TikTok / Reels / Shorts',instagram:'Instagram Feed',square:'Square',custom:'Custom'}).map(([v,l])=>`<option value="${v}" ${preset===v?'selected':''}>${l}</option>`).join('')}</select></label><label class="stacked">File name<input name="filename" value="timeline_sequence.mp4" required></label><label class="stacked">Output folder on this computer<input name="output_folder" value="${esc(folder)}" required></label><label class="stacked">Video format<select name="video_codec">${codecs}</select></label><div class="export-grid"><label class="stacked">Width<input name="width" type="number" min="64" max="4096" step="2" value="${seq.width}" required></label><label class="stacked">Height<input name="height" type="number" min="64" max="4096" step="2" value="${seq.height}" required></label><label class="stacked">Frame rate<select name="fps">${[23.976,24,25,29.97,30,50,59.94,60].map(f=>`<option value="${f}" ${f===seq.fps?'selected':''}>${f}</option>`).join('')}${![23.976,24,25,29.97,30,50,59.94,60].includes(seq.fps)?`<option value="${seq.fps}" selected>${seq.fps}</option>`:''}</select></label><label class="stacked">Quality<select name="quality">${[['draft','Draft'],['standard','Standard'],['high','High'],['very-high','Very High'],['custom','Custom']].map(([v,l])=>`<option value="${v}" ${v==='high'?'selected':''}>${l}</option>`).join('')}</select></label></div><div id="export-custom" class="export-grid" hidden><label class="stacked">CRF<input name="crf" type="number" min="0" max="51" value="20"></label><label class="stacked">Encoder preset<select name="encoder_preset">${['ultrafast','superfast','veryfast','faster','fast','medium','slow','slower'].map(v=>`<option ${v==='fast'?'selected':''}>${v}</option>`).join('')}</select></label></div><label class="stacked">Audio bitrate<select name="audio_bitrate">${[128,192,256,320].map(v=>`<option value="${v}" ${v===320?'selected':''}>${v} kbps</option>`).join('')}</select></label><fieldset class="pass-fieldset"><legend>Render passes</legend><label class="toggle-row">Timeline edits<input type="checkbox" checked disabled><small>always rendered</small></label><label class="toggle-row">Transitions<input type="checkbox" name="pass_transitions" ${seq.transitions?.length?'checked':''} ${seq.transitions?.length?'':'disabled'}><small>${seq.transitions?.length?seq.transitions.length+' applied · Auto ▸ Add transitions to change':'no transitions applied'}</small></label><label class="toggle-row">Watermark<input type="checkbox" name="pass_watermark" ${seq.overlays?.length?'checked':''} ${seq.overlays?.length?'':'disabled'}><small>${seq.overlays?.length?esc(seq.overlays.map(o=>o.position).join(', '))+' · Auto ▸ Add watermark to change':'no watermark applied'}</small></label><label class="toggle-row">Audio cleanup<input type="checkbox" name="pass_cleanup" ${seq.cleanup?'checked':''} ${seq.cleanup?'':'disabled'}><small>${seq.cleanup?'Auto ▸ Audio Cleanup to change':'no cleanup applied'}</small></label><label class="toggle-row">Music bed<input type="checkbox" name="pass_music_bed" ${seq.music_bed?'checked':''} ${seq.music_bed?'':'disabled'}><small>${seq.music_bed?seq.music_bed.clip_ids.length+' clips · Auto ▸ Music Bed to change':'no bed applied'}</small></label><label class="toggle-row">Intro<input type="checkbox" name="pass_intro" ${seq.intro?'checked':''} ${seq.intro?'':'disabled'}><small>${seq.intro?'applied · Intro / Outro pass to change':'no intro applied'}</small></label><label class="toggle-row">Outro<input type="checkbox" name="pass_outro" ${seq.outro?'checked':''} ${seq.outro?'':'disabled'}><small>${seq.outro?'applied · Intro / Outro pass to change':'no outro applied'}</small></label></fieldset><label class="toggle-row">Captions sidecar (.srt)<input type="checkbox" name="captions_sidecar" ${state.job?.transcript_segments?.length?'checked':''}><small>${state.job?.transcript_segments?.length?'Downloaded alongside the render, timed to this edit':'Needs a transcribed source first'}</small></label><div id="export-summary" class="export-summary"></div></div><footer class="dialog-footer">${button('apply-output-sequence','Apply size to sequence','quiet','id="apply-output-sequence" hidden')}${button('close-dialog','Cancel')}<button type="submit" class="primary">Start render</button></footer></form>`,'render');
   try{const saved=JSON.parse(localStorage.getItem('smartcut.export.'+state.project.id)||'{}'),form=$('#render-form');
     for(const [key,value] of Object.entries({output_folder:saved.output_folder,video_codec:saved.video_codec,quality:saved.quality,crf:saved.crf,encoder_preset:saved.preset,audio_bitrate:saved.audio_bitrate})){
       const field=form.elements.namedItem(key);
@@ -1314,15 +1367,16 @@ async function renderDialog(preset){
       form.elements.preset.value=preset;form.elements.width.value=w;
       form.elements.height.value=h;form.elements.fps.value=fps;
     }
-    for(const [key,saveKey] of [['pass_transitions','transitions'],['pass_watermark','watermark']]){
+    for(const [key,saveKey] of [['pass_transitions','transitions'],['pass_watermark','watermark'],['pass_cleanup','cleanup'],['pass_music_bed','music_bed'],['pass_intro','intro'],['pass_outro','outro']]){
       const field=form.elements.namedItem(key);
       if(field&&!field.disabled&&saved.passes&&saved.passes[saveKey]!==undefined)field.checked=!!saved.passes[saveKey];
     }
+    if(saved.captions!=null&&form.elements.namedItem('captions_sidecar'))form.elements.namedItem('captions_sidecar').checked=!!saved.captions;
     if(form.elements.video_codec.value==='libvpx-vp9')form.elements.filename.value='timeline_sequence.webm';
   }catch{}
   updateRenderSummary();
 }
-function renderSettings(form){const f=new FormData(form),video_codec=f.get('video_codec'),container=video_codec==='libvpx-vp9'?'webm':'mp4';return {filename:String(f.get('filename')).trim(),output_folder:String(f.get('output_folder')).trim(),video_codec,container,width:Number(f.get('width')),height:Number(f.get('height')),fps:Number(f.get('fps')),quality:f.get('quality'),crf:f.get('quality')==='custom'?Number(f.get('crf')):null,preset:f.get('quality')==='custom'?f.get('encoder_preset'):null,audio_bitrate:Number(f.get('audio_bitrate')),passes:{transitions:f.has('pass_transitions'),watermark:f.has('pass_watermark'),cleanup:f.has('pass_cleanup'),music_bed:f.has('pass_music_bed')}};}
+function renderSettings(form){const f=new FormData(form),video_codec=f.get('video_codec'),container=video_codec==='libvpx-vp9'?'webm':'mp4';return {filename:String(f.get('filename')).trim(),output_folder:String(f.get('output_folder')).trim(),video_codec,container,width:Number(f.get('width')),height:Number(f.get('height')),fps:Number(f.get('fps')),quality:f.get('quality'),crf:f.get('quality')==='custom'?Number(f.get('crf')):null,preset:f.get('quality')==='custom'?f.get('encoder_preset'):null,audio_bitrate:Number(f.get('audio_bitrate')),captions:f.has('captions_sidecar'),passes:{transitions:f.has('pass_transitions'),watermark:f.has('pass_watermark'),cleanup:f.has('pass_cleanup'),music_bed:f.has('pass_music_bed'),intro:f.has('pass_intro'),outro:f.has('pass_outro')}};}
 function updateRenderSummary(){
   const form=$('#render-form');if(!form)return;
   const s=renderSettings(form),seq=state.sequence,shape=s.width*seq.height!==s.height*seq.width;
@@ -1331,14 +1385,15 @@ function updateRenderSummary(){
   if(shape)errors.push('Canvas aspect ratio differs. Apply size to sequence for an accurate preview.');
   if(!s.output_folder)errors.push('Choose an output folder.');
   const ratio=s.width/s.height,aspect=Math.abs(ratio-16/9)<.01?'16:9 Landscape':Math.abs(ratio-9/16)<.01?'9:16 Vertical':Math.abs(ratio-4/5)<.01?'4:5 Social':Math.abs(ratio-1)<.01?'1:1 Square':'Custom';
-  $('#export-summary').innerHTML=`<strong>Export summary</strong><dl><dt>Format</dt><dd>${esc(s.container.toUpperCase())} / ${esc(s.video_codec)}</dd><dt>Video</dt><dd>${s.width} × ${s.height} · ${esc(aspect)} · ${s.fps} fps</dd><dt>Quality</dt><dd>${esc(s.quality)}</dd><dt>Audio</dt><dd>${s.container==='webm'?'Opus':'AAC'} · 48 kHz · ${s.audio_bitrate} kbps</dd><dt>Passes</dt><dd>edits${s.passes.transitions?' · transitions':''}${s.passes.watermark?' · watermark':''}${s.passes.cleanup?' · cleanup':''}${s.passes.music_bed?' · bed':''}</dd><dt>Duration</dt><dd>${tc(T.sequenceDuration(seq))}</dd><dt>Output</dt><dd>${esc(s.output_folder+'/'+s.filename)}</dd></dl>${errors.map(e=>`<p class="error-text">${esc(e)}</p>`).join('')}`;
+  $('#export-summary').innerHTML=`<strong>Export summary</strong><dl><dt>Format</dt><dd>${esc(s.container.toUpperCase())} / ${esc(s.video_codec)}</dd><dt>Video</dt><dd>${s.width} × ${s.height} · ${esc(aspect)} · ${s.fps} fps${s.width===seq.width&&s.height===seq.height&&s.fps===seq.fps?' · matches sequence':''}</dd><dt>Quality</dt><dd>${esc(s.quality)}</dd><dt>Audio</dt><dd>${s.container==='webm'?'Opus':'AAC'} · 48 kHz · ${s.audio_bitrate} kbps</dd><dt>Passes</dt><dd>edits${s.passes.transitions?' · transitions':''}${s.passes.watermark?' · watermark':''}${s.passes.cleanup?' · cleanup':''}${s.passes.music_bed?' · bed':''}${s.passes.intro?' · intro':''}${s.passes.outro?' · outro':''}${s.captions?' · captions .srt':''}</dd><dt>Duration</dt><dd>${tc(T.sequenceDuration(seq))}</dd><dt>Output</dt><dd>${esc(s.output_folder+'/'+s.filename)}</dd></dl>${errors.map(e=>`<p class="error-text">${esc(e)}</p>`).join('')}`;
   form.querySelector('[type="submit"]').disabled=!!errors.length;
 }
-async function renderCut(settings){needSequence();await saveSequence(true);await post(projectURL('render'),{settings,dry_run:true});const id=state.project.id;try{localStorage.setItem('smartcut.export.'+id,JSON.stringify(settings));}catch{}closeDialog();await startTask(projectURL('render'),{settings},async()=>{await load();if(state.project?.id!==id)return;state.programMode='final';$('#program-mode').value='final';state.time=0;renderProgram();});}
+async function renderCut(settings){needSequence();await saveSequence(true);const {captions,...apiSettings}=settings;await post(projectURL('render'),{settings:apiSettings,dry_run:true});const id=state.project.id;try{localStorage.setItem('smartcut.export.'+id,JSON.stringify(settings));}catch{}closeDialog();await startTask(projectURL('render'),{settings:apiSettings},async()=>{await load();if(state.project?.id!==id)return;if(captions){try{exportCaptions();}catch(e){toast(`Render done · captions skipped: ${e.message}`,'warn');}}state.programMode='final';$('#program-mode').value='final';state.time=0;renderProgram();});}
 async function replan(){if(!state.job)throw new Error('Select an analyzed source first');await saveSequence();const id=state.project?.id;await startTask(jobURL('replan'),{},async()=>{await load();if(state.project?.id===id)toast('Plan updated · use Auto-edit or Load approved plan to apply it to the timeline');});}
 async function transcribe(){if(!state.source)throw new Error('Select a video or audio source first');await startTask('/api/actions/transcribe',{source:state.source,refresh:true},result=>{download(result.path);return load();});}
-async function importFiles(files){if(!files.length)return;if(!state.project){newProjectDialog();throw new Error('Create or open a project before importing media');}const id=state.project.id,form=new FormData();[...files].forEach(f=>form.append('files',f));toast('Importing '+files.length+' files…');const saved=await api('/api/inbox/upload',{method:'POST',body:form});await addAssets(saved.map(f=>f.path),id);await load();toast('Media imported · drag an asset onto the timeline','ok');
-  if(state.project?.id===id&&saved[0])await selectAsset(saved[0].path);}
+async function importFiles(files){if(!files.length)return;if(!state.project){newProjectDialog();throw new Error('Create or open a project before importing media');}const id=state.project.id,form=new FormData();[...files].forEach(f=>form.append('files',f));state.importing=true;syncImportButtons();toast('Importing '+files.length+' files…');try{const saved=await api('/api/inbox/upload',{method:'POST',body:form});await addAssets(saved.map(f=>f.path),id);await load();toast('Media imported · drag an asset onto the timeline','ok');
+  if(state.project?.id===id&&saved[0])await selectAsset(saved[0].path);}finally{state.importing=false;syncImportButtons();}}
+function syncImportButtons(){$$('[data-action="import"]').forEach(b=>{b.disabled=state.importing;b.classList.toggle('busy',state.importing);});}
 function sequenceSettings(){if(!state.sequence)throw new Error('Select a sequence first');openDialog(`${dialogHead('SEQUENCE','Sequence settings')}<form id="sequence-form"><div class="dialog-body"><div class="preset-row" role="group" aria-label="Format presets">${[['match','Match source'],['1920x1080','1080p 16:9'],['2560x1440','1440p 16:9'],['3840x2160','4K 16:9'],['1080x1920','9:16 Vertical'],['2160x3840','4K Vertical'],['1080x1080','1:1 Square'],['1080x1350','4:5 Social']].map(([value,label])=>button('format-preset',label,'quiet',`data-preset="${value}"`)).join('')}</div><label class="stacked">Width<input name="width" type="number" min="64" max="4096" step="2" value="${state.sequence.width}" required></label><label class="stacked">Height<input name="height" type="number" min="64" max="4096" step="2" value="${state.sequence.height}" required></label><label class="stacked">Frame rate<input name="fps" type="number" min="1" max="120" step=".001" list="frame-rates" value="${state.sequence.fps}" required><datalist id="frame-rates">${[23.976,24,25,29.97,30,50,59.94,60].map(f=>`<option value="${f}"></option>`).join('')}</datalist></label><p>The Program monitor and output use this canvas.</p></div><footer class="dialog-footer">${button('close-dialog','Cancel')}<button type="submit" class="primary">Apply</button></footer></form>`,'sequence');}
 
 const actions={
@@ -1402,6 +1457,17 @@ const actions={
   'beat-cuts':()=>beatsDialog(),
   'music-bed':()=>bedDialog(),
   passes:()=>passesDialog(),
+  'journey-project':()=>{if(!state.project)return newProjectDialog();$('.project-panel')?.scrollIntoView({block:'nearest'});$('#media-search')?.focus({preventScroll:true});},
+  'journey-edit':()=>{needSequence();$('#timeline-canvas')?.scrollIntoView({block:'nearest'});$('#timeline-canvas')?.focus({preventScroll:true});},
+  'journey-review':()=>{needSequence();state.tab='review';renderInspector();if(!state.job)toast('Analyze a source for AI suggestions, or decide ranges manually above','warn');$('#inspector-content')?.scrollIntoView({block:'nearest'});},
+  'journey-passes':()=>passesDialog(),
+  'journey-qc':()=>qcDialog(),
+  'journey-export':()=>renderDialog(),
+  qc:()=>qcDialog(),
+  'qc-run':()=>operation('Run QC',()=>runSinglePass('qc')),
+  'qc-settings':()=>passesQcDialog(),
+  'qc-export':()=>{closeDialog();renderDialog();},
+  'qc-jump':t=>{const time=t.dataset.time!=null&&t.dataset.time!==''?Number(t.dataset.time):null,clip=t.dataset.clip;closeDialog();if(clip&&( !state.sequence?.clips.some(c=>c.id===clip)))return toast('That clip is no longer on the timeline','warn');if(clip)chooseClip(clip);if(time!=null&&Number.isFinite(time))seekProgram(time);},
   'pass-configure':t=>{if(passBusy){toast('A pass is running — wait for it to finish','warn');return;}passConfigure[t.dataset.id]?.();},
   'pass-run':t=>operation(`Run ${t.dataset.id}`,()=>runSinglePass(t.dataset.id)),
   'pass-run-all':()=>operation('Run enabled passes',()=>runAllPasses()),

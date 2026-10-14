@@ -1014,3 +1014,25 @@ dialog[data-kind=auto] .dialog-body { max-height: calc(100dvh - 250px); }
 .overlay-legend .legend-accepted { background: var(--color-err); }
 .overlay-legend .legend-rejected { background: var(--color-ok); }
 .overlay-legend.off { color: var(--color-fg-dim); }
+
+/* Journey rail: guided Project/Media → Editor → Review → Passes → QC → Export. */
+.journey { display: flex; flex-wrap: wrap; gap: 4px; margin-bottom: 2px; }
+.journey-step { min-height: 24px; padding: 1px 9px; border: 1px solid var(--color-bd); border-radius: 20px; background: transparent; color: var(--color-fg-muted); font-size: 10px; letter-spacing: .06em; text-transform: uppercase; cursor: pointer; }
+.journey-step:hover { border-color: var(--color-accent); color: var(--color-fg); }
+.journey-step.current { border-color: var(--color-accent); color: var(--color-accent); }
+.journey-step.done { color: var(--color-ok); border-color: rgb(var(--color-ok-rgb) / .5); }
+.journey-step.todo { opacity: .75; }
+
+/* QC findings panel: severity-first, click-to-jump rows. */
+.qc-list { display: flex; flex-direction: column; gap: 6px; }
+.qc-finding { display: flex; align-items: flex-start; gap: 8px; padding: 7px 9px; border: 1px solid var(--color-bd); border-radius: 8px; background: var(--color-bg-soft); }
+.qc-finding.error { border-left: 3px solid var(--color-err); }
+.qc-finding.warning { border-left: 3px solid var(--color-warn); }
+.qc-finding.info { border-left: 3px solid var(--color-accent); }
+.qc-level { font-size: 10px; padding: 1px 7px; border-radius: 10px; text-transform: uppercase; letter-spacing: .05em; white-space: nowrap; }
+.qc-level.error { color: var(--color-err); border: 1px solid var(--color-err); }
+.qc-level.warning { color: var(--color-warn); border: 1px solid var(--color-warn); }
+.qc-level.info { color: var(--color-accent); border: 1px solid var(--color-accent); }
+.qc-main { flex: 1; display: flex; flex-direction: column; gap: 1px; min-width: 0; font-size: 12px; }
+.qc-main strong { font-size: 11px; color: var(--color-fg-muted); font-weight: 600; }
+.qc-actions { display: flex; gap: 4px; flex-shrink: 0; }
