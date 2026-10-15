@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {parseRanges, projectMedia, spotlightSummary, weightFields} from '../frontend/spotlight.mjs';
+import {parseRanges, projectMedia, spotlightSummary, weightFields, sigText, dedupGap} from '../frontend/spotlight.mjs';
 
 test('parseRanges reads start-end pairs', () => {
   assert.deepEqual(parseRanges('12-18, 40-44'), [[12, 18], [40, 44]]);
@@ -32,4 +32,23 @@ test('spotlightSummary narrates shorts', () => {
     {peaks: [3], total: 4, spec: {aspect: '1:1'}}], warnings: []});
   assert.match(text, /2 shorts/);
   assert.match(text, /9:16/);
+});
+
+test('sigText renders backend signal dicts, arrays, and fallbacks', () => {
+  assert.equal(sigText({signals: {action: 0.8, dialogue: 0.25}}), 'action 80% · dialogue 25%');
+  assert.equal(sigText({signals: ['peak', 'speech']}), 'peak · speech');
+  assert.equal(sigText({signals: {}}), 'ai score');
+  assert.equal(sigText({}), 'ai score');
+  assert.equal(sigText({signals: null}), 'ai score');
+});
+
+test('dedupGap honors an explicit zero', () => {
+  assert.equal(dedupGap('0'), 0);
+  assert.equal(dedupGap(0), 0);
+  assert.equal(dedupGap('6'), 6);
+  assert.equal(dedupGap('2.5'), 2.5);
+  assert.equal(dedupGap(''), 6);
+  assert.equal(dedupGap(null), 6);
+  assert.equal(dedupGap('abc'), 6);
+  assert.equal(dedupGap('-3'), 6);
 });

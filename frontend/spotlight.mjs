@@ -34,3 +34,19 @@ export function spotlightSummary(plan) {
   for (const warning of plan.warnings || []) bits.push(warning);
   return bits.join(' · ');
 }
+
+export function sigText(r) {
+  const s = r.signals;
+  if (Array.isArray(s) && s.length) return s.join(' · ');
+  if (s && typeof s === 'object') {
+    const e = Object.entries(s).filter(([, v]) => typeof v === 'number');
+    if (e.length) return e.map(([k, v]) => `${k} ${Math.round(v * 100)}%`).join(' · ');
+  }
+  return 'ai score';
+}
+
+export function dedupGap(value) {
+  if (value == null || value === '') return 6;
+  const v = Number(value);
+  return Number.isFinite(v) && v >= 0 ? v : 6;
+}
