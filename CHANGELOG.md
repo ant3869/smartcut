@@ -7,6 +7,20 @@ All notable changes to this project are documented here. The project follows
 
 ### Added
 
+- Creator settings are backend-managed (work/creator.json): brand kits, export profiles with
+  create/edit/duplicate/delete/default, caption defaults, and per-project kit/profile
+  assignments. A one-time merge imports browser-localStorage state without discarding:
+  collisions rename, duplicates and invalid items are reported with reasons, failures stay
+  retryable, and legacy keys are only cleared after a fully clean import.
+
+### Known limitations (creator persistence)
+
+- Switching to a kit that sets no watermark keeps any existing watermark (explicit notice;
+  remove it via Overlays). The same applies to intro/outro staging.
+- A kit's captions preference writes the global default shared by all projects.
+- Unknown custom kit fields are not preserved through every edit; known fields round-trip.
+- Concurrent multi-worker profile updates can race; the API guards single-process writes.
+
 - Visual clips now stack across V1–V8 with PNG alpha, image duration and trimming, fit/fill/original
   sizing, Program monitor transform handles, and clip-local position/scale/rotation/opacity keyframes.
 - Sequence frame rates include fractional values. The render dialog offers creator presets, detected

@@ -25,7 +25,7 @@ const state = {jobs:[],inbox:[],config:{},schema:{},job:null,source:null,sourceI
   gateway:'untested',tasks:[],taskCallbacks:new Map(),handled:new Set(),programMode:'sequence',playing:false,shuttle:0,
   error:null,retry:null,reviewEditing:null,loading:false,importing:false,qc:null,meta:new Map(),waves:new Map(),proposal:-1,queue:-1,lastReview:null,
   prefs:{lanes:true,overlay:true,cc:true,hud:true,auto:{fromPlan:false,waste:true,silence:true,threshold:-40,minSilence:.6,pad:.12,gaps:true,scenes:false,highlights:true,highlightCount:5}},
-  passes:null};
+  passes:null,creator:null};
 try{const saved=JSON.parse(localStorage.getItem('anna.cutroom.prefs')||'{}');state.prefs={...state.prefs,...saved,auto:{...state.prefs.auto,...saved.auto}};}catch{}
 const savePrefs=()=>{try{localStorage.setItem('anna.cutroom.prefs',JSON.stringify(state.prefs));}catch{}};
 let saveTimer, reverseTimer, previewTimer, previewToken=0, overlayKey='', clockLast=0, dialogFocus=null;
@@ -152,8 +152,9 @@ function renderProject(){
   $$('[data-action="list-view"],[data-action="icon-view"]').forEach(b=>b.classList.toggle('active',b.dataset.action===(state.view==='list'?'list-view':'icon-view')));
 }
 async function load({initial=false}={}){
-  const [health,config,schema,jobs,inbox,projects]=await Promise.all(['/api/health','/api/config','/api/config/schema','/api/jobs','/api/inbox','/api/projects'].map(p=>api(p)));
-  state.config=config;state.schema=schema;state.jobs=jobs;state.inbox=inbox;state.projects=projects;
+  const [health,config,schema,jobs,inbox,projects,creator]=await Promise.all(['/api/health','/api/config','/api/config/schema','/api/jobs','/api/inbox','/api/projects','/api/creator'].map(p=>api(p)));
+  state.config=config;state.schema=schema;state.jobs=jobs;state.inbox=inbox;state.projects=projects;state.creator=creator;
+  await maybeMigrateCreator();
   $('#backend-status').innerHTML=badge(health.ok?'Backend connected':'Backend offline',health.ok?'ok':'error');
   $('#model-label').textContent=config.vision_model;$('#model-label').title=config.lm_studio_url;
   if(state.job)state.job=jobs.find(j=>j.id===state.job.id)||state.job;
@@ -1179,9 +1180,40 @@ const BUILTIN_EXPORT_PROFILES=[
  {name:'High Quality Master',builtin:true,settings:{width:1920,height:1080,fps:30,video_codec:'libx264',quality:'very-high',audio_bitrate:320,passes:{transitions:true,watermark:true,cleanup:true,music_bed:true,intro:true,outro:true},captions:true}},
  {name:'Fast Preview',builtin:true,settings:{width:1280,height:720,fps:30,video_codec:'libx264',quality:'draft',audio_bitrate:128,passes:{transitions:false,watermark:false,cleanup:false,music_bed:false,intro:false,outro:false},captions:false}},
 ];
-function exportProfiles(){let p=storeGet('smartcut.exportprofiles.v1',null);if(!p||!Array.isArray(p.profiles)||!p.profiles.length){p={profiles:BUILTIN_EXPORT_PROFILES.map(x=>({...x,settings:{...x.settings,passes:{...x.settings.passes}}})),default:'YouTube 16:9'};storeSet('smartcut.exportprofiles.v1',p);}return p;}
+function creatorLib(){return state.creator||{kits:[],profiles:BUILTIN_EXPORT_PROFILES.map(x=>({...x,settings:{...x.settings,passes:{...x.settings.passes}}})),default_profile:'YouTube 16:9',captions:{sidecar:true}};}
+function exportProfiles(){const l=creatorLib();return {profiles:Array.isArray(l.profiles)&&l.profiles.length?l.profiles:creatorLib().profiles,default:l.default_profile||'YouTube 16:9'};}
+function projectExportDefault(){const p=exportProfiles(),sel=state.project?.export_profile||p.default;return p.profiles.some(x=>x.name===sel)?sel:p.default;}
+async function maybeMigrateCreator(){
+  if(storeGet('smartcut.creator.migrated.v1',false))return;
+  const kits=storeGet('smartcut.brandkits.v1',[]),store=storeGet('smartcut.exportprofiles.v1',null);
+  const profiles=((store&&store.profiles)||[]).filter(p=>!p.builtin);
+  const cmap=storeGet('smartcut.projectkit.v1',{}),caps=storeGet('smartcut.captions.v1',null);
+  if(!kits.length&&!profiles.length&&!Object.keys(cmap).length&&!caps&&!(store&&store.default)){storeSet('smartcut.creator.migrated.v1',true);return;}
+  const failed={kits:[],profiles:[],links:[]};
+  try{
+    const res=await post('/api/creator/import',{kits,profiles,default_profile:store&&store.default,captions:caps});
+    state.creator=res.library;
+    const r=res.report,renamed=r.kits_renamed+r.profiles_renamed,skipped=(r.skipped||[]).length;
+    // project assignments migrate one by one; failures are kept, never dropped
+    for(const [pid,kid] of Object.entries(cmap)){try{await api(`/api/projects/${encodeURIComponent(pid)}/creator`,{method:'PUT',body:JSON.stringify({kit_id:kid,export_profile:null})});}catch(e){failed.links.push({project:pid,kit:kid,error:e.message});}}
+    if(skipped)failed.kits.push(...(r.skipped||[]));
+    const clean=skipped===0&&failed.links.length===0;
+    if(clean){
+      for(const k of ['smartcut.brandkits.v1','smartcut.exportprofiles.v1','smartcut.projectkit.v1','smartcut.captions.v1']){try{localStorage.removeItem(k);}catch{}}
+      storeSet('smartcut.creator.migrated.v1',true);
+    }else{
+      // keep the leftovers for retry + record them where they survive a wipe
+      try{localStorage.setItem('smartcut.creator.failed.v1',JSON.stringify({at:Date.now(),failed}));}catch{}
+    }
+    const bits=[`${r.kits_added} kits`, `${r.profiles_added} profiles`];
+    if(renamed)bits.push(renamed+' renamed');
+    if(skipped)bits.push(skipped+' skipped (kept for retry)');
+    if(failed.links.length)bits.push(failed.links.length+' project links kept for retry');
+    toast(`Creator settings copied to app storage · ${bits.join(' · ')}`,clean?'ok':'warn');
+  }catch(e){toast('Creator migration skipped: '+e.message+' · browser copy kept','warn');}
+}
 function profileOptions(sel){return exportProfiles().profiles.map(x=>`<option ${x.name===sel?'selected':''}>${esc(x.name)}</option>`).join('');}
-function profileRowHTML(){const p=exportProfiles();return `<label class="stacked">Export profile<select name="export_profile">${profileOptions(p.default)}</select></label><div class="profile-row"><input name="export_profile_name" placeholder="Name for Save…" aria-label="Profile name"><span class="pass-buttons">${button('profile-save','Save','quiet')}${button('profile-delete','Delete','quiet')}${button('profile-default','Default','quiet')}</span></div><p class="field-note">Profiles store format settings only — file name and folder stay per-project.</p>`;}
+function profileRowHTML(){return `<label class="stacked">Export profile<select name="export_profile">${profileOptions(projectExportDefault())}</select></label><div class="profile-row"><input name="export_profile_name" placeholder="Name for Save…" aria-label="Profile name"><span class="pass-buttons">${button('profile-save','Save','quiet')}${button('profile-delete','Delete','quiet')}${button('profile-default','Default','quiet')}</span></div><p class="field-note">Profiles store format settings only — file name and folder stay per-project.</p>`;}
 function currentProfileSettings(){const f=$('#render-form');if(!f)return null;const s=renderSettings(f);delete s.filename;delete s.output_folder;delete s.container;return s;}
 function applyExportProfile(name){const p=exportProfiles(),prof=p.profiles.find(x=>x.name===name)||p.profiles.find(x=>x.name===p.default);if(!prof)return;const f=$('#render-form');if(!f)return;const s=prof.settings,skipped=[];
  const set=(n,v)=>{const el=f.elements.namedItem(n);if(el)el.value=v;};
@@ -1194,10 +1226,10 @@ function applyExportProfile(name){const p=exportProfiles(),prof=p.profiles.find(
  updateRenderSummary();
  if(skipped.length)toast('Profile partly applied · skipped: '+skipped.join(', '),'warn');}
 // ----- Brand kits: logo/intro/outro/captions/export-profile references. Apply writes through real endpoints. -----
-function brandKits(){const v=storeGet('smartcut.brandkits.v1',[]);return Array.isArray(v)?v:[];}
-function kitMap(){return storeGet('smartcut.projectkit.v1',{});}
+function brandKits(){const v=creatorLib().kits;return Array.isArray(v)?v:[];}
 function kitMediaOptions(sel){const paths=[...(state.project?.assets||[])].map(a=>a.path);return ['<option value="">—</option>'].concat(paths.map(p=>`<option value="${esc(p)}" ${sel===p?'selected':''}>${esc(basename(p))}</option>`)).join('');}
-function kitDialog(){needSequence();const kits=brandKits(),map=kitMap(),cur=map[state.project.id];
+function kitDialog(){needSequence();return operation('Brand kits',async()=>{try{state.creator=await api('/api/creator');}catch(e){toast('Creator storage unreachable: '+e.message,'warn');}openKitDialog();});}
+function openKitDialog(){const kits=brandKits(),cur=state.project?.kit_id;
  const rows=kits.map(k=>{const bits=[k.logo||(k.watermark&&k.watermark.path)?'logo':null,k.intro&&k.intro.path?'intro':null,k.outro&&k.outro.path?'outro':null,k.exportProfile?'profile '+k.exportProfile:null,k.captionsSidecar?'srt':null].filter(Boolean).join(' · ');
  return `<div class="kit-row"><div><strong>${esc(k.name)}</strong><small>${esc(bits||'empty kit')}</small></div><span class="pass-buttons">${cur===k.id?'<small>on this project</small>':button('kit','Use','quiet',`data-kit-op="use" data-kit="${k.id}"`)}${button('kit','Edit','quiet',`data-kit-op="edit" data-kit="${k.id}"`)}${button('kit','Duplicate','quiet',`data-kit-op="dup" data-kit="${k.id}"`)}${button('kit','Delete','quiet',`data-kit-op="del" data-kit="${k.id}"`)}</span></div>`;}).join('');
  openDialog(`${dialogHead('BRAND','Brand kits')}<div class="dialog-body"><p>Logo, intro, outro, captions default and export profile in one place. Applying writes through the real watermark, intro/outro and render paths.</p><div class="kit-list">${rows||'<p>No kits yet.</p>'}</div></div><footer class="dialog-footer">${button('kit','New kit','primary','data-kit-op="new"')}${button('close-dialog','Close')}</footer>`,'brand');}
@@ -1206,18 +1238,21 @@ function kitForm(k){needSequence();k=k||{id:uid(),name:'',logo:'',watermark:{pat
 function kitOp(op,id){const kits=brandKits();
  if(op==='new')return kitForm(null);
  if(op==='edit'){const k=kits.find(x=>x.id===id);if(k)kitForm(k);return;}
- if(op==='dup'){const k=kits.find(x=>x.id===id);if(!k)return;const c={...JSON.parse(JSON.stringify(k)),id:uid(),name:k.name+' copy'};storeSet('smartcut.brandkits.v1',[...kits,c]);kitDialog();return;}
- if(op==='del'){storeSet('smartcut.brandkits.v1',kits.filter(x=>x.id!==id));const m=kitMap();for(const p of Object.keys(m))if(m[p]===id)delete m[p];storeSet('smartcut.projectkit.v1',m);kitDialog();return;}
+ if(op==='dup'){const k=kits.find(x=>x.id===id);if(!k)return;const c={...JSON.parse(JSON.stringify(k)),name:k.name+' copy'};delete c.id;return operation('Duplicate brand kit',async()=>{const r=await post('/api/creator/kits',{kit:c});state.creator=r.library;kitDialog();toast(`Brand kit ${r.kit.name} duplicated`,'ok');});}
+ if(op==='del'){return operation('Delete brand kit',async()=>{await api(`/api/creator/kits/${encodeURIComponent(id)}`,{method:'DELETE'});state.creator=(await api('/api/creator'));kitDialog();toast('Brand kit deleted','ok');});}
  if(op==='use'){const k=kits.find(x=>x.id===id);if(!k)return;return operation('Apply brand kit',async()=>{await applyKit(k);kitDialog();});}}
 async function applyKit(k){needSequence();const notes=[];let applied=false;
  if(k.watermark&&k.watermark.path){try{const r=await api(projectURL('watermark'),{method:'PUT',body:JSON.stringify({sequence:state.sequence,overlay:{position:'bottom-right',scale:.15,opacity:.85,keep_aspect:true,replace_existing:true,...k.watermark}})});commit('Brand kit watermark',r.sequence);applied=true;notes.push('watermark applied');}catch(e){notes.push('watermark skipped: '+e.message);}}
+ else if((state.sequence.overlays||[]).some(o=>o.kind==='watermark'))notes.push('existing watermark kept (kit sets none — remove it via Overlays)');
  if((k.intro&&k.intro.path)||(k.outro&&k.outro.path)){try{await savePasses({'intro-outro':{settings:{preset:'Custom',intro_path:(k.intro&&k.intro.path)||'',intro_duration:(k.intro&&k.intro.duration)||3,outro_path:(k.outro&&k.outro.path)||'',outro_duration:(k.outro&&k.outro.duration)||3},status:'ready'}});applied=true;notes.push('intro/outro staged — run the pass to apply');}catch(e){notes.push('intro/outro skipped (assets must be project media): '+e.message);}}
- if(k.captionsSidecar!==undefined){storeSet('smartcut.captions.v1',{sidecar:!!k.captionsSidecar});notes.push('captions default '+(k.captionsSidecar?'on':'off'));}
+ else if(state.sequence.intro||state.sequence.outro)notes.push('existing intro/outro kept (kit sets none)');
+ if(k.captionsSidecar!==undefined){try{await api('/api/creator/captions',{method:'PUT',body:JSON.stringify({sidecar:!!k.captionsSidecar})});state.creator=(await api('/api/creator'));notes.push('captions default '+(k.captionsSidecar?'on':'off')+' (global, all projects)');}catch(e){notes.push('captions default skipped: '+e.message);}}
  if(k.exportProfile){if(exportProfiles().profiles.some(x=>x.name===k.exportProfile))notes.push(`export profile ${k.exportProfile} (pick it in Render)`);else notes.push(`export profile ${k.exportProfile} not found — pick another in Render`);}
- const map=kitMap();map[state.project.id]=k.id;storeSet('smartcut.projectkit.v1',map);
+ await api(projectURL('creator'),{method:'PUT',body:JSON.stringify({kit_id:k.id,export_profile:state.project?.export_profile??null})});
+ state.project.kit_id=k.id;
  toast(`Brand kit ${k.name} · ${notes.join(' · ')||'nothing to apply'}`,applied?'ok':'warn');}
 // ----- Captions: sidecar-only panel. Burned-in is not renderer-supported and is not offered. -----
-function captionsPref(){return storeGet('smartcut.captions.v1',{sidecar:true});}
+function captionsPref(){return creatorLib().captions||{sidecar:true};}
 function captionsDefault(){return captionsPref().sidecar!==false&&!!(state.job&&state.job.transcript_segments&&state.job.transcript_segments.length);}
 function captionsDialog(){needSequence();const segs=(state.job&&state.job.transcript_segments)||[];
  openDialog(`${dialogHead('CAPTIONS','Captions')}<div class="dialog-body"><p>${segs.length?segs.length+' transcript segments on the selected source — export times them to this edit.':'No transcript on the selected source. Transcribe it first (Auto menu).'}</p><label class="toggle-row">Live captions in monitor<input type="checkbox" data-captions-live ${state.prefs.cc?'checked':''}></label><label class="toggle-row">Captions sidecar (.srt) with renders<input type="checkbox" data-captions-sidecar ${captionsPref().sidecar!==false?'checked':''}></label><p class="field-note">Sidecar .srt downloads next to the render. Burned-in captions are not supported by the renderer, so they are not offered here.</p><div class="pass-buttons">${button('captions-export','Export .srt now','quiet')}</div></div><footer class="dialog-footer">${button('close-dialog','Close','primary')}</footer>`,'captions');}
@@ -1556,9 +1591,9 @@ const actions={
   'captions-export':()=>operation('Export captions',async()=>{exportCaptions();}),
   'remove-intro':()=>operation('Remove intro',async()=>{needSequence();const r=await post(projectURL('intro-outro/remove'),{sequence:state.sequence,side:'intro'});commit('Intro removed',r.sequence);}),
   'remove-outro':()=>operation('Remove outro',async()=>{needSequence();const r=await post(projectURL('intro-outro/remove'),{sequence:state.sequence,side:'outro'});commit('Outro removed',r.sequence);}),
-  'profile-save':()=>operation('Save export profile',async()=>{const f=$('#render-form');if(!f)throw new Error('Open the render dialog first');const p=exportProfiles();const typed=String(f.elements.export_profile_name?.value||'').trim();if(!typed)throw new Error('Type a profile name first — blank never overwrites');let name=typed;const s=currentProfileSettings();if(!s)throw new Error('Nothing to save');if(p.profiles.some(x=>x.name===name&&x.builtin))name=name+' copy';const ix=p.profiles.findIndex(x=>x.name===name&&!x.builtin);if(ix>=0){p.profiles[ix]={name,settings:s};}else{p.profiles.push({name,settings:s});}storeSet('smartcut.exportprofiles.v1',p);f.elements.export_profile.innerHTML=profileOptions(name);f.elements.export_profile_name.value='';toast(`Profile ${name} ${ix>=0?'updated':'saved'}`,'ok');}),
-  'profile-delete':()=>operation('Delete export profile',async()=>{const f=$('#render-form');if(!f)throw new Error('Open the render dialog first');const p=exportProfiles(),name=f.elements.export_profile.value,rec=p.profiles.find(x=>x.name===name);if(!rec||rec.builtin)throw new Error('Built-in profiles cannot be deleted');p.profiles=p.profiles.filter(x=>x.name!==name);if(p.default===name)p.default=p.profiles[0].name;storeSet('smartcut.exportprofiles.v1',p);f.elements.export_profile.innerHTML=profileOptions(p.default);applyExportProfile(p.default);toast(`Profile ${name} deleted`,'ok');}),
-  'profile-default':()=>operation('Default export profile',async()=>{const f=$('#render-form');if(!f)throw new Error('Open the render dialog first');const p=exportProfiles();p.default=f.elements.export_profile.value;storeSet('smartcut.exportprofiles.v1',p);toast(`${p.default} is now the default profile`,'ok');}),
+  'profile-save':()=>operation('Save export profile',async()=>{const f=$('#render-form');if(!f)throw new Error('Open the render dialog first');const typed=String(f.elements.export_profile_name?.value||'').trim();if(!typed)throw new Error('Type a profile name first — blank never overwrites');let name=typed;const s=currentProfileSettings();if(!s)throw new Error('Nothing to save');const p=exportProfiles();let autoRenamed=false;if(p.profiles.some(x=>x.name===name&&x.builtin)){name=name+' copy';autoRenamed=true;}if(autoRenamed){const base=name.replace(/ copy \d+$/,'').replace(/ copy$/,'');let n=1;while(p.profiles.some(x=>x.name===name&&!x.builtin)){n++;name=base+' copy '+n;if(n>50)throw new Error('Too many copies — rename it yourself');}}const existing=!autoRenamed&&p.profiles.some(x=>x.name===name&&!x.builtin);const r=existing?await api(`/api/creator/profiles/${encodeURIComponent(name)}`,{method:'PUT',body:JSON.stringify({profile:{name,settings:s}})}):await post('/api/creator/profiles',{profile:{name,settings:s}});state.creator=r.library;const sel=$('#render-form').elements.export_profile;if(sel)sel.innerHTML=profileOptions(name);f.elements.export_profile_name.value='';toast(`Profile ${name} ${existing?'updated':'saved'}`,'ok');}),
+  'profile-delete':()=>operation('Delete export profile',async()=>{const f=$('#render-form');if(!f)throw new Error('Open the render dialog first');const name=f.elements.export_profile.value;const r=await api(`/api/creator/profiles/${encodeURIComponent(name)}`,{method:'DELETE'});state.creator=r.library;const p=exportProfiles();const sel=$('#render-form').elements.export_profile;if(sel){sel.innerHTML=profileOptions(projectExportDefault());applyExportProfile(projectExportDefault());}toast(`Profile ${name} deleted`,'ok');}),
+  'profile-default':()=>operation('Default export profile',async()=>{const f=$('#render-form');if(!f)throw new Error('Open the render dialog first');const name=f.elements.export_profile.value;const r=await api('/api/creator/default',{method:'PUT',body:JSON.stringify({name})});state.creator=r.library;toast(`${name} is now the default profile`,'ok');}),
   'journey-project':()=>{if(!state.project)return newProjectDialog();$('.project-panel')?.scrollIntoView({block:'nearest'});$('#media-search')?.focus({preventScroll:true});},
   'journey-edit':()=>{needSequence();$('#timeline-canvas')?.scrollIntoView({block:'nearest'});$('#timeline-canvas')?.focus({preventScroll:true});},
   'journey-review':()=>{needSequence();state.tab='review';renderInspector();if(!state.job)toast('Analyze a source for AI suggestions, or decide ranges manually above','warn');$('#inspector-content')?.scrollIntoView({block:'nearest'});},
@@ -1728,7 +1763,7 @@ document.addEventListener('change',e=>{
     if(e.target.hasAttribute('data-image-duration')){const length=Number(e.target.value);operation('Image duration',()=>edit('Image duration updated',s=>T.trim(s,state.selected,'end',s.clips.find(c=>c.id===state.selected).start+length,false)));}
     if(e.target.dataset&&e.target.dataset.wmPath!==undefined){const box=$('#wm-preview');if(box)box.innerHTML=e.target.value?`<img class="thumb-preview" src="${fileURL(e.target.value)}" alt="Watermark preview">`:'';}
     if(e.target.dataset&&e.target.dataset.captionsLive!==undefined){state.prefs.cc=e.target.checked;savePrefs();toast(e.target.checked?'Live captions on':'Live captions off');return;}
-    if(e.target.dataset&&e.target.dataset.captionsSidecar!==undefined){storeSet('smartcut.captions.v1',{sidecar:e.target.checked});toast(e.target.checked?'Sidecar .srt will be offered with renders':'Sidecar .srt off by default');return;}
+    if(e.target.dataset&&e.target.dataset.captionsSidecar!==undefined){const on=e.target.checked;operation('Captions default',async()=>{const r=await api('/api/creator/captions',{method:'PUT',body:JSON.stringify({sidecar:on})});state.creator=r.library;toast(on?'Sidecar .srt will be offered with renders':'Sidecar .srt off by default');});return;}
     if(e.target.dataset&&e.target.dataset.momentCheck!==undefined){if(!MOM)return;const i=Number(e.target.dataset.momentCheck);if(e.target.checked)MOM.checked.add(i);else MOM.checked.delete(i);const st=$('#moments-status');if(st)st.textContent=`${MOM.ranked.length} moments · ${MOM.checked.size} selected`;return;}
     if(e.target.name==='export_profile'){applyExportProfile(e.target.value);return;}
     if(e.target.closest('#render-form')){const form=$('#render-form');if(e.target.name==='preset'&&exportPresets[e.target.value]){const [w,h,fps]=exportPresets[e.target.value];form.elements.width.value=w;form.elements.height.value=h;form.elements.fps.value=fps;}if(e.target.name==='video_codec'){const ext=e.target.value==='libvpx-vp9'?'.webm':'.mp4';form.elements.filename.value=form.elements.filename.value.replace(/\.(mp4|webm)$/i,ext);}updateRenderSummary();}
@@ -1763,7 +1798,7 @@ document.addEventListener('change',e=>{
     if(e.target.id==='passes-beat-form'){const f=new FormData(e.target);await savePasses({'beat-cuts':{settings:{path:String(f.get('path')),sensitivity:Number(f.get('sensitivity')),mode:String(f.get('mode')),every:Number(f.get('every'))},status:'ready'}});closeDialog();toast('Beat Cuts settings saved on the pass','ok');}
     if(e.target.id==='passes-bed-form'){const f=new FormData(e.target);await savePasses({'music-bed':{settings:{music_path:String(f.get('music_path')),volume:Number(f.get('volume')),duck:f.has('duck')},status:'ready'}});closeDialog();toast('Music Bed settings saved on the pass','ok');}
     if(e.target.id==='passes-intro-form'){const f=new FormData(e.target);await savePasses({'intro-outro':{settings:{preset:String(f.get('preset')),intro_path:String(f.get('intro_path')||''),intro_duration:Number(f.get('intro_duration'))||3,outro_path:String(f.get('outro_path')||''),outro_duration:Number(f.get('outro_duration'))||3},status:'ready'}});closeDialog();toast('Intro / Outro settings saved on the pass','ok');}
-    if(e.target.id==='kit-form'){const f=new FormData(e.target),id=e.target.dataset.kitId,kits=brandKits();const op=Number(f.get('wm_opacity'));const rec={id,name:String(f.get('name')).trim().slice(0,80)||'Untitled kit',logo:String(f.get('logo')||''),watermark:{path:String(f.get('logo')||''),position:String(f.get('wm_position')),scale:Number(f.get('wm_scale'))||.15,opacity:Number.isFinite(op)?op:.85},intro:{path:String(f.get('intro_path')||''),duration:Number(f.get('intro_duration'))||3},outro:{path:String(f.get('outro_path')||''),duration:Number(f.get('outro_duration'))||3},captionsSidecar:f.has('captions_sidecar'),exportProfile:String(f.get('export_profile')||'')};const ix=kits.findIndex(x=>x.id===id);if(ix>=0)kits[ix]=rec;else kits.push(rec);storeSet('smartcut.brandkits.v1',kits);kitDialog();toast(`Brand kit ${rec.name} saved`,'ok');}
+    if(e.target.id==='kit-form'){const f=new FormData(e.target),id=e.target.dataset.kitId;const op=Number(f.get('wm_opacity'));const rec={name:String(f.get('name')).trim().slice(0,80)||'Untitled kit',logo:String(f.get('logo')||''),watermark:{path:String(f.get('logo')||''),position:String(f.get('wm_position')),scale:Number(f.get('wm_scale'))||.15,opacity:Number.isFinite(op)?op:.85},intro:{path:String(f.get('intro_path')||''),duration:Number(f.get('intro_duration'))||3},outro:{path:String(f.get('outro_path')||''),duration:Number(f.get('outro_duration'))||3},captionsSidecar:f.has('captions_sidecar'),exportProfile:String(f.get('export_profile')||'')};const isEdit=id&&brandKits().some(x=>x.id===id);await operation('Save brand kit',async()=>{const r=isEdit?await api(`/api/creator/kits/${encodeURIComponent(id)}`,{method:'PUT',body:JSON.stringify({kit:{...rec,id}})}):await post('/api/creator/kits',{kit:rec});state.creator=r.library;kitDialog();toast(`Brand kit ${r.kit.name} saved${(r.warnings||[]).length?' · '+r.warnings.join(' · '):''}`,(r.warnings||[]).length?'warn':'ok');});}
     if(e.target.id==='passes-qc-form'){const f=new FormData(e.target);await savePasses({qc:{settings:{deep:f.has('deep'),block:f.has('block')},status:'ready'}});closeDialog();toast('QC settings saved on the pass','ok');}
     if(e.target.id==='marker-form'){const f=new FormData(e.target),id=e.target.dataset.markerForm;closeDialog();edit('Marker updated',s=>{const m=s.markers.find(x=>x.id===id);if(!m)throw new Error('Marker no longer exists');m.label=String(f.get('label')).trim().slice(0,200)||'Marker';m.time=Math.max(0,Number(f.get('time'))||0);});}
     if(e.target.id==='adjust-form'){const f=new FormData(e.target),index=Number(e.target.dataset.adjustIndex),item=reviewQueue()[index];if(!item)throw new Error('Queue item no longer exists');const start=Number(f.get('start')),end=Number(f.get('end')),problem=RQ.validateAdjust(start,end,state.job?.duration);if(problem){$('#adjust-error').innerHTML=`<p class="error-text">${esc(problem)}</p>`;return;}closeDialog();await decideQueue(item,String(f.get('verdict'))==='reject'?'reject':'accept',{start,end});}
