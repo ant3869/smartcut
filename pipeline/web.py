@@ -48,6 +48,7 @@ from .qc import run_qc as qc_structural
 from .qc import run_signal_qc as qc_signal
 from .sequence import AudioCleanup
 from .sequence import Sequence, RenderSettings, from_plan, export_sequence
+from .timeline_analysis import plan_spans
 try:  # Live when the transitions/watermark pass work merges; shorts degrade honestly without it.
     from .passes import apply_transitions as apply_transition_pass
     from .passes import upsert_watermark as upsert_watermark_pass
@@ -123,6 +124,17 @@ class ReviewPayload(BaseModel):
     timebase: str = "source"
     cut_intervals: list[dict[str, Any]] = Field(default_factory=list)
     keep_intervals: list[dict[str, Any]] = Field(default_factory=list)
+
+
+class TimelineAnalyzeRequest(BaseModel):
+    scope: dict[str, Any] = Field(default_factory=lambda: {"mode": "entire"})
+    refresh: bool = False
+    stages: list[str] | None = None
+
+
+class TimelineDecisionRequest(BaseModel):
+    index: int = Field(ge=0)
+    action: str = Field(pattern=r"^(accept|keep)$")
 
 
 class ProjectRequest(BaseModel):
@@ -759,6 +771,55 @@ def create_app(config_path: str | Path = DEFAULT_CONFIG) -> FastAPI:
                 data.update(assets=[a for a in data["assets"] if Path(a["path"]).resolve() != target], updated_at=utc_now())
                 write_json(folder / "project.json", data)
             return project_view(project_id)
+
+    @app.post("/api/projects/{project_id}/timeline/analyze")
+    def project_timeline_analyze(project_id: str, request: TimelineAnalyzeRequest):
+        """Judge the edited timeline (REVIEW-only), not the original source."""
+        folder = project_path(project_id)
+        sequence = read_json(folder / "sequence.json")
+        scope = request.scope or {"mode": "entire"}
+        try:
+            spans = plan_spans(sequence, scope)
+        except PipelineError as exc:
+            raise HTTPException(400, str(exc))
+        sampled = round(sum(s["timeline_end"] - s["timeline_start"] for s in spans), 1)
+        engine = brain()
+        return start_task(
+            f"Timeline analysis ({scope.get('mode', 'entire')} · {sampled}s)",
+            lambda progress: engine.analyze_timeline(
+                folder, sequence, scope, refresh=request.refresh,
+                stages=request.stages, progress=progress),
+            with_progress=True)
+
+    @app.get("/api/projects/{project_id}/timeline/analysis")
+    def project_timeline_analysis(project_id: str):
+        folder = project_path(project_id)
+        cached = safe_read_json(folder / "timeline_analysis.json") or {}
+        if cached:
+            cached["stale"] = (cached.get("sequence_revision")
+                               != read_json(folder / "sequence.json").get("revision"))
+        else:
+            partial = safe_read_json(folder / "timeline_analysis.partial.json") or {}
+            if partial.get("observations"):
+                cached = {"partial": True,
+                          "judged_count": len(partial["observations"])}
+        return cached
+
+    @app.post("/api/projects/{project_id}/timeline/decisions")
+    def project_timeline_decision(project_id: str, request: TimelineDecisionRequest):
+        """Record accept/keep on a timeline finding. REVIEW-only: the cutter
+        never reads this file and source evidence is untouched."""
+        with sequence_lock:
+            folder = project_path(project_id)
+            cached = safe_read_json(folder / "timeline_analysis.json")
+            if not cached or request.index >= len(cached.get("review_intervals", [])):
+                raise HTTPException(404, "Timeline finding not found; re-run timeline analysis")
+            if cached.get("sequence_revision") != read_json(folder / "sequence.json").get("revision"):
+                raise HTTPException(409, "Sequence changed since this analysis — re-run timeline analysis before deciding")
+            decisions = cached.setdefault("decisions", {})
+            decisions[str(request.index)] = {"action": request.action, "at": utc_now()}
+            write_json(folder / "timeline_analysis.json", cached)
+            return {"ok": True, "decisions": decisions}
 
     @app.put("/api/projects/{project_id}/sequence")
     def project_save_sequence(project_id: str, payload: Sequence, dry_run: bool = False):

@@ -6,18 +6,27 @@ import os
 from dataclasses import asdict
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Any
 from uuid import uuid4
 
 from .contracts import Clip, EditPlan, Observation, Transcript
 from .ear import WhisperEar, merge_intervals
-from .eye import VisionEye, SECTION_SETUP_CLAUSE, compose_section_policy, temporal_decision_intervals
+from .eye import VisionEye, SECTION_SETUP_CLAUSE, build_frame_prompt, compose_section_policy, temporal_decision_intervals
 from .highlights import Highlight, plan_highlights, select_reel_highlights
 from .scenes import detect_content_scenes
 from .settings import DEFAULT_GATEWAY_URL
 from .signals import build_frame_hints, detect_frame_signals
 from .story import build_story_map, learned_editorial_focus, write_story_map
+from .timeline_analysis import (
+    finding_identity,
+    identity_is_content_bound,
+    plan_spans,
+    remap_segments_to_timeline,
+    sample_times,
+    timeline_to_source,
+)
 from .editorial_loop import build_editorial_loop
-from .util import PipelineError, media_duration, read_json, source_fingerprint, write_json
+from .util import PipelineError, media_duration, read_json, read_json_or_none, source_fingerprint, write_json
 from .blade import FfmpegBlade
 from .voice import PersonaVoice
 
@@ -337,8 +346,290 @@ class PipelineBrain:
         self._write_plan(job, plan, fingerprint)
         result = plan.to_dict()
         result["stages"] = {stage: "ran" if stage in stages else "reused" if old else "skipped" for stage in ("ear", "eye", "voice")}
+        # Frames the vision ladder could not judge carry no verdict: the
+        # review UI must show them as REVIEW/incomplete, never CUT.
+        result["eye_failed_frames"] = list(self.eye.failed_frames)
         write_json(job / "edit_plan.json", result)
         report("Analysis complete", 100)
+        return result
+
+    def analyze_timeline(
+        self,
+        project_dir: Path,
+        sequence: dict,
+        scope: dict,
+        *,
+        refresh: bool = False,
+        stages: list[str] | None = None,
+        progress=None,
+    ) -> dict:
+        """Judge the edited timeline, not the original source.
+
+        Only retained spans are sampled; every observation carries a timeline
+        timestamp plus source provenance. Results live in the project's
+        timeline_analysis.json (keyed by sequence revision + scope +
+        settings), apart from source-analysis evidence and human decisions,
+        and are REVIEW-only: the cutter never reads this file.
+        """
+        from .eye import VISION_PROMPT_VERSION
+
+        stages = set(["ear", "eye"] if stages is None else stages)
+        if stages - {"ear", "eye"}:
+            raise PipelineError("Unknown timeline analysis stage")
+        report = progress or (lambda done, total: None)
+        project_dir = Path(project_dir)
+        revision = int(sequence.get("revision", 0))
+        spans = plan_spans(sequence, scope)
+        interval = float(self.config.get("frame_interval_seconds", 2.0))
+        audio_enabled = bool(self.config.get("audio_evidence_enabled", True))
+        # Live content identity: replacing media at the same path changes
+        # these hashes, voiding cached results and partial resumes. Missing
+        # files map to None here; the per-source loop still raises the
+        # actionable "missing media" error for those.
+        fingerprints: dict[str, dict[str, Any]] = {}
+        for span in spans:
+            key = str(span["source"])
+            if key not in fingerprints:
+                fingerprints[key] = (source_fingerprint(Path(key))
+                                     if Path(key).exists() else {"sha256": None})
+        settings_key = {
+            "interval": interval, "model": self.eye.model,
+            "max_width": self.eye.max_width, "audio": audio_enabled,
+            "prompt_version": VISION_PROMPT_VERSION,
+            "cull_threshold": float(self.config.get("vision_cull_confidence_threshold", 0.8)),
+            "frame_signals": bool(self.config.get("frame_signal_enabled", True)),
+            "sources": {key: fp.get("sha256") for key, fp in sorted(fingerprints.items())},
+        }
+        cache = project_dir / "timeline_analysis.json"
+        if not refresh:
+            cached = read_json_or_none(cache)
+            if (cached is not None and cached.get("sequence_revision") == revision
+                    and cached.get("scope") == scope and cached.get("settings") == settings_key):
+                report(cached.get("sample_count", 0), cached.get("sample_count", 0))
+                return cached
+
+        self.eye._check_server()
+        self.eye.failed_frames = []
+        prompt = build_frame_prompt(audio_enabled=audio_enabled)
+        samples = sample_times(spans, interval)
+        total = len(samples)
+        report(0, total)
+        sample_set = {round(t, 3) for t, _ in samples}
+        partial = project_dir / "timeline_analysis.partial.json"
+        # The partial file is the single authoritative resume record:
+        # observations bound to identity (revision, scope, settings AND
+        # per-instant source/time/clip/speed) in ONE atomic write. A crash
+        # can only leave an older-or-absent record, never fresh identity
+        # trusting stale verdicts — and a record without identity is never
+        # trusted at all. A reordered clip or changed trim at the same
+        # timeline instant must never inherit the old footage's verdict.
+        current_keys = {
+            str(round(stamp, 3)): [str(span["source"]),
+                                   timeline_to_source(span, round(stamp, 3)),
+                                   span["clip_id"], span["speed"]]
+            for stamp, span in samples
+        }
+        key_payload = {"sequence_revision": revision, "scope": scope,
+                       "settings": settings_key, "keys": current_keys}
+        saved = read_json_or_none(partial) or {}
+        ident = saved.get("timeline_identity") or {}
+        observations: list[Observation] = []
+        if (ident.get("sequence_revision") == revision
+                and ident.get("scope") == scope
+                and ident.get("settings") == settings_key):
+            want = ident.get("keys", {})
+            for item in saved.get("observations", []):
+                try:
+                    ts = round(float(item.get("timestamp", -1.0)), 3)
+                except (TypeError, ValueError, AttributeError):
+                    continue
+                if ts in sample_set and want.get(str(ts)) == current_keys.get(str(ts)):
+                    observations.append(self.eye._observation_from_payload(item, ts))
+        # A legacy sidecar from the old two-file scheme must never become a
+        # second source of truth.
+        keyfile = project_dir / "timeline_analysis.partial.key.json"
+        keyfile.unlink(missing_ok=True)
+        completed = {round(item.timestamp, 3) for item in observations}
+
+        def _sync_resume_files() -> None:
+            write_json(partial, {
+                "model": self.eye.model, "interval": self.eye.interval,
+                "complete": False,
+                "observations": [item.__dict__ for item in observations],
+                "timeline_identity": key_payload,
+            })
+        if observations:
+            # Compact now: drop verdicts for instants that no longer match
+            # before any new judging, so a crash before the first flush can
+            # never leave them trusted later.
+            _sync_resume_files()
+        else:
+            # Nothing resumed: any on-disk partial belongs to incompatible
+            # content. Drop it so it can never be trusted later; flushes
+            # rewrite it with current verdicts.
+            partial.unlink(missing_ok=True)
+        span_by_sample: dict[float, dict[str, Any]] = {}
+        for stamp, span in samples:
+            span_by_sample.setdefault(round(stamp, 3), span)
+        provenance: list[dict[str, Any]] = []
+        for stamp, span in samples:
+            provenance.append({
+                "timeline": round(stamp, 3), "source": str(span["source"]),
+                "source_timestamp": timeline_to_source(span, round(stamp, 3)),
+                "clip_id": span["clip_id"], "speed": span["speed"],
+            })
+        by_source: dict[str, list[dict[str, Any]]] = {}
+        for span in spans:
+            by_source.setdefault(str(span["source"]), []).append(span)
+
+        done = 0
+        for source_key, source_spans in sorted(by_source.items()):
+            source = Path(source_key)
+            if not source.exists():
+                raise PipelineError(
+                    f"Timeline analysis needs the original media (kept, never modified): "
+                    f"missing {source_key}")
+            source_samples = [(t, s) for t, s in samples if str(s["source"]) == source_key]
+            wanted = sorted({timeline_to_source(s, t) for t, s in source_samples
+                             if round(t, 3) not in completed})
+            transcript = (self.ear.transcribe(source, refresh=refresh)
+                          if "ear" in stages else None)
+            remapped = (remap_segments_to_timeline(
+                            list(transcript.segments) if transcript and transcript.ok else [],
+                            source_spans)
+                        if audio_enabled else None)
+            hints: dict[float, str] = {}
+            if "eye" in stages and self.config.get("frame_signal_enabled", True):
+                fingerprint = fingerprints[str(source_key)]
+                signals = detect_frame_signals(
+                    source, source_sha256=fingerprint["sha256"],
+                    cache_path=self.analysis_dir / f"timeline-{fingerprint['sha256'][:12]}.signals.json",
+                    interval=interval, refresh=refresh)
+                source_hints = build_frame_hints(signals)
+                for stamp, span in source_samples:
+                    hint = source_hints.get(round(timeline_to_source(span, stamp), 3))
+                    if hint:
+                        hints[round(stamp, 3)] = hint
+            actual_frames = (self.eye.editorial_frames(source, wanted)
+                             if "eye" in stages else [])
+            requested_sorted = sorted(wanted)
+            actual_sorted = sorted(actual_frames, key=lambda item: item[0])
+            pending: list[tuple[float, Any]] = []
+            tl_by_source: dict[float, tuple[float, dict[str, Any]]] = {}
+            for stamp, span in source_samples:
+                if round(stamp, 3) in completed:
+                    continue  # resumed judgment stands; never re-judge nor drop
+                tl_by_source.setdefault(round(timeline_to_source(span, stamp), 3),
+                                        (round(stamp, 3), span))
+            for requested_t, (actual_t, frame) in zip(requested_sorted, actual_sorted, strict=True):
+                entry = tl_by_source.get(round(requested_t, 3))
+                if entry is None:
+                    continue
+                tl_t, span = entry
+                if tl_t in completed:
+                    continue
+                pending.append((tl_t, frame))
+                for record in provenance:
+                    if record["timeline"] == tl_t and record["clip_id"] == span["clip_id"]:
+                        record["source_timestamp"] = round(actual_t, 3)
+                        break
+                if len(pending) >= self.eye.batch_size:
+                    self.eye._flush_batch(partial, observations, pending, prompt,
+                                          hints, remapped, direct_partial=True)
+                    _sync_resume_files()  # rebind verdicts + identity atomically
+                    done = len(observations)
+                    report(done, total)
+            if pending:
+                self.eye._flush_batch(partial, observations, pending, prompt, hints, remapped, direct_partial=True)
+                _sync_resume_files()  # rebind verdicts + identity atomically
+                done = len(observations)
+                report(done, total)
+
+        judged = {round(item.timestamp, 3) for item in observations}
+        failed = list(self.eye.failed_frames)
+        kept_provenance = [p for p in provenance if p["timeline"] in judged]
+        # Edits saved while this run was working must win: never let a stale
+        # run overwrite results for a newer sequence revision.
+        on_disk = read_json_or_none(project_dir / "sequence.json") or {}
+        if int(on_disk.get("revision", revision)) != revision:
+            partial_exists = partial.exists()
+            return {"scope": scope, "sequence_revision": revision,
+                    "superseded": True, "superseded_by": on_disk.get("revision"),
+                    "sample_count": total, "judged_count": len(observations),
+                    "observations": [item.__dict__ for item in observations],
+                    "provenance": kept_provenance,
+                    "review_intervals": [], "eye_failed_frames": failed,
+                    "decisions": {}, "partial_kept": partial_exists}
+        result = {
+            "scope": scope, "sequence_revision": revision, "settings": settings_key,
+            "sequence_duration": round(max((s["timeline_end"] for s in spans), default=0.0), 3),
+            "sampled_seconds": round(sum(s["timeline_end"] - s["timeline_start"] for s in spans), 3),
+            "sample_count": total, "judged_count": len(observations),
+            "observations": [item.__dict__ for item in observations],
+            "provenance": kept_provenance,
+            "review_intervals": [
+                {"start": item.start, "end": item.end,
+                 "reasons": list(item.reasons) + ["scope:timeline"]}
+                for item in self.eye.review_intervals(
+                    observations,
+                    max((s["timeline_end"] for s in spans), default=0.0))
+            ],
+            "eye_failed_frames": failed,
+            "decisions": {},
+        }
+        # Human decisions are never silently discarded: carry the ones whose
+        # finding (time range + evidence + covered footage bytes) still
+        # exists identically, archive the rest as stale. Index position
+        # alone never transfers a decision, archived entries survive later
+        # runs, and anything without a trustworthy content hash fails
+        # closed into the archive.
+        previous = read_json_or_none(cache) or {}
+        old_decisions = previous.get("decisions", {}) or {}
+        old_prov = previous.get("provenance", []) or []
+        old_content = ((previous.get("settings") or {}).get("sources", {}) or {})
+        new_content = settings_key["sources"]
+        carried: dict[str, dict[str, Any]] = {}
+        archived: list[dict[str, Any]] = []
+        seen_archive: set[str] = set()
+        for entry in previous.get("archived_decisions", []) or []:
+            key = json.dumps([entry.get("identity"), entry.get("action")], sort_keys=True, default=str)
+            if key not in seen_archive:
+                seen_archive.add(key)
+                archived.append(entry)
+        if old_decisions and isinstance(previous.get("review_intervals"), list):
+            new_by_identity = {
+                finding_identity(item, result["provenance"], new_content): idx
+                for idx, item in enumerate(result["review_intervals"])
+            }
+            for old_idx, decision in old_decisions.items():
+                try:
+                    old_item = previous["review_intervals"][int(old_idx)]
+                except (IndexError, TypeError, ValueError):
+                    continue
+                identity = finding_identity(old_item, old_prov, old_content)
+                match = new_by_identity.get(identity)
+                if match is None or not identity_is_content_bound(identity):
+                    key = json.dumps([list(identity), (decision or {}).get("action")],
+                                     sort_keys=True, default=str)
+                    if key not in seen_archive:
+                        seen_archive.add(key)
+                        archived.append({
+                            "interval": old_item,
+                            "identity": [identity[0], identity[1], list(identity[2]),
+                                         [list(e) for e in identity[3]]],
+                            "action": (decision or {}).get("action"),
+                            "at": (decision or {}).get("at"),
+                            "reason": "finding-changed",
+                        })
+                else:
+                    carried[str(match)] = {**(decision or {}), "carried_from": str(old_idx)}
+        result["decisions"] = carried
+        if archived:
+            result["archived_decisions"] = archived
+        write_json(cache, result)
+        partial.unlink(missing_ok=True)
+        keyfile.unlink(missing_ok=True)
+        report(total, total)
         return result
 
     def review_editorial(
