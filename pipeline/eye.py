@@ -29,6 +29,33 @@ from .util import (
 class TruncatedBatchError(PipelineError):
     """The model stopped mid-batch (finish_reason=length): retry with fewer frames."""
 
+    def __init__(self, message: str, *, requested: list[float] | None = None,
+                 usage: dict[str, Any] | None = None):
+        super().__init__(message)
+        self.requested = list(requested or [])
+        self.usage = dict(usage or {})
+
+
+def truncation_explanation(requested: list[float], usage: dict[str, Any],
+                           tried: str = "") -> str:
+    """Actionable, key-free diagnosis of a length-truncation for these frames."""
+    prompt_tokens = usage.get("prompt_tokens")
+    completion_tokens = usage.get("completion_tokens")
+    if prompt_tokens is not None or completion_tokens is not None:
+        budget = (f"server reported prompt_tokens={prompt_tokens}, "
+                  f"completion_tokens={completion_tokens}")
+        likely = ("the frame images exhausted the input budget"
+                  if (completion_tokens or 0) < 500
+                  else "the output budget ran out mid-answer")
+    else:
+        budget = "the server did not report token usage"
+        likely = ("a single-frame verdict needs only a few hundred output tokens, "
+                  "so the frame images most likely exhausted the input budget")
+    frames = ", ".join(f"{t:.1f}s" for t in requested)
+    recovery = f" Recovery tried: {tried}." if tried else ""
+    return (f"Eye batch truncated by the server context limit for frames [{frames}] "
+            f"({budget}; {likely}).{recovery} No verdict was invented for these frames.")
+
 
 class UnusableSectionSummary(PipelineError):
     """A completed model request did not provide a usable story-map decision."""
@@ -232,6 +259,10 @@ class VisionEye:
         self.last_temporal_decisions: list[dict[str, Any]] = []
         self.model_disagreements: list[dict[str, Any]] = []
         self.model_calls: dict[str, int] = {}
+        self.last_usage: dict[str, Any] = {}
+        # Frames skipped after the truncation-recovery ladder failed. They
+        # carry no verdict: downstream they stay REVIEW, never CUT.
+        self.failed_frames: list[dict[str, Any]] = []
 
     def _headers(self) -> dict[str, str]:
         """Auth headers — empty for local servers (LM Studio), Bearer for gateways (9Router)."""
@@ -303,6 +334,15 @@ class VisionEye:
 
     def _read_partial_observations(self, cache: Path) -> list[Observation]:
         partial = self._partial_cache_path(cache)
+        return self._read_partial_file(partial)
+
+    def _read_partial_file(self, partial: Path) -> list[Observation]:
+        """Read a partial file at its exact path (no suffix added).
+
+        Timeline resume uses this: its partial path already ends in
+        `.partial.json`, and routing it through `_partial_cache_path`
+        would read a never-written double-suffixed file.
+        """
         data = read_json_or_none(partial)
         if not data:
             return []
@@ -311,8 +351,10 @@ class VisionEye:
             for item in data.get("observations", [])
         ]
 
-    def _write_partial_observations(self, cache: Path, observations: list[Observation]) -> None:
-        write_json(self._partial_cache_path(cache), {
+    def _write_partial_observations(self, cache: Path, observations: list[Observation],
+                                      *, raw: bool = False) -> None:
+        target = cache if raw else self._partial_cache_path(cache)
+        write_json(target, {
             "model": self.model,
             "interval": self.interval,
             "complete": False,
@@ -353,6 +395,7 @@ class VisionEye:
         observations = self._read_partial_observations(cache)
         completed_timestamps = {item.timestamp for item in observations}
         self.model_disagreements = []
+        self.failed_frames = []
         pending: list[tuple[float, Any]] = []
         try:
             # Seek straight to each sample timestamp instead of decoding every
@@ -393,27 +436,76 @@ class VisionEye:
         prompt: str | None,
         frame_hints: dict[float, str] | None,
         transcript_segments: list | None = None,
+        *,
+        direct_partial: bool = False,
     ) -> None:
         try:
             payloads = self._ask_batch(
                 pending, prompt, frame_hints=frame_hints, transcript_segments=transcript_segments
             )
-        except TruncatedBatchError:
+        except TruncatedBatchError as first:
             if len(pending) <= 1:
-                raise
-            # The server ran out of context mid-batch (e.g. batch_size 4 on an 8k
-            # context). Halve the batch and retry instead of failing the run.
-            mid = len(pending) // 2
-            self._flush_batch(cache, observations, pending[:mid], prompt, frame_hints, transcript_segments)
-            self._flush_batch(cache, observations, pending[mid:], prompt, frame_hints, transcript_segments)
-            pending.clear()
-            return
+                # Halving cannot help a single frame: shrink the image (and the
+                # output budget, which a one-frame verdict never needs large)
+                # before giving up on the frame.
+                payloads = self._recover_single_frame(
+                    pending, prompt, first, frame_hints=frame_hints,
+                    transcript_segments=transcript_segments,
+                )
+                if payloads is None:
+                    return
+            else:
+                # The server ran out of context mid-batch (e.g. batch_size 4 on an 8k
+                # context). Halve the batch and retry instead of failing the run.
+                mid = len(pending) // 2
+                self._flush_batch(cache, observations, pending[:mid], prompt, frame_hints, transcript_segments, direct_partial=direct_partial)
+                self._flush_batch(cache, observations, pending[mid:], prompt, frame_hints, transcript_segments, direct_partial=direct_partial)
+                pending.clear()
+                return
         observations.extend(
             self._observation_from_payload(payload, timestamp)
             for (timestamp, _), payload in zip(pending, payloads, strict=True)
         )
-        self._write_partial_observations(cache, observations)
+        self._write_partial_observations(cache, observations, raw=direct_partial)
         pending.clear()
+
+    def _recover_single_frame(
+        self,
+        pending: list[tuple[float, Any]],
+        prompt: str | None,
+        first: TruncatedBatchError,
+        *,
+        frame_hints: dict[float, str] | None,
+        transcript_segments: list | None = None,
+    ) -> list[dict[str, Any]] | None:
+        """Retry one truncated frame at smaller widths. Never invent a verdict.
+
+        Returns payloads on success, or None when the frame is unrecoverable:
+        the timestamp is recorded in `self.failed_frames` (REVIEW, never CUT)
+        and the caller must skip it and continue the run.
+        """
+        tried = [f"{self.max_width}px+4000tok"]
+        for width, tokens in ((720, 1500), (480, 1500), (320, 1200)):
+            if width >= self.max_width:
+                continue
+            tried.append(f"{width}px+{tokens}tok")
+            try:
+                return self._ask_batch(
+                    pending, prompt, frame_hints=frame_hints,
+                    transcript_segments=transcript_segments,
+                    max_width=width, max_tokens=tokens,
+                )
+            except TruncatedBatchError:
+                continue
+        timestamp = pending[0][0]
+        self.failed_frames.append({
+            "timestamp": timestamp,
+            "error": truncation_explanation(
+                [timestamp], getattr(first, "usage", {}),
+                tried="halving, then " + ", ".join(tried)),
+        })
+        pending.clear()
+        return None
 
     def _observation_from_payload(self, payload: dict[str, Any], timestamp: float) -> Observation:
         """Build an Observation from a model payload, trusting the model's verdict.
@@ -1081,9 +1173,12 @@ class VisionEye:
         *,
         frame_hints: dict[float, str] | None = None,
         transcript_segments: list | None = None,
+        max_width: int | None = None,
+        max_tokens: int = 4000,
     ) -> list[dict[str, Any]]:
         if not frames:
             return []
+        width_cap = max_width or self.max_width
         instruction = prompt or DEFAULT_FRAME_PROMPT
         content: list[dict[str, Any]] = [{
             "type": "text",
@@ -1102,11 +1197,11 @@ class VisionEye:
         for timestamp, original in frames:
             frame = original
             height, width = frame.shape[:2]
-            if width > self.max_width:
+            if width > width_cap:
                 try:
                     frame = cv2.resize(
                         frame,
-                        (self.max_width, round(height * self.max_width / width)),
+                        (width_cap, round(height * width_cap / width)),
                         interpolation=cv2.INTER_AREA,
                     )
                 except cv2.error as exc:
@@ -1130,7 +1225,7 @@ class VisionEye:
             if audio:
                 content.append({"type": "text", "text": audio})
         payload = {
-            "model": self.model, "temperature": 0.1, "max_tokens": 4000,
+            "model": self.model, "temperature": 0.1, "max_tokens": max_tokens,
             "stream": False, "messages": [
                 {"role": "system", "content": "You are a concise video-editor vision analyst. Return JSON only."},
                 {"role": "user", "content": content},
@@ -1142,14 +1237,19 @@ class VisionEye:
         )
         self._count_call("frame_batches")
         try:
-            choice = response.json()["choices"][0]
+            envelope = response.json()
+            choice = envelope["choices"][0]
             text = choice["message"]["content"]
             finish_reason = choice.get("finish_reason")
+            usage = envelope.get("usage") if isinstance(envelope, dict) else None
+            self.last_usage = dict(usage) if isinstance(usage, dict) else {}
         except (KeyError, IndexError, TypeError, ValueError) as exc:
             raise PipelineError(f"Eye request failed for frames {requested}: {exc}") from exc
         if finish_reason == "length":
             raise TruncatedBatchError(
-                f"Eye batch truncated by the server context limit for frames {requested}"
+                truncation_explanation(requested, self.last_usage),
+                requested=requested,
+                usage=self.last_usage,
             )
         candidates = [text] + re.findall(r"```(?:json)?\s*(.*?)```", text, flags=re.DOTALL | re.IGNORECASE)
         match = re.search(r"\{.*\}", text, flags=re.DOTALL)

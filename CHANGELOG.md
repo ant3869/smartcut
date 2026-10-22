@@ -7,6 +7,13 @@ All notable changes to this project are documented here. The project follows
 
 ### Added
 
+- Timeline AI judges only the edited sequence (entire timeline, selected clips, or In/Out
+  range) with timeline timestamps plus source provenance, REVIEW-only and separate from
+  source-analysis evidence. Vision batches halve on server truncation with smaller-image
+  single-frame retries; unrecoverable frames stay unresolved, never CUT. Partial results
+  resume crash-safely from one atomic record; human Keep/Accept decisions carry only on
+  exact footage-bound identity and otherwise archive as stale.
+
 - Creator settings are backend-managed (work/creator.json): brand kits, export profiles with
   create/edit/duplicate/delete/default, caption defaults, and per-project kit/profile
   assignments. A one-time merge imports browser-localStorage state without discarding:
