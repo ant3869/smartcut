@@ -103,3 +103,25 @@ test('Fill crops the source before the clip transform, and overlay videos can st
   assert.deepEqual(T.placementTracks('video',true,'A2'),['A2']);
   assert.deepEqual(T.placementTracks('image',false,'V2'),['V2']);
 });
+
+test('clear timeline removes clips and orphaned transitions, keeps media order and markers',()=>{
+  const s=sequence();
+  s.transitions=[{id:'tr1',track:'V1',cut_time:0,outgoing_id:'c0',incoming_id:'c0',edge:'cut',type:'cross-dissolve',duration:.5}];
+  const ids=new Set(s.clips.map(c=>c.id));
+  s.clips=[];T.pruneTransitions(s,ids);
+  assert.equal(s.clips.length,0);
+  assert.deepEqual(s.transitions,[]);
+  assert.equal(s.markers.length,1);
+  assert.equal(T.validate(s),s);
+});
+
+test('pruneTransitions keeps transitions that touch surviving clips',()=>{
+  const s=sequence();
+  s.clips.push({id:'c2',track:'V1',source:'fixture.mp4',source_start:0,source_end:4,start:10,speed:1,enabled:true});
+  s.transitions=[
+    {id:'gone',track:'V1',cut_time:0,outgoing_id:'c0',incoming_id:'c1',edge:'cut',type:'fade',duration:.5},
+    {id:'kept',track:'V1',cut_time:10,outgoing_id:'c2',incoming_id:'c2',edge:'in',type:'fade',duration:.5},
+  ];
+  T.pruneTransitions(s,new Set(['c0','c1']));
+  assert.deepEqual(s.transitions.map(t=>t.id),['kept']);
+});

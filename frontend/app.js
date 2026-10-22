@@ -25,7 +25,8 @@ const state = {jobs:[],inbox:[],config:{},schema:{},job:null,source:null,sourceI
   gateway:'untested',tasks:[],taskCallbacks:new Map(),handled:new Set(),programMode:'sequence',playing:false,shuttle:0,
   error:null,retry:null,reviewEditing:null,loading:false,importing:false,qc:null,meta:new Map(),waves:new Map(),proposal:-1,queue:-1,lastReview:null,
   prefs:{lanes:true,overlay:true,cc:true,hud:true,auto:{fromPlan:false,waste:true,silence:true,threshold:-40,minSilence:.6,pad:.12,gaps:true,scenes:false,highlights:true,highlightCount:5}},
-  passes:null};
+  passes:null,creator:null,timelineAnalysis:null};
+async function loadTimelineAnalysis(){state.timelineAnalysis=null;if(!state.project)return null;try{state.timelineAnalysis=await api(projectURL('timeline/analysis'));}catch{state.timelineAnalysis=null;}return state.timelineAnalysis;}
 try{const saved=JSON.parse(localStorage.getItem('anna.cutroom.prefs')||'{}');state.prefs={...state.prefs,...saved,auto:{...state.prefs.auto,...saved.auto}};}catch{}
 const savePrefs=()=>{try{localStorage.setItem('anna.cutroom.prefs',JSON.stringify(state.prefs));}catch{}};
 let saveTimer, reverseTimer, previewTimer, previewToken=0, overlayKey='', clockLast=0, dialogFocus=null;
@@ -84,7 +85,7 @@ function shell(){
       <nav class="menus" aria-label="Application menu">
         ${menu('File',[['new-project','New project…'],['open-project','Open project…'],['import','Import media…'],['transcribe','Re-transcribe source (.srt)'],['folder','Open output folder']])}
         ${menu('Project',[['save-project','Save project · Ctrl+S'],['new-project','New project…'],['open-project','Open project…'],['settings','Pipeline settings…'],['refresh','Refresh media'],['analyze-all','Analyze all…'],['brand-kits','Brand kits…'],['captions','Captions…'],['overlays','Overlays…']])}
-        ${menu('Sequence',[['sequence-settings','Sequence settings…'],['Add track…',[['add-video-track','Video track'],['add-audio-track','Audio track']]],['save','Save sequence'],['undo','Undo'],['redo','Redo'],['rebuild','Load approved plan'],['reel','Best-of reel…']])}
+        ${menu('Sequence',[['sequence-settings','Sequence settings…'],['Add track…',[['add-video-track','Video track'],['add-audio-track','Audio track']]],['save','Save sequence'],['undo','Undo'],['redo','Redo'],['rebuild','Load approved plan'],['clear-timeline','Clear timeline…'],['reel','Best-of reel…']])}
         ${menu('Markers',[['in','Mark In · I'],['out','Mark Out · O'],['marker','Add sequence marker · M'],['auto-scenes','Markers at scene changes'],['auto-highlights','Markers at AI highlights'],['clear-markers','Clear all markers']])}
         ${menu('Auto',[['auto-edit','Auto-edit sequence…'],['auto-waste','Remove AI-flagged waste'],['auto-silence','Remove silences…'],['auto-gaps','Close all gaps'],['auto-fill','Fill frame'],['transitions','Add transitions…'],['clear-transitions','Clear transitions'],['watermark','Add watermark…'],['remove-watermark','Remove watermark'],['audio-cleanup','Audio Cleanup…'],['beat-cuts','Beat Cuts…'],['music-bed','Music Bed…'],['moments','Moments workspace…'],['highlights','Generate highlights…'],['shorts','Generate shorts…'],['next-proposal','Next AI proposal · N']])}
         ${menu('Export',[['export-edl','EDL cut list'],['export-csv','CSV edit list'],['export-otio','OpenTimelineIO'],['export-srt','Captions for this edit (.srt)'],['export-mp4','Render video…']])}
@@ -123,7 +124,7 @@ function shell(){
         </section>
       </section>
       <aside class="panel inspector-panel" aria-label="Inspector"><div class="inspector-tabs" role="tablist">${[['effects','Effects','sliders-horizontal'],['review','Review','list-checks'],['pipeline','Pipeline','workflow']].map(([key,label,name])=>`<button role="tab" aria-selected="${key==='effects'}" data-tab="${key}">${icon(name)}<span>${label}</span></button>`).join('')}</div><div id="inspector-content"></div></aside>
-      <section class="panel timeline-panel" aria-label="Timeline"><div class="timeline-heading"><h2>${icon('clapperboard')}Sequence <span id="sequence-name">01</span></h2><div class="timeline-tools">${button('select-tool',icon('mouse-pointer-2'),'icon-button active','title="Selection tool · V" aria-label="Selection tool"')}${button('razor-tool',icon('scissors'),'icon-button','title="Razor tool" aria-label="Razor tool"')}${button('split',withIcon('scissors-line-dashed','Split'),'quiet','title="Split at playhead · C"')}${button('ripple',withIcon('arrow-left-to-line','Ripple'),'quiet','title="Ripple delete · Shift+Delete"')}<span class="transport-divider"></span>${button('snap',withIcon('magnet','Snap'),'quiet active','aria-pressed="true"')}${button('linked',withIcon('link','Linked'),'quiet active','aria-pressed="true"')}${button('toggle-lanes',withIcon('sparkles','AI lanes'),`quiet ${state.prefs.lanes?'active':''}`,`aria-pressed="${state.prefs.lanes}" title="Show AI scores, flags, scenes and transcript on the timeline"`)}${button('toggle-overlay',withIcon('flag','Decisions'),`quiet ${state.prefs.overlay?'active':''}`,`aria-pressed="${state.prefs.overlay}" title="Show the AI decision overlay: CUT / KEEP / REVIEW flags and accepted styling · G"`)}${button('undo',icon('undo-2'),'icon-button','aria-label="Undo" title="Undo · Ctrl+Z"')}${button('redo',icon('redo-2'),'icon-button','aria-label="Redo" title="Redo · Ctrl+Y"')}<label class="zoom-control">${icon('zoom-out')}<input type="range" id="timeline-zoom" aria-label="Timeline zoom" min="-5" max="6" step=".1" value="0" title="Timeline zoom · 1/32× to 64×">${icon('zoom-in')}</label>${button('save',withIcon('save','Save'),'quiet','title="Save sequence · Ctrl+S"')}</div></div>
+      <section class="panel timeline-panel" aria-label="Timeline"><div class="timeline-heading"><h2>${icon('clapperboard')}Sequence <span id="sequence-name">01</span></h2><div class="timeline-tools">${button('select-tool',icon('mouse-pointer-2'),'icon-button active','title="Selection tool · V" aria-label="Selection tool"')}${button('razor-tool',icon('scissors'),'icon-button','title="Razor tool" aria-label="Razor tool"')}${button('split',withIcon('scissors-line-dashed','Split'),'quiet','title="Split at playhead · C"')}${button('ripple',withIcon('arrow-left-to-line','Ripple'),'quiet','title="Ripple delete · Shift+Delete"')}<span class="transport-divider"></span>${button('snap',withIcon('magnet','Snap'),'quiet active','aria-pressed="true"')}${button('linked',withIcon('link','Linked'),'quiet active','aria-pressed="true"')}${button('toggle-lanes',withIcon('sparkles','AI lanes'),`quiet ${state.prefs.lanes?'active':''}`,`aria-pressed="${state.prefs.lanes}" title="Show AI scores, flags, scenes and transcript on the timeline"`)}${button('toggle-overlay',withIcon('flag','Decisions'),`quiet ${state.prefs.overlay?'active':''}`,`aria-pressed="${state.prefs.overlay}" title="Show the AI decision overlay: CUT / KEEP / REVIEW flags and accepted styling · G"`)}${button('undo',icon('undo-2'),'icon-button','aria-label="Undo" title="Undo · Ctrl+Z"')}${button('redo',icon('redo-2'),'icon-button','aria-label="Redo" title="Redo · Ctrl+Y"')}<label class="zoom-control">${icon('zoom-out')}<input type="range" id="timeline-zoom" aria-label="Timeline zoom" min="-5" max="6" step=".1" value="0" title="Timeline zoom · 1/32× to 64×">${icon('zoom-in')}</label>${button('save',withIcon('save','Save'),'quiet','title="Save sequence · Ctrl+S"')}${button('clear-timeline','Clear','quiet','title="Clear timeline · clips and transitions removed, media kept · undoable"')}</div></div>
         <div class="timeline-body"><div class="track-headers"><div class="ruler-head" id="timeline-time">00:00:00:00</div><div id="track-headers"></div></div><div class="timeline-scroll" id="timeline-scroll"><div id="timeline-canvas" tabindex="0" aria-label="Timeline tracks"></div></div></div>
         <footer class="timeline-footer"><span id="timeline-summary">Select a sequence to start editing</span><span id="timeline-legend"></span></footer>
       </section>
@@ -152,8 +153,9 @@ function renderProject(){
   $$('[data-action="list-view"],[data-action="icon-view"]').forEach(b=>b.classList.toggle('active',b.dataset.action===(state.view==='list'?'list-view':'icon-view')));
 }
 async function load({initial=false}={}){
-  const [health,config,schema,jobs,inbox,projects]=await Promise.all(['/api/health','/api/config','/api/config/schema','/api/jobs','/api/inbox','/api/projects'].map(p=>api(p)));
-  state.config=config;state.schema=schema;state.jobs=jobs;state.inbox=inbox;state.projects=projects;
+  const [health,config,schema,jobs,inbox,projects,creator]=await Promise.all(['/api/health','/api/config','/api/config/schema','/api/jobs','/api/inbox','/api/projects','/api/creator'].map(p=>api(p)));
+  state.config=config;state.schema=schema;state.jobs=jobs;state.inbox=inbox;state.projects=projects;state.creator=creator;
+  await maybeMigrateCreator();
   $('#backend-status').innerHTML=badge(health.ok?'Backend connected':'Backend offline',health.ok?'ok':'error');
   $('#model-label').textContent=config.vision_model;$('#model-label').title=config.lm_studio_url;
   if(state.job)state.job=jobs.find(j=>j.id===state.job.id)||state.job;
@@ -180,6 +182,7 @@ async function openProject(id){
   try{localStorage.setItem('smartcut.project',id);}catch{}
   renderProject();renderSource();renderProgram();renderTimeline();renderInspector();renderSourceEvidence();updateTitles();
   await loadPasses();
+  await loadTimelineAnalysis();renderInspector();renderTimeline();
   if(project.assets[0])await selectAsset(project.assets[0].path);
 }
 async function createProject(name,job_id){await saveSequence();const payload={name,...(job_id?{job_id}:{})};await post('/api/projects?dry_run=true',payload);const project=await post('/api/projects',payload);closeDialog();await load();await openProject(project.id);}
@@ -433,7 +436,7 @@ function renderTimeline(){
   const ticks=Array.from({length:Math.ceil(seconds/step)+1},(_,i)=>`<span class="ruler-tick" style="left:${i*step*scale}px">${short(i*step)}</span>`).join('');
   $('#timeline-canvas').style.width=width+'px';
   $('#timeline-canvas').innerHTML=`<div class="ruler" data-scrub>${ticks}${(seq?.markers||[]).map(m=>`<button class="marker" data-marker="${esc(m.id)}" title="${esc(m.label)}" aria-label="Marker: ${esc(m.label)}" style="left:${m.time*scale}px"></button>`).join('')}</div>`+(lanes?aiLanes(seq,scale):'')+
-    (seq?.tracks||['V2','V1','A1','A2'].map(id=>({id}))).map(t=>t.id).sort((a,b)=>(a[0]===b[0]?Number(b.slice(1))-Number(a.slice(1)):a[0]==='V'?-1:1)).map(track=>`<div class="track-row ${track[0]==='A'?'audio':''} ${T.locked(seq||{tracks:[]},track)?'locked':''}" data-track="${track}">${(seq?.clips||[]).filter(c=>c.track===track).map(c=>`<div class="timeline-clip ${c.track[0]==='A'?'audio':''} ${state.selection.has(c.id)?'selected':''} ${!c.enabled?'disabled':''}" data-clip="${c.id}" tabindex="0" role="button" aria-label="${esc(c.name)} on ${track}" style="left:${c.start*scale}px;width:${Math.max(4,T.duration(c)*scale)}px" title="${esc(c.name)} · ${tc(c.source_start)}–${tc(c.source_end)}">${c.track[0]==='A'?`<canvas class="clip-wave" data-wave-clip="${c.id}" aria-hidden="true"></canvas>`:filmstrip(c,scale)}<span class="trim-edge left" data-trim="start" title="Trim start"></span><span class="clip-label">${icon(c.track[0]==='A'?'music':c.kind==='image'?'image':'film')}${esc(c.name||basename(c.source))}</span><span class="clip-detail">${c.speed!==1?c.speed+'× · ':''}${tc(T.duration(c))}</span>${c.id===state.selected?[...new Set(Object.values(c.keyframes||{}).flatMap(frames=>frames.map(k=>k.time)))].filter(time=>time>=0&&time<=T.duration(c)).map(time=>`<i class="clip-keyframe" style="left:${time*scale}px" title="Keyframe at ${tc(time)}"></i>`).join(''):''}<span class="trim-edge right" data-trim="end" title="Trim end"></span></div>`).join('')}${!seq&&track==='V1'?'<span class="timeline-hint">Create or open a project to start editing</span>':''}${transitionMarks(seq,track,scale)}</div>`).join('')+`<div id="playhead" style="left:${state.time*scale}px"><i></i></div>`;
+    (seq?.tracks||['V2','V1','A1','A2'].map(id=>({id}))).map(t=>t.id).sort((a,b)=>(a[0]===b[0]?Number(b.slice(1))-Number(a.slice(1)):a[0]==='V'?-1:1)).map(track=>`<div class="track-row ${track[0]==='A'?'audio':''} ${T.locked(seq||{tracks:[]},track)?'locked':''}" data-track="${track}">${(seq?.clips||[]).filter(c=>c.track===track).map(c=>`<div class="timeline-clip ${c.track[0]==='A'?'audio':''} ${state.selection.has(c.id)?'selected':''} ${!c.enabled?'disabled':''}" data-clip="${c.id}" tabindex="0" role="button" aria-label="${esc(c.name)} on ${track}" style="left:${c.start*scale}px;width:${Math.max(4,T.duration(c)*scale)}px" title="${esc(c.name)} · ${tc(c.source_start)}–${tc(c.source_end)}">${c.track[0]==='A'?`<canvas class="clip-wave" data-wave-clip="${c.id}" aria-hidden="true"></canvas>`:filmstrip(c,scale)}<span class="trim-edge left" data-trim="start" title="Trim start"></span><span class="clip-label">${icon(c.track[0]==='A'?'music':c.kind==='image'?'image':'film')}${esc(c.name||basename(c.source))}</span><span class="clip-detail">${c.speed!==1?c.speed+'× · ':''}${tc(T.duration(c))}</span>${c.id===state.selected?[...new Set(Object.values(c.keyframes||{}).flatMap(frames=>frames.map(k=>k.time)))].filter(time=>time>=0&&time<=T.duration(c)).map(time=>`<i class="clip-keyframe" style="left:${time*scale}px" title="Keyframe at ${tc(time)}"></i>`).join(''):''}<span class="trim-edge right" data-trim="end" title="Trim end"></span></div>`).join('')}${!seq&&track==='V1'?'<span class="timeline-hint">Create or open a project to start editing</span>':''}${transitionMarks(seq,track,scale)}</div>`).join('')+timelineLane(seq,scale)+`<div id="playhead" style="left:${state.time*scale}px"><i></i></div>`;
   $('#timeline-summary').textContent=seq?`${seq.clips.filter(c=>c.track.startsWith('V')).length} video clips · ${tc(T.sequenceDuration(seq))} · ${seq.fps} fps${(seq.transitions||[]).length?` · ${seq.transitions.length} transition${seq.transitions.length>1?'s':''}`:''}${(seq.overlays||[]).length?` · watermark (${seq.overlays.map(o=>o.position).join(', ')})`:''}`:'Select a sequence to start editing';
   const legend=$('#timeline-legend');if(legend)legend.innerHTML=state.job?.observations?.length?overlayLegend():'';
   $$('[data-action="undo"]').forEach(b=>b.disabled=!state.undo.length);$$('[data-action="redo"]').forEach(b=>b.disabled=!state.redo.length);
@@ -470,6 +473,11 @@ function aiLanes(seq,scale){
   const scenes=(job.scene_boundaries||[]).flatMap(b=>A.sourcePoint(seq,src,b)).map((t,i)=>`<i class="scene-tick" style="left:${t*scale}px" title="Phase ${i+1} boundary · ${short(job.scene_boundaries[i])} in source"></i>`).join('');
   const words=(job.transcript_segments||[]).flatMap(s=>A.sourceToSequence(seq,src,s.start,s.end).map(r=>`<span class="tx" style="${at(r)}" title="${esc(s.text)}">${(r.end-r.start)*scale>=30?esc(s.text):''}</span>`)).join('');
   return `<div class="lane-row ai-lane" data-lane="ai">${heat}${flags}${scenes}</div><div class="lane-row tx-lane" data-lane="tx">${words}</div>`;
+}
+function timelineLane(seq,scale){
+  const a=state.timelineAnalysis;
+  if(!seq||!a?.review_intervals?.length)return '';
+  return `<div class="lane-row timeline-lane" data-lane="timeline">${a.review_intervals.map((r,i)=>{const d=(a.decisions||{})[i];return `<i class="flag review timeline ${d?d.action:''}" style="left:${r.start*scale}px;width:${Math.max(2,(r.end-r.start)*scale)}px" data-timeline-index="${i}" title="${esc(`Timeline finding ${i+1} · ${short(r.start)}–${short(r.end)}${d?' · '+d.action:' — click to review'}`)}"></i>`;}).join('')}</div>`;
 }
 function overlayLegend(){
   const counts=RQ.queueCounts(reviewQueue());
@@ -1179,9 +1187,40 @@ const BUILTIN_EXPORT_PROFILES=[
  {name:'High Quality Master',builtin:true,settings:{width:1920,height:1080,fps:30,video_codec:'libx264',quality:'very-high',audio_bitrate:320,passes:{transitions:true,watermark:true,cleanup:true,music_bed:true,intro:true,outro:true},captions:true}},
  {name:'Fast Preview',builtin:true,settings:{width:1280,height:720,fps:30,video_codec:'libx264',quality:'draft',audio_bitrate:128,passes:{transitions:false,watermark:false,cleanup:false,music_bed:false,intro:false,outro:false},captions:false}},
 ];
-function exportProfiles(){let p=storeGet('smartcut.exportprofiles.v1',null);if(!p||!Array.isArray(p.profiles)||!p.profiles.length){p={profiles:BUILTIN_EXPORT_PROFILES.map(x=>({...x,settings:{...x.settings,passes:{...x.settings.passes}}})),default:'YouTube 16:9'};storeSet('smartcut.exportprofiles.v1',p);}return p;}
+function creatorLib(){return state.creator||{kits:[],profiles:BUILTIN_EXPORT_PROFILES.map(x=>({...x,settings:{...x.settings,passes:{...x.settings.passes}}})),default_profile:'YouTube 16:9',captions:{sidecar:true}};}
+function exportProfiles(){const l=creatorLib();return {profiles:Array.isArray(l.profiles)&&l.profiles.length?l.profiles:creatorLib().profiles,default:l.default_profile||'YouTube 16:9'};}
+function projectExportDefault(){const p=exportProfiles(),sel=state.project?.export_profile||p.default;return p.profiles.some(x=>x.name===sel)?sel:p.default;}
+async function maybeMigrateCreator(){
+  if(storeGet('smartcut.creator.migrated.v1',false))return;
+  const kits=storeGet('smartcut.brandkits.v1',[]),store=storeGet('smartcut.exportprofiles.v1',null);
+  const profiles=((store&&store.profiles)||[]).filter(p=>!p.builtin);
+  const cmap=storeGet('smartcut.projectkit.v1',{}),caps=storeGet('smartcut.captions.v1',null);
+  if(!kits.length&&!profiles.length&&!Object.keys(cmap).length&&!caps&&!(store&&store.default)){storeSet('smartcut.creator.migrated.v1',true);return;}
+  const failed={kits:[],profiles:[],links:[]};
+  try{
+    const res=await post('/api/creator/import',{kits,profiles,default_profile:store&&store.default,captions:caps});
+    state.creator=res.library;
+    const r=res.report,renamed=r.kits_renamed+r.profiles_renamed,skipped=(r.skipped||[]).length;
+    // project assignments migrate one by one; failures are kept, never dropped
+    for(const [pid,kid] of Object.entries(cmap)){try{await api(`/api/projects/${encodeURIComponent(pid)}/creator`,{method:'PUT',body:JSON.stringify({kit_id:kid,export_profile:null})});}catch(e){failed.links.push({project:pid,kit:kid,error:e.message});}}
+    if(skipped)failed.kits.push(...(r.skipped||[]));
+    const clean=skipped===0&&failed.links.length===0;
+    if(clean){
+      for(const k of ['smartcut.brandkits.v1','smartcut.exportprofiles.v1','smartcut.projectkit.v1','smartcut.captions.v1']){try{localStorage.removeItem(k);}catch{}}
+      storeSet('smartcut.creator.migrated.v1',true);
+    }else{
+      // keep the leftovers for retry + record them where they survive a wipe
+      try{localStorage.setItem('smartcut.creator.failed.v1',JSON.stringify({at:Date.now(),failed}));}catch{}
+    }
+    const bits=[`${r.kits_added} kits`, `${r.profiles_added} profiles`];
+    if(renamed)bits.push(renamed+' renamed');
+    if(skipped)bits.push(skipped+' skipped (kept for retry)');
+    if(failed.links.length)bits.push(failed.links.length+' project links kept for retry');
+    toast(`Creator settings copied to app storage · ${bits.join(' · ')}`,clean?'ok':'warn');
+  }catch(e){toast('Creator migration skipped: '+e.message+' · browser copy kept','warn');}
+}
 function profileOptions(sel){return exportProfiles().profiles.map(x=>`<option ${x.name===sel?'selected':''}>${esc(x.name)}</option>`).join('');}
-function profileRowHTML(){const p=exportProfiles();return `<label class="stacked">Export profile<select name="export_profile">${profileOptions(p.default)}</select></label><div class="profile-row"><input name="export_profile_name" placeholder="Name for Save…" aria-label="Profile name"><span class="pass-buttons">${button('profile-save','Save','quiet')}${button('profile-delete','Delete','quiet')}${button('profile-default','Default','quiet')}</span></div><p class="field-note">Profiles store format settings only — file name and folder stay per-project.</p>`;}
+function profileRowHTML(){return `<label class="stacked">Export profile<select name="export_profile">${profileOptions(projectExportDefault())}</select></label><div class="profile-row"><input name="export_profile_name" placeholder="Name for Save…" aria-label="Profile name"><span class="pass-buttons">${button('profile-save','Save','quiet')}${button('profile-delete','Delete','quiet')}${button('profile-default','Default','quiet')}</span></div><p class="field-note">Profiles store format settings only — file name and folder stay per-project.</p>`;}
 function currentProfileSettings(){const f=$('#render-form');if(!f)return null;const s=renderSettings(f);delete s.filename;delete s.output_folder;delete s.container;return s;}
 function applyExportProfile(name){const p=exportProfiles(),prof=p.profiles.find(x=>x.name===name)||p.profiles.find(x=>x.name===p.default);if(!prof)return;const f=$('#render-form');if(!f)return;const s=prof.settings,skipped=[];
  const set=(n,v)=>{const el=f.elements.namedItem(n);if(el)el.value=v;};
@@ -1194,10 +1233,10 @@ function applyExportProfile(name){const p=exportProfiles(),prof=p.profiles.find(
  updateRenderSummary();
  if(skipped.length)toast('Profile partly applied · skipped: '+skipped.join(', '),'warn');}
 // ----- Brand kits: logo/intro/outro/captions/export-profile references. Apply writes through real endpoints. -----
-function brandKits(){const v=storeGet('smartcut.brandkits.v1',[]);return Array.isArray(v)?v:[];}
-function kitMap(){return storeGet('smartcut.projectkit.v1',{});}
+function brandKits(){const v=creatorLib().kits;return Array.isArray(v)?v:[];}
 function kitMediaOptions(sel){const paths=[...(state.project?.assets||[])].map(a=>a.path);return ['<option value="">—</option>'].concat(paths.map(p=>`<option value="${esc(p)}" ${sel===p?'selected':''}>${esc(basename(p))}</option>`)).join('');}
-function kitDialog(){needSequence();const kits=brandKits(),map=kitMap(),cur=map[state.project.id];
+function kitDialog(){needSequence();return operation('Brand kits',async()=>{try{state.creator=await api('/api/creator');}catch(e){toast('Creator storage unreachable: '+e.message,'warn');}openKitDialog();});}
+function openKitDialog(){const kits=brandKits(),cur=state.project?.kit_id;
  const rows=kits.map(k=>{const bits=[k.logo||(k.watermark&&k.watermark.path)?'logo':null,k.intro&&k.intro.path?'intro':null,k.outro&&k.outro.path?'outro':null,k.exportProfile?'profile '+k.exportProfile:null,k.captionsSidecar?'srt':null].filter(Boolean).join(' · ');
  return `<div class="kit-row"><div><strong>${esc(k.name)}</strong><small>${esc(bits||'empty kit')}</small></div><span class="pass-buttons">${cur===k.id?'<small>on this project</small>':button('kit','Use','quiet',`data-kit-op="use" data-kit="${k.id}"`)}${button('kit','Edit','quiet',`data-kit-op="edit" data-kit="${k.id}"`)}${button('kit','Duplicate','quiet',`data-kit-op="dup" data-kit="${k.id}"`)}${button('kit','Delete','quiet',`data-kit-op="del" data-kit="${k.id}"`)}</span></div>`;}).join('');
  openDialog(`${dialogHead('BRAND','Brand kits')}<div class="dialog-body"><p>Logo, intro, outro, captions default and export profile in one place. Applying writes through the real watermark, intro/outro and render paths.</p><div class="kit-list">${rows||'<p>No kits yet.</p>'}</div></div><footer class="dialog-footer">${button('kit','New kit','primary','data-kit-op="new"')}${button('close-dialog','Close')}</footer>`,'brand');}
@@ -1206,18 +1245,21 @@ function kitForm(k){needSequence();k=k||{id:uid(),name:'',logo:'',watermark:{pat
 function kitOp(op,id){const kits=brandKits();
  if(op==='new')return kitForm(null);
  if(op==='edit'){const k=kits.find(x=>x.id===id);if(k)kitForm(k);return;}
- if(op==='dup'){const k=kits.find(x=>x.id===id);if(!k)return;const c={...JSON.parse(JSON.stringify(k)),id:uid(),name:k.name+' copy'};storeSet('smartcut.brandkits.v1',[...kits,c]);kitDialog();return;}
- if(op==='del'){storeSet('smartcut.brandkits.v1',kits.filter(x=>x.id!==id));const m=kitMap();for(const p of Object.keys(m))if(m[p]===id)delete m[p];storeSet('smartcut.projectkit.v1',m);kitDialog();return;}
+ if(op==='dup'){const k=kits.find(x=>x.id===id);if(!k)return;const c={...JSON.parse(JSON.stringify(k)),name:k.name+' copy'};delete c.id;return operation('Duplicate brand kit',async()=>{const r=await post('/api/creator/kits',{kit:c});state.creator=r.library;kitDialog();toast(`Brand kit ${r.kit.name} duplicated`,'ok');});}
+ if(op==='del'){return operation('Delete brand kit',async()=>{await api(`/api/creator/kits/${encodeURIComponent(id)}`,{method:'DELETE'});state.creator=(await api('/api/creator'));kitDialog();toast('Brand kit deleted','ok');});}
  if(op==='use'){const k=kits.find(x=>x.id===id);if(!k)return;return operation('Apply brand kit',async()=>{await applyKit(k);kitDialog();});}}
 async function applyKit(k){needSequence();const notes=[];let applied=false;
  if(k.watermark&&k.watermark.path){try{const r=await api(projectURL('watermark'),{method:'PUT',body:JSON.stringify({sequence:state.sequence,overlay:{position:'bottom-right',scale:.15,opacity:.85,keep_aspect:true,replace_existing:true,...k.watermark}})});commit('Brand kit watermark',r.sequence);applied=true;notes.push('watermark applied');}catch(e){notes.push('watermark skipped: '+e.message);}}
+ else if((state.sequence.overlays||[]).some(o=>o.kind==='watermark'))notes.push('existing watermark kept (kit sets none — remove it via Overlays)');
  if((k.intro&&k.intro.path)||(k.outro&&k.outro.path)){try{await savePasses({'intro-outro':{settings:{preset:'Custom',intro_path:(k.intro&&k.intro.path)||'',intro_duration:(k.intro&&k.intro.duration)||3,outro_path:(k.outro&&k.outro.path)||'',outro_duration:(k.outro&&k.outro.duration)||3},status:'ready'}});applied=true;notes.push('intro/outro staged — run the pass to apply');}catch(e){notes.push('intro/outro skipped (assets must be project media): '+e.message);}}
- if(k.captionsSidecar!==undefined){storeSet('smartcut.captions.v1',{sidecar:!!k.captionsSidecar});notes.push('captions default '+(k.captionsSidecar?'on':'off'));}
+ else if(state.sequence.intro||state.sequence.outro)notes.push('existing intro/outro kept (kit sets none)');
+ if(k.captionsSidecar!==undefined){try{await api('/api/creator/captions',{method:'PUT',body:JSON.stringify({sidecar:!!k.captionsSidecar})});state.creator=(await api('/api/creator'));notes.push('captions default '+(k.captionsSidecar?'on':'off')+' (global, all projects)');}catch(e){notes.push('captions default skipped: '+e.message);}}
  if(k.exportProfile){if(exportProfiles().profiles.some(x=>x.name===k.exportProfile))notes.push(`export profile ${k.exportProfile} (pick it in Render)`);else notes.push(`export profile ${k.exportProfile} not found — pick another in Render`);}
- const map=kitMap();map[state.project.id]=k.id;storeSet('smartcut.projectkit.v1',map);
+ await api(projectURL('creator'),{method:'PUT',body:JSON.stringify({kit_id:k.id,export_profile:state.project?.export_profile??null})});
+ state.project.kit_id=k.id;
  toast(`Brand kit ${k.name} · ${notes.join(' · ')||'nothing to apply'}`,applied?'ok':'warn');}
 // ----- Captions: sidecar-only panel. Burned-in is not renderer-supported and is not offered. -----
-function captionsPref(){return storeGet('smartcut.captions.v1',{sidecar:true});}
+function captionsPref(){return creatorLib().captions||{sidecar:true};}
 function captionsDefault(){return captionsPref().sidecar!==false&&!!(state.job&&state.job.transcript_segments&&state.job.transcript_segments.length);}
 function captionsDialog(){needSequence();const segs=(state.job&&state.job.transcript_segments)||[];
  openDialog(`${dialogHead('CAPTIONS','Captions')}<div class="dialog-body"><p>${segs.length?segs.length+' transcript segments on the selected source — export times them to this edit.':'No transcript on the selected source. Transcribe it first (Auto menu).'}</p><label class="toggle-row">Live captions in monitor<input type="checkbox" data-captions-live ${state.prefs.cc?'checked':''}></label><label class="toggle-row">Captions sidecar (.srt) with renders<input type="checkbox" data-captions-sidecar ${captionsPref().sidecar!==false?'checked':''}></label><p class="field-note">Sidecar .srt downloads next to the render. Burned-in captions are not supported by the renderer, so they are not offered here.</p><div class="pass-buttons">${button('captions-export','Export .srt now','quiet')}</div></div><footer class="dialog-footer">${button('close-dialog','Close','primary')}</footer>`,'captions');}
@@ -1286,7 +1328,7 @@ function stageSummary(group){const c=state.config;return esc(({Connection:c.visi
 function currentReview(){return state.job?.review||{source_sha256:state.job?.source_sha256||state.job?.source_fingerprint?.sha256||'',timebase:'source',cut_intervals:[],keep_intervals:[]};}
 function renderReview(){
   const job=state.job,review=currentReview();
-  $('#inspector-content').innerHTML=!job?'<div class="empty-state"><h3>No review yet</h3><p>Analyze a source to inspect its evidence.</p></div>':`${aiSummary()}<div class="inspector-section"><h3>Source-time decisions</h3><p>Mark a source range with I / O. Keep and Protect override model cuts; explicit human cuts take precedence.</p><div class="range-fields"><label>In (s)<input id="review-in" type="number" min="0" step=".01" value="${round(state.in)}"></label><label>Out (s)<input id="review-out" type="number" min="0" step=".01" value="${round(state.out)}"></label></div><input id="review-reason" placeholder="Reason for this decision" aria-label="Review reason" value="${esc(state.reviewEditing?.reason||'')}"><div class="review-buttons">${button('keep','Keep','ok')}${button('cut','Cut','danger')}${button('protect','Protect')}</div>${state.reviewEditing?button('remove-review','Remove selected decision','wide danger'):''}${button('replan','Re-plan with my decisions','wide accent')}</div>${workflowStepper()}${queueSection()}<details class="inspector-section" open><summary>Your decisions</summary>${['cut','keep'].flatMap(kind=>(review[kind+'_intervals']||[]).map((r,i)=>`<button class="decision-row ${kind}" data-review-kind="${kind}" data-review-index="${i}"><i></i><span>${tc(r.start)} – ${tc(r.end)}<small>${esc(r.reason||kind)}</small></span></button>`)).join('')||'<p>No decisions saved yet.</p>'}</details><details class="inspector-section" open><summary>Nearby evidence</summary><div id="nearby-evidence"></div></details><details class="inspector-section"><summary>Transcript <small>${job.transcript_segments?.length||0}</small></summary>${(job.transcript_segments||[]).map(s=>`<button class="transcript-line" data-source-time="${s.start}"><time>${short(s.start)}</time>${esc(s.text)}</button>`).join('')||'<p>No transcript available.</p>'}${button('transcribe','Re-transcribe (.srt)','wide')}</details><details class="inspector-section"><summary>Caption</summary><p>${esc(job.caption||'No caption generated. Configure a performer and persona in Voice settings.')}</p></details>`;
+  $('#inspector-content').innerHTML=!job&&!state.timelineAnalysis?'<div class="empty-state"><h3>No review yet</h3><p>Analyze a source to inspect its evidence.</p></div>':!job?timelineSection():`${aiSummary()}<div class="inspector-section"><h3>Source-time decisions</h3><p>Mark a source range with I / O. Keep and Protect override model cuts; explicit human cuts take precedence.</p><div class="range-fields"><label>In (s)<input id="review-in" type="number" min="0" step=".01" value="${round(state.in)}"></label><label>Out (s)<input id="review-out" type="number" min="0" step=".01" value="${round(state.out)}"></label></div><input id="review-reason" placeholder="Reason for this decision" aria-label="Review reason" value="${esc(state.reviewEditing?.reason||'')}"><div class="review-buttons">${button('keep','Keep','ok')}${button('cut','Cut','danger')}${button('protect','Protect')}</div>${state.reviewEditing?button('remove-review','Remove selected decision','wide danger'):''}${button('replan','Re-plan with my decisions','wide accent')}</div>${workflowStepper()}${queueSection()}${timelineSection()}<details class="inspector-section" open><summary>Your decisions</summary>${['cut','keep'].flatMap(kind=>(review[kind+'_intervals']||[]).map((r,i)=>`<button class="decision-row ${kind}" data-review-kind="${kind}" data-review-index="${i}"><i></i><span>${tc(r.start)} – ${tc(r.end)}<small>${esc(r.reason||kind)}</small></span></button>`)).join('')||'<p>No decisions saved yet.</p>'}</details><details class="inspector-section" open><summary>Nearby evidence</summary><div id="nearby-evidence"></div></details><details class="inspector-section"><summary>Transcript <small>${job.transcript_segments?.length||0}</small></summary>${(job.transcript_segments||[]).map(s=>`<button class="transcript-line" data-source-time="${s.start}"><time>${short(s.start)}</time>${esc(s.text)}</button>`).join('')||'<p>No transcript available.</p>'}${button('transcribe','Re-transcribe (.srt)','wide')}</details><details class="inspector-section"><summary>Caption</summary><p>${esc(job.caption||'No caption generated. Configure a performer and persona in Voice settings.')}</p></details>`;
  renderEvidence();
   updateQueueDiff();
 }
@@ -1333,6 +1375,7 @@ function queueSection(){
   return `<details class="inspector-section queue" open><summary>Review queue <small>${counts.pending} pending · ${done}/${q.length} decided</small></summary>`
     +`<div class="proposal-meter" role="img" aria-label="${done} of ${q.length} queue items decided"><i style="width:${q.length?done/q.length*100:0}%"></i></div>`
     +`<p>Accept to cut, Keep to protect. REVIEW items need your eyes and are <b>never</b> applied automatically. <kbd>N</kbd> next · <kbd>A</kbd> accept · <kbd>X</kbd> keep · <kbd>P</kbd> preview.</p>`
+    +((((job.eye_failed_frames)||[]).length)?`<p>${badge('Incomplete','warn')} ${job.eye_failed_frames.length} frame${job.eye_failed_frames.length>1?'s':''} beat the server budget at every retry — no verdict was invented, so this queue may miss them. Re-run analysis to retry; nothing was auto-cut.</p>`:'')
     +`<output id="queue-diff" class="auto-preview" aria-live="polite">Calculating before/after…</output>`
     +`<div class="review-buttons">${button('queue-prev','← Prev')}${button('queue-next','Next →','accent')}${button('queue-preview','Preview · P')}${state.lastReview?button('undo-decision','Undo decision'):''}</div>`
     +`<div class="queue-list" role="list" tabindex="0" aria-label="Review queue, ${q.length} items">${q.map((item,i)=>`
@@ -1343,6 +1386,38 @@ function queueSection(){
           :`<span class="proposal-state">${item.status}</span>`}
       </div>`).join('')}</div>`
     +`${counts.pendingCuts?`<div class="review-buttons">${button('accept-all',`Accept ${counts.pendingCuts} pending cut${counts.pendingCuts>1?'s':''}`,'danger',`title="Only CUT proposals — REVIEW items are never bulk-applied"`)}${button('reject-all','Keep all pending','ok')}</div>`:counts.pending?`<p>Only REVIEW items remain — each needs an explicit decision.</p>`:`<p>Every queue item has a decision. Apply them or adjust the range.</p>`}</details>`;
+}
+function timelineSection(){
+  const a=state.timelineAnalysis;
+  if(!a||(!a.review_intervals?.length&&!a.eye_failed_frames?.length&&!a.partial))return '';
+  const scopeName={entire:'Entire timeline',selected:'Selected clips',in_out:'In/Out range'}[a.scope?.mode]||a.scope?.mode||'timeline';
+  if(a.partial)return `<details class="inspector-section" open><summary>Timeline findings <small>incomplete</small></summary><p>Analysis stopped with ${a.judged_count||0} frames judged and no final result. Nothing here is final — retry to resume from saved judgments.</p><div class="review-buttons">${button('timeline-retry','Resume analysis','accent')}</div></details>`;
+  const stale=!!a.stale, rev=a.sequence_revision;
+  const conf=r=>{const m=(r.reasons||[]).find(x=>String(x).startsWith('confidence:'));return m?` · confidence ${Math.round(Number(m.split(':')[1])*100)}%`:'';};
+  const reasons=r=>(r.reasons||[]).filter(x=>x!=='scope:timeline'&&!String(x).startsWith('confidence:')).join(' · ').replace(/vision-(cull|review):/g,'').replace(/_/g,' ')||'needs review';
+  const provFor=r=>{const hits=(a.provenance||[]).filter(p=>p.timeline>=r.start-.01&&p.timeline<=r.end+.01);const first=hits[0];return first?`${esc(basename(first.source))} · source ${tc(first.source_timestamp)}${hits.length>1?'–'+tc(hits[hits.length-1].source_timestamp):''} · clip ${esc(first.clip_id.slice(0,8))}`:'provenance missing';};
+  const evFor=r=>(a.observations||[]).filter(o=>o.timestamp>=r.start-.01&&o.timestamp<=r.end+.01).slice(0,3);
+  return `<details class="inspector-section queue" open><summary>Timeline findings <small>${a.review_intervals.length} to review · ${(a.eye_failed_frames||[]).length} unresolved</small></summary>`
+    +`<p>${esc(scopeName)} · sequence rev ${rev}${stale?' · '+badge('Stale — sequence changed','warn'):''} · ${a.judged_count}/${a.sample_count} frames judged · ${esc(String(a.sampled_seconds))}s analyzed. Findings are <b>REVIEW-only</b>: recording a decision never cuts anything. Samples raw source frames for kept spans — layered video, overlays, effects and mixed audio are not composited.</p>`
+    +(stale?`<p>${badge('Decisions disabled','warn')} Re-run timeline analysis for the current sequence first.</p>`:'')
+    +`<div class="queue-list" role="list" aria-label="Timeline findings">${a.review_intervals.map((r,i)=>{const d=(a.decisions||{})[i];return `
+      <div class="proposal queue-item review ${d?d.action:''}" role="listitem">
+        <button class="proposal-seek" data-timeline-index="${i}" title="Jump the timeline to this finding"><span>REVIEW · ${tc(r.start)} → ${tc(r.end)} · ${(r.end-r.start).toFixed(1)}s</span><small>${esc(reasons(r))}${esc(conf(r))}</small><small class="queue-meta">${provFor(r)}</small>${evFor(r).map(o=>`<small class="queue-meta">AI ${o.score}/10 · ${o.keep===false?'CUT':'KEEP'} — ${esc(String(o.description||'').slice(0,140))}</small>`).join('')}</button>
+        ${d?`<span class="proposal-state">${d.action}</span>`:stale?'':`${button('timeline-accept',icon('check'),'icon-button ok',`data-index="${i}" aria-label="Accept timeline finding ${i+1}" title="Accept"}`)}${button('timeline-keep',icon('x'),'icon-button',`data-index="${i}" aria-label="Keep timeline finding ${i+1}" title="Keep"`)}`}
+      </div>`;}).join('')}</div>`
+    +((a.eye_failed_frames||[]).length?`<h3>Unresolved frames <small>${a.eye_failed_frames.length}</small></h3><p>These frames beat the server budget at every retry. No verdict was invented — they stay visible until retried, and nothing auto-cuts them.</p>${a.eye_failed_frames.map(f=>`<div class="proposal queue-item review"><button class="proposal-seek" data-timeline-seek="${f.timestamp}" title="Jump to this frame"><span>UNRESOLVED · ${tc(f.timestamp)}</span><small>${esc(String(f.error||'').slice(0,220))}</small></button></div>`).join('')}<div class="review-buttons">${button('timeline-retry','Retry unresolved frames','accent')}</div>`:'')
+    +`</details>`;
+}
+function timelineDecisionCount(){return Object.keys(state.timelineAnalysis&&state.timelineAnalysis.decisions||{}).length;}
+function confirmTimelineRerun(){const n=timelineDecisionCount();if(!n)return true;return confirm("Re-running timeline analysis may archive "+n+" recorded decision"+(n>1?"s":"")+" whose findings changed. Matching ones are kept. Continue?");}
+async function decideTimeline(index,action){
+  const a=state.timelineAnalysis;
+  if(!a)throw new Error('No timeline analysis loaded');
+  await saveSequence();
+  if(a.stale||a.sequence_revision!==state.sequence?.revision)throw new Error('Sequence changed since this analysis — re-run it before deciding');
+  const result=await post(projectURL('timeline/decisions'),{index,action});
+  state.timelineAnalysis={...a,decisions:result.decisions};
+  renderInspector();renderTimeline();toast(`Timeline finding ${index+1} marked ${action} · nothing was cut`,'ok');
 }
 function renderEvidence(){const node=$('#nearby-evidence');if(!node)return;const items=(state.job?.observations||[]).filter(o=>Math.abs(o.timestamp-state.sourceTime)<4);node.innerHTML=items.map(o=>`<div class="evidence-card">${badge(o.keep?'Keep':'Cut',o.keep?'ok':'warn')}<time>${short(o.timestamp)}</time><p>${esc(o.description)}</p><small>Score ${o.score}/10 · confidence ${Math.round((o.confidence??1)*100)}%</small></div>`).join('')||'<p>No observations near this frame.</p>';}
 async function saveReview(kind){
@@ -1385,11 +1460,36 @@ function settingsValues(){
   }return values;
 }
 function stageOptionsHtml(){return [['ear','Ear','Transcribe speech locally'],['eye','Eye','Judge frames and scene boundaries'],['voice','Voice','Write a persona caption']].map(([id,name,description])=>`<label><input type="checkbox" name="stages" value="${id}" checked><span><strong>${name}</strong><small>${description}</small></span></label>`).join('');}
+function timelineScopeEstimate(mode){
+  const seq=state.sequence;if(!seq)return null;
+  const clips=(seq.clips||[]).filter(c=>c.enabled!==false&&String(c.track||'V1').startsWith('V')&&(c.kind||'video')==='video');
+  const clipEnd=c=>c.start+Math.max(0,(c.source_end-c.source_start)/(c.speed||1));
+  let spans=clips.map(c=>({start:c.start,end:clipEnd(c)}));
+  if(mode==='selected'){
+    const ids=new Set(state.selection);
+    spans=clips.filter(c=>ids.has(c.id)).map(c=>({start:c.start,end:clipEnd(c)}));
+  }else if(mode==='in_out'){
+    const a=Math.min(state.in,state.out),b=Math.max(state.in,state.out);
+    if(!(b-a>=.02))return {error:'Mark an In and Out range first (I / O)'};
+    spans=spans.flatMap(s=>{const st=Math.max(s.start,a),en=Math.min(s.end,b);return en>st?[{start:st,end:en}]:[];});
+  }
+  if(!spans.length)return {error:mode==='selected'?'Select timeline clips first':mode==='in_out'?'No video inside the In/Out range':'The timeline has no enabled video clips'};
+  const seconds=spans.reduce((n,s)=>n+s.end-s.start,0);
+  const interval=Number(state.config?.frame_interval_seconds)||2;
+  return {seconds,samples:Math.max(1,Math.round(seconds/interval)+spans.length),model:state.config?.vision_model||'vision model'};
+}
 function analyzeDialog(){
   if(!state.project)return newProjectDialog();
   const videos=assets().filter(f=>f.kind==='video'&&f.source_available===true&&f.job?.source_available!==false);
-  if(!videos.length)return toast('No available video to analyze. Restore an offline source or import another video.','warn');
-  openDialog(`${dialogHead('PIPELINE','Analyze source')}<form id="analyze-form"><div class="dialog-body"><label class="stacked">Source<select name="source" required>${videos.map(f=>`<option value="${esc(f.path)}" ${state.source===f.path?'selected':''}>${esc(f.name)}</option>`).join('')}</select></label><h3>Stages to run</h3><div class="stage-options">${stageOptionsHtml()}</div><p class="field-note">Unchecked Ear/Eye stages reuse saved evidence when available. Voice is skipped. No render runs during analysis.</p><label class="toggle-row">Refresh selected stages from scratch<input type="checkbox" name="refresh"></label></div><footer class="dialog-footer">${button('settings','Pipeline settings')}${button('close-dialog','Cancel')}<button type="submit" class="primary">Start analysis</button></footer></form>`,'analyze');
+  const est=mode=>{const e=timelineScopeEstimate(mode);return e?(e.error||`${e.seconds.toFixed(0)}s kept · ~${e.samples} frames · ${e.model}`):'no sequence';};
+  openDialog(`${dialogHead('PIPELINE','Analyze')}<form id="analyze-form"><div class="dialog-body">
+  <h3>What to analyze</h3>
+  <label class="toggle-row">Original source — the full imported file<select name="source" style="max-width:12rem">${videos.map(f=>`<option value="${esc(f.path)}" ${state.source===f.path?'selected':''}>${esc(f.name)}</option>`).join('')}</select><small>existing behavior · ${videos.length?videos.length+' available':'no available video'}</small></label>
+  <label class="toggle-row">Timeline — entire sequence<input type="radio" name="scope" value="entire"><small id="est-entire">${esc(est('entire'))}</small></label>
+  <label class="toggle-row">Timeline — selected clips<input type="radio" name="scope" value="selected"><small id="est-selected">${esc(est('selected'))}</small></label>
+  <label class="toggle-row">Timeline — In/Out range<input type="radio" name="scope" value="in_out"><small id="est-in_out">${esc(est('in_out'))}</small></label>
+  <p class="field-note">Timeline analysis judges only what the edit kept (trims, splits, speed and order honored), timestamps are timeline time with source provenance, and findings are REVIEW-only — they never auto-cut or touch source evidence. Speech transcription may cover full source files (cached and reused); only retained spans are judged.</p>
+  <h3>Stages to run</h3><div class="stage-options">${stageOptionsHtml()}</div><p class="field-note">Unchecked Ear/Eye stages reuse saved evidence when available. Voice is skipped. No render runs during analysis.</p><label class="toggle-row">Refresh selected stages from scratch<input type="checkbox" name="refresh"></label></div><footer class="dialog-footer">${button('settings','Pipeline settings')}${button('close-dialog','Cancel')}<button type="submit" class="primary">Start analysis</button></footer></form>`,'analyze');
 }
 function analyzeAllDialog(){
   if(!state.project)return newProjectDialog();
@@ -1429,7 +1529,7 @@ async function pollTasks(){
       state.handled.add(task.id);const callback=state.taskCallbacks.get(task.id);state.taskCallbacks.delete(task.id);
       if(task.status==='canceled')toast(task.label+' canceled','warn');
       else if(task.status==='failed'){if(task.label==='Test gateway connection'){state.gateway='failed';renderGateway();}fail(new Error(task.label+': '+task.error),callback?.retry||null);}
-      else {toast(task.label+' complete','ok');if(document.hidden)document.title=`✓ ${task.label} — SmartCut`;if(callback)await callback(task.result);}
+      else {const res=task.result;if(res&&res.superseded){toast(task.label+' superseded '+String.fromCharCode(8212)+' a newer edit won, results discarded','warn');}else if(res&&res.eye_failed_frames&&res.eye_failed_frames.length){toast(task.label+' complete '+String.fromCharCode(183)+' '+res.eye_failed_frames.length+' frame'+(res.eye_failed_frames.length>1?'s':'')+' unresolved','warn');}else{toast(task.label+' complete','ok');}if(document.hidden)document.title=`✓ ${task.label} — SmartCut`;if(callback)await callback(task.result);}
     }
   }catch(error){$('#tasks-status').textContent='Task polling unavailable · retrying';}
 }
@@ -1501,6 +1601,7 @@ const actions={
   'settings-test':()=>testConnection(settingsValues()),'clear-key':()=>{const key=$('[name="vision_api_key"]');key.value='';key.dataset.clear='true';key.placeholder='Saved key will be cleared on Save';},
   'list-view':()=>{state.view='list';renderProject();},'icon-view':()=>{state.view='icons';renderProject();},
   save:async()=>{await saveSequence(true);toast('Sequence saved','ok');},'save-project':async()=>{await saveSequence(true);toast('Project saved','ok');},undo:()=>undo(),redo:()=>undo(true),
+  'clear-timeline':()=>{needSequence();if(!state.sequence.clips.length)return toast('Timeline is already empty','warn');if(!confirm('Clear the timeline? Clips and transitions are removed. Imported media, analyses and the project itself stay untouched. Undo restores everything.'))return;edit('Timeline cleared · Undo restores it',s=>{const ids=new Set(s.clips.map(c=>c.id));s.clips=[];T.pruneTransitions(s,ids);});},
   'select-tool':()=>setTool('select'),'razor-tool':()=>setTool('razor'),
   split:()=>edit('Clip split',s=>T.split(s,state.selected,state.time,state.linked)),
   delete:()=>edit('Clips removed',s=>T.remove(s,selectedIds(),false,state.linked)),
@@ -1556,9 +1657,9 @@ const actions={
   'captions-export':()=>operation('Export captions',async()=>{exportCaptions();}),
   'remove-intro':()=>operation('Remove intro',async()=>{needSequence();const r=await post(projectURL('intro-outro/remove'),{sequence:state.sequence,side:'intro'});commit('Intro removed',r.sequence);}),
   'remove-outro':()=>operation('Remove outro',async()=>{needSequence();const r=await post(projectURL('intro-outro/remove'),{sequence:state.sequence,side:'outro'});commit('Outro removed',r.sequence);}),
-  'profile-save':()=>operation('Save export profile',async()=>{const f=$('#render-form');if(!f)throw new Error('Open the render dialog first');const p=exportProfiles();const typed=String(f.elements.export_profile_name?.value||'').trim();if(!typed)throw new Error('Type a profile name first — blank never overwrites');let name=typed;const s=currentProfileSettings();if(!s)throw new Error('Nothing to save');if(p.profiles.some(x=>x.name===name&&x.builtin))name=name+' copy';const ix=p.profiles.findIndex(x=>x.name===name&&!x.builtin);if(ix>=0){p.profiles[ix]={name,settings:s};}else{p.profiles.push({name,settings:s});}storeSet('smartcut.exportprofiles.v1',p);f.elements.export_profile.innerHTML=profileOptions(name);f.elements.export_profile_name.value='';toast(`Profile ${name} ${ix>=0?'updated':'saved'}`,'ok');}),
-  'profile-delete':()=>operation('Delete export profile',async()=>{const f=$('#render-form');if(!f)throw new Error('Open the render dialog first');const p=exportProfiles(),name=f.elements.export_profile.value,rec=p.profiles.find(x=>x.name===name);if(!rec||rec.builtin)throw new Error('Built-in profiles cannot be deleted');p.profiles=p.profiles.filter(x=>x.name!==name);if(p.default===name)p.default=p.profiles[0].name;storeSet('smartcut.exportprofiles.v1',p);f.elements.export_profile.innerHTML=profileOptions(p.default);applyExportProfile(p.default);toast(`Profile ${name} deleted`,'ok');}),
-  'profile-default':()=>operation('Default export profile',async()=>{const f=$('#render-form');if(!f)throw new Error('Open the render dialog first');const p=exportProfiles();p.default=f.elements.export_profile.value;storeSet('smartcut.exportprofiles.v1',p);toast(`${p.default} is now the default profile`,'ok');}),
+  'profile-save':()=>operation('Save export profile',async()=>{const f=$('#render-form');if(!f)throw new Error('Open the render dialog first');const typed=String(f.elements.export_profile_name?.value||'').trim();if(!typed)throw new Error('Type a profile name first — blank never overwrites');let name=typed;const s=currentProfileSettings();if(!s)throw new Error('Nothing to save');const p=exportProfiles();let autoRenamed=false;if(p.profiles.some(x=>x.name===name&&x.builtin)){name=name+' copy';autoRenamed=true;}if(autoRenamed){const base=name.replace(/ copy \d+$/,'').replace(/ copy$/,'');let n=1;while(p.profiles.some(x=>x.name===name&&!x.builtin)){n++;name=base+' copy '+n;if(n>50)throw new Error('Too many copies — rename it yourself');}}const existing=!autoRenamed&&p.profiles.some(x=>x.name===name&&!x.builtin);const r=existing?await api(`/api/creator/profiles/${encodeURIComponent(name)}`,{method:'PUT',body:JSON.stringify({profile:{name,settings:s}})}):await post('/api/creator/profiles',{profile:{name,settings:s}});state.creator=r.library;const sel=$('#render-form').elements.export_profile;if(sel)sel.innerHTML=profileOptions(name);f.elements.export_profile_name.value='';toast(`Profile ${name} ${existing?'updated':'saved'}`,'ok');}),
+  'profile-delete':()=>operation('Delete export profile',async()=>{const f=$('#render-form');if(!f)throw new Error('Open the render dialog first');const name=f.elements.export_profile.value;const r=await api(`/api/creator/profiles/${encodeURIComponent(name)}`,{method:'DELETE'});state.creator=r.library;const p=exportProfiles();const sel=$('#render-form').elements.export_profile;if(sel){sel.innerHTML=profileOptions(projectExportDefault());applyExportProfile(projectExportDefault());}toast(`Profile ${name} deleted`,'ok');}),
+  'profile-default':()=>operation('Default export profile',async()=>{const f=$('#render-form');if(!f)throw new Error('Open the render dialog first');const name=f.elements.export_profile.value;const r=await api('/api/creator/default',{method:'PUT',body:JSON.stringify({name})});state.creator=r.library;toast(`${name} is now the default profile`,'ok');}),
   'journey-project':()=>{if(!state.project)return newProjectDialog();$('.project-panel')?.scrollIntoView({block:'nearest'});$('#media-search')?.focus({preventScroll:true});},
   'journey-edit':()=>{needSequence();$('#timeline-canvas')?.scrollIntoView({block:'nearest'});$('#timeline-canvas')?.focus({preventScroll:true});},
   'journey-review':()=>{needSequence();state.tab='review';renderInspector();if(!state.job)toast('Analyze a source for AI suggestions, or decide ranges manually above','warn');$('#inspector-content')?.scrollIntoView({block:'nearest'});},
@@ -1592,6 +1693,9 @@ const actions={
   'queue-prev':()=>stepQueue(-1),'queue-next':()=>stepQueue(1),'queue-focus':()=>{state.tab='review';renderInspector();$('.queue-list')?.scrollIntoView({block:'nearest'});},
   'queue-accept':t=>{const i=Number(t.dataset.index);focusQueue(i);return decideQueue(reviewQueue()[i],'accept');},
   'queue-keep':t=>{const i=Number(t.dataset.index);focusQueue(i);return decideQueue(reviewQueue()[i],'reject');},
+  'timeline-accept':t=>decideTimeline(Number(t.dataset.index),'accept'),
+  'timeline-keep':t=>decideTimeline(Number(t.dataset.index),'keep'),
+  'timeline-retry':()=>operation('Timeline analysis',async()=>{const a=state.timelineAnalysis;if(!a?.scope)throw new Error('No timeline analysis to retry');if(!confirmTimelineRerun())return;await saveSequence();await startTask(projectURL('timeline/analyze'),{scope:a.scope,stages:['ear','eye']},async()=>{await loadTimelineAnalysis();renderInspector();renderTimeline();});}),
   'queue-adjust':t=>adjustDialog(Number(t.dataset.index)),'queue-preview':()=>audition(),
   'apply-accepted':()=>operation('Apply accepted cuts',()=>quickAuto({waste:true})),
   'undo-decision':async()=>{if(!state.lastReview)return toast('Nothing to undo','warn');const result=await post(jobURL('review'),state.lastReview);state.job=result.job;state.jobs=state.jobs.map(j=>j.id===result.job.id?result.job:j);state.lastReview=null;renderInspector();renderSourceEvidence();renderTimeline();overlayKey='';renderOverlay();toast('Decision undone','ok');},
@@ -1707,6 +1811,8 @@ function bind(){
     if(target?.dataset.cut!==undefined)seekProgram(Number(target.dataset.cut));
     if(target?.dataset.sourceTime)seekSource(Number(target.dataset.sourceTime));
     if(target?.dataset.queue!==undefined){focusQueue(Number(target.dataset.queue));return;}
+    if(target?.dataset.timelineIndex!==undefined){const r=state.timelineAnalysis?.review_intervals?.[Number(target.dataset.timelineIndex)];if(r){pause();seekProgram(r.start);}return;}
+    if(target?.dataset.timelineSeek!==undefined){pause();seekProgram(Number(target.dataset.timelineSeek));return;}
     if(target?.dataset.reviewKind){const kind=target.dataset.reviewKind,index=Number(target.dataset.reviewIndex),r=currentReview()[kind+'_intervals'][index];state.reviewEditing={kind,index,reason:r.reason};state.in=r.start;state.out=r.end;seekSource(r.start);renderReview();}
   });
   $('#media-search').addEventListener('input',e=>{state.search=e.target.value;renderProject();});
@@ -1728,7 +1834,7 @@ document.addEventListener('change',e=>{
     if(e.target.hasAttribute('data-image-duration')){const length=Number(e.target.value);operation('Image duration',()=>edit('Image duration updated',s=>T.trim(s,state.selected,'end',s.clips.find(c=>c.id===state.selected).start+length,false)));}
     if(e.target.dataset&&e.target.dataset.wmPath!==undefined){const box=$('#wm-preview');if(box)box.innerHTML=e.target.value?`<img class="thumb-preview" src="${fileURL(e.target.value)}" alt="Watermark preview">`:'';}
     if(e.target.dataset&&e.target.dataset.captionsLive!==undefined){state.prefs.cc=e.target.checked;savePrefs();toast(e.target.checked?'Live captions on':'Live captions off');return;}
-    if(e.target.dataset&&e.target.dataset.captionsSidecar!==undefined){storeSet('smartcut.captions.v1',{sidecar:e.target.checked});toast(e.target.checked?'Sidecar .srt will be offered with renders':'Sidecar .srt off by default');return;}
+    if(e.target.dataset&&e.target.dataset.captionsSidecar!==undefined){const on=e.target.checked;operation('Captions default',async()=>{const r=await api('/api/creator/captions',{method:'PUT',body:JSON.stringify({sidecar:on})});state.creator=r.library;toast(on?'Sidecar .srt will be offered with renders':'Sidecar .srt off by default');});return;}
     if(e.target.dataset&&e.target.dataset.momentCheck!==undefined){if(!MOM)return;const i=Number(e.target.dataset.momentCheck);if(e.target.checked)MOM.checked.add(i);else MOM.checked.delete(i);const st=$('#moments-status');if(st)st.textContent=`${MOM.ranked.length} moments · ${MOM.checked.size} selected`;return;}
     if(e.target.name==='export_profile'){applyExportProfile(e.target.value);return;}
     if(e.target.closest('#render-form')){const form=$('#render-form');if(e.target.name==='preset'&&exportPresets[e.target.value]){const [w,h,fps]=exportPresets[e.target.value];form.elements.width.value=w;form.elements.height.value=h;form.elements.fps.value=fps;}if(e.target.name==='video_codec'){const ext=e.target.value==='libvpx-vp9'?'.webm':'.mp4';form.elements.filename.value=form.elements.filename.value.replace(/\.(mp4|webm)$/i,ext);}updateRenderSummary();}
@@ -1742,7 +1848,9 @@ document.addEventListener('change',e=>{
     if(e.target.id==='new-project-form')await createProject(String(new FormData(e.target).get('name')).trim());
     if(e.target.id==='existing-media-form'){const paths=new FormData(e.target).getAll('paths');if(!paths.length)throw new Error('Select media to add');await addAssets(paths);closeDialog();await selectAsset(paths[0]);}
     if(e.target.id==='settings-form'){const values=settingsValues();await api('/api/config',{method:'PUT',body:JSON.stringify({values,revision:state.config.revision,dry_run:true})});const result=await api('/api/config',{method:'PUT',body:JSON.stringify({values,revision:state.config.revision})});state.config={...state.config,...result.config};state.gateway='untested';renderGateway();$('#model-label').textContent=state.config.vision_model;closeDialog();renderInspector();toast('Pipeline settings saved','ok');}
-    if(e.target.id==='analyze-form'){const form=new FormData(e.target),source=form.get('source'),stages=form.getAll('stages'),id=state.project?.id;if(!source||!stages.length)throw new Error('Choose a source and at least one stage');closeDialog();await startTask('/api/actions/analyze',{source,stages,refresh:form.has('refresh')},async()=>{await load();if(state.project?.id===id&&state.source===source)await selectAsset(source);});}
+    if(e.target.id==='analyze-form'){const form=new FormData(e.target),source=form.get('source'),stages=form.getAll('stages'),id=state.project?.id;if(!stages.length)throw new Error('Choose at least one stage');const scope=form.get('scope');
+      if(scope){if(!confirmTimelineRerun())return;const detail={mode:scope};if(scope==='selected')detail.clip_ids=[...state.selection];if(scope==='in_out'){detail.in=Math.min(state.in,state.out);detail.out=Math.max(state.in,state.out);}const tlStages=stages.filter(s=>s!=='voice');if(!tlStages.length)throw new Error('Timeline analysis needs Ear or Eye — Voice only captions sources');closeDialog();await saveSequence();await startTask(projectURL('timeline/analyze'),{scope:detail,stages:tlStages,refresh:form.has('refresh')},async()=>{await loadTimelineAnalysis();renderInspector();renderTimeline();});return;}
+      if(!source)throw new Error('Choose a source to analyze');closeDialog();await startTask('/api/actions/analyze',{source,stages,refresh:form.has('refresh')},async()=>{await load();if(state.project?.id===id&&state.source===source)await selectAsset(source);});}
     if(e.target.id==='analyze-all-form'){const stages=new FormData(e.target).getAll('stages');if(!stages.length)throw new Error('Choose at least one stage');const queued=analyzeAllEntries().filter(e=>e.queue);if(!queued.length)throw new Error('Nothing to analyze');closeDialog();await analyzeAll(queued,stages);}
     if(e.target.id==='preview-form'){const form=new FormData(e.target),target_seconds=Number(form.get('target')),reel=e.target.dataset.reel==='true',job_ids=form.getAll('jobs');if(reel&&job_ids.length<2)throw new Error('Select at least two sources');if(!reel&&!state.job)throw new Error('Select an analyzed source');closeDialog();await saveSequence();await startTask(reel?'/api/actions/reel':jobURL('preview'),reel?{job_ids,target_seconds}:{target_seconds},async result=>{await load();if(reel){download(result.final_output.path);}else{state.programMode='preview';$('#program-mode').value='preview';state.time=0;renderProgram();}});}
     if(e.target.id==='sequence-form'){const f=new FormData(e.target),reshaped=Number(f.get('width'))/Number(f.get('height'))!==state.sequence.width/state.sequence.height;edit('Sequence format updated',s=>{s.width=Number(f.get('width'));s.height=Number(f.get('height'));s.fps=Number(f.get('fps'));});closeDialog();if(reshaped&&state.sequence.clips.some(c=>c.track[0]==='V'))toast('New aspect ratio · Auto ▸ Fill frame covers it without letterboxing','warn');}
@@ -1763,7 +1871,7 @@ document.addEventListener('change',e=>{
     if(e.target.id==='passes-beat-form'){const f=new FormData(e.target);await savePasses({'beat-cuts':{settings:{path:String(f.get('path')),sensitivity:Number(f.get('sensitivity')),mode:String(f.get('mode')),every:Number(f.get('every'))},status:'ready'}});closeDialog();toast('Beat Cuts settings saved on the pass','ok');}
     if(e.target.id==='passes-bed-form'){const f=new FormData(e.target);await savePasses({'music-bed':{settings:{music_path:String(f.get('music_path')),volume:Number(f.get('volume')),duck:f.has('duck')},status:'ready'}});closeDialog();toast('Music Bed settings saved on the pass','ok');}
     if(e.target.id==='passes-intro-form'){const f=new FormData(e.target);await savePasses({'intro-outro':{settings:{preset:String(f.get('preset')),intro_path:String(f.get('intro_path')||''),intro_duration:Number(f.get('intro_duration'))||3,outro_path:String(f.get('outro_path')||''),outro_duration:Number(f.get('outro_duration'))||3},status:'ready'}});closeDialog();toast('Intro / Outro settings saved on the pass','ok');}
-    if(e.target.id==='kit-form'){const f=new FormData(e.target),id=e.target.dataset.kitId,kits=brandKits();const op=Number(f.get('wm_opacity'));const rec={id,name:String(f.get('name')).trim().slice(0,80)||'Untitled kit',logo:String(f.get('logo')||''),watermark:{path:String(f.get('logo')||''),position:String(f.get('wm_position')),scale:Number(f.get('wm_scale'))||.15,opacity:Number.isFinite(op)?op:.85},intro:{path:String(f.get('intro_path')||''),duration:Number(f.get('intro_duration'))||3},outro:{path:String(f.get('outro_path')||''),duration:Number(f.get('outro_duration'))||3},captionsSidecar:f.has('captions_sidecar'),exportProfile:String(f.get('export_profile')||'')};const ix=kits.findIndex(x=>x.id===id);if(ix>=0)kits[ix]=rec;else kits.push(rec);storeSet('smartcut.brandkits.v1',kits);kitDialog();toast(`Brand kit ${rec.name} saved`,'ok');}
+    if(e.target.id==='kit-form'){const f=new FormData(e.target),id=e.target.dataset.kitId;const op=Number(f.get('wm_opacity'));const rec={name:String(f.get('name')).trim().slice(0,80)||'Untitled kit',logo:String(f.get('logo')||''),watermark:{path:String(f.get('logo')||''),position:String(f.get('wm_position')),scale:Number(f.get('wm_scale'))||.15,opacity:Number.isFinite(op)?op:.85},intro:{path:String(f.get('intro_path')||''),duration:Number(f.get('intro_duration'))||3},outro:{path:String(f.get('outro_path')||''),duration:Number(f.get('outro_duration'))||3},captionsSidecar:f.has('captions_sidecar'),exportProfile:String(f.get('export_profile')||'')};const isEdit=id&&brandKits().some(x=>x.id===id);await operation('Save brand kit',async()=>{const r=isEdit?await api(`/api/creator/kits/${encodeURIComponent(id)}`,{method:'PUT',body:JSON.stringify({kit:{...rec,id}})}):await post('/api/creator/kits',{kit:rec});state.creator=r.library;kitDialog();toast(`Brand kit ${r.kit.name} saved${(r.warnings||[]).length?' · '+r.warnings.join(' · '):''}`,(r.warnings||[]).length?'warn':'ok');});}
     if(e.target.id==='passes-qc-form'){const f=new FormData(e.target);await savePasses({qc:{settings:{deep:f.has('deep'),block:f.has('block')},status:'ready'}});closeDialog();toast('QC settings saved on the pass','ok');}
     if(e.target.id==='marker-form'){const f=new FormData(e.target),id=e.target.dataset.markerForm;closeDialog();edit('Marker updated',s=>{const m=s.markers.find(x=>x.id===id);if(!m)throw new Error('Marker no longer exists');m.label=String(f.get('label')).trim().slice(0,200)||'Marker';m.time=Math.max(0,Number(f.get('time'))||0);});}
     if(e.target.id==='adjust-form'){const f=new FormData(e.target),index=Number(e.target.dataset.adjustIndex),item=reviewQueue()[index];if(!item)throw new Error('Queue item no longer exists');const start=Number(f.get('start')),end=Number(f.get('end')),problem=RQ.validateAdjust(start,end,state.job?.duration);if(problem){$('#adjust-error').innerHTML=`<p class="error-text">${esc(problem)}</p>`;return;}closeDialog();await decideQueue(item,String(f.get('verdict'))==='reject'?'reject':'accept',{start,end});}
@@ -1812,10 +1920,12 @@ document.addEventListener('change',e=>{
 }
 function timelinePointer(e){
   if(e.button!==0||!state.sequence||e.target.closest('button,input,select,textarea,a,[contenteditable="true"]'))return;
-  const el=e.target.closest('[data-clip]'),flag=e.target.closest('[data-queue],[data-proposal-start]');
+  const el=e.target.closest('[data-clip]'),flag=e.target.closest('[data-queue],[data-proposal-start],[data-timeline-index]');
   if(flag&&!el){
     const qi=flag.dataset.queue!==undefined?Number(flag.dataset.queue):-1;
     if(qi>=0){pause();focusQueue(qi);return;}
+    const ti=flag.dataset.timelineIndex!==undefined?Number(flag.dataset.timelineIndex):-1;
+    if(ti>=0){const r=state.timelineAnalysis?.review_intervals?.[ti];if(r){pause();seekProgram(r.start);}return;}
     const index=aiProposals().findIndex(p=>p.start===Number(flag.dataset.proposalStart));if(index>=0){pause();focusProposal(index);return;}
   }
   if(!el){

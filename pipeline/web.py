@@ -28,6 +28,8 @@ from .passes import apply_transitions as apply_transition_pass
 from .passes import clear_transitions as clear_transition_pass
 from .passes import plan_transitions as plan_transition_pass
 from .passes import remove_watermark as remove_watermark_pass
+from .creator import (CreatorError, default_library, is_builtin_profile, load_library,
+                      migrate_browser_state, save_library, validate_kit, validate_profile)
 from .passes import upsert_watermark as upsert_watermark_pass
 from .audio import add_beat_markers as audio_markers
 from .audio import build_music_bed as audio_bed
@@ -48,6 +50,7 @@ from .qc import run_qc as qc_structural
 from .qc import run_signal_qc as qc_signal
 from .sequence import AudioCleanup
 from .sequence import Sequence, RenderSettings, from_plan, export_sequence
+from .timeline_analysis import plan_spans
 try:  # Live when the transitions/watermark pass work merges; shorts degrade honestly without it.
     from .passes import apply_transitions as apply_transition_pass
     from .passes import upsert_watermark as upsert_watermark_pass
@@ -125,6 +128,17 @@ class ReviewPayload(BaseModel):
     keep_intervals: list[dict[str, Any]] = Field(default_factory=list)
 
 
+class TimelineAnalyzeRequest(BaseModel):
+    scope: dict[str, Any] = Field(default_factory=lambda: {"mode": "entire"})
+    refresh: bool = False
+    stages: list[str] | None = None
+
+
+class TimelineDecisionRequest(BaseModel):
+    index: int = Field(ge=0)
+    action: str = Field(pattern=r"^(accept|keep)$")
+
+
 class ProjectRequest(BaseModel):
     name: str = Field(min_length=1, max_length=100)
     job_id: str | None = None
@@ -200,6 +214,34 @@ class RecipeRequest(BaseModel):
     passes: list[str] = []
     settings: dict[str, dict[str, Any]] = {}
     disabled: list[str] = []
+
+
+class CreatorKitRequest(BaseModel):
+    kit: dict[str, Any] = {}
+
+
+class CreatorProfileRequest(BaseModel):
+    profile: dict[str, Any] = {}
+
+
+class CreatorDefaultRequest(BaseModel):
+    name: str = ""
+
+
+class CreatorCaptionsRequest(BaseModel):
+    sidecar: bool = True
+
+
+class CreatorImportRequest(BaseModel):
+    kits: list[dict[str, Any]] = []
+    profiles: list[dict[str, Any]] = []
+    default_profile: str | None = None
+    captions: dict[str, Any] | None = None
+
+
+class ProjectCreatorRequest(BaseModel):
+    kit_id: str | None = None
+    export_profile: str | None = None
 class SpotlightRequest(BaseModel):
     source_kind: str = "media"
     job_ids: list[str] = []
@@ -359,6 +401,7 @@ def create_app(config_path: str | Path = DEFAULT_CONFIG) -> FastAPI:
         observations: list[dict[str, Any]] = []
         transcript_segments: list[dict[str, Any]] = []
         review_intervals: list[dict[str, Any]] = []
+        eye_failed_frames: list[dict[str, Any]] = []
         model_disagreements: list[dict[str, Any]] = []
         model_calls: dict[str, Any] = {}
         if plan:
@@ -368,6 +411,7 @@ def create_app(config_path: str | Path = DEFAULT_CONFIG) -> FastAPI:
             waste = plan.get("waste_intervals") or []
             observations = plan.get("observations") or []
             review_intervals = plan.get("review_intervals") or []
+            eye_failed_frames = plan.get("eye_failed_frames") or []
             model_disagreements = plan.get("model_disagreements") or []
             model_calls = plan.get("model_calls") or {}
             transcript = plan.get("transcript") or {}
@@ -405,6 +449,7 @@ def create_app(config_path: str | Path = DEFAULT_CONFIG) -> FastAPI:
             "observations": observations,
             "frame_interval": plan.get("frame_interval") if plan else None,
             "review_intervals": review_intervals,
+            "eye_failed_frames": eye_failed_frames,
             "model_disagreements": model_disagreements,
             "model_calls": model_calls,
             "transcript_segments": transcript_segments,
@@ -678,6 +723,12 @@ def create_app(config_path: str | Path = DEFAULT_CONFIG) -> FastAPI:
             raise HTTPException(404, "Project not found")
         return path
 
+    def creator_file() -> Path:
+        return work_dir() / "creator.json"
+
+    def creator_library() -> dict[str, Any]:
+        return load_library(creator_file())
+
     def project_view(project_id: str) -> dict[str, Any]:
         path = project_path(project_id)
         data = read_json(path / "project.json")
@@ -759,6 +810,57 @@ def create_app(config_path: str | Path = DEFAULT_CONFIG) -> FastAPI:
                 data.update(assets=[a for a in data["assets"] if Path(a["path"]).resolve() != target], updated_at=utc_now())
                 write_json(folder / "project.json", data)
             return project_view(project_id)
+
+    @app.post("/api/projects/{project_id}/timeline/analyze")
+    def project_timeline_analyze(project_id: str, request: TimelineAnalyzeRequest):
+        """Judge the edited timeline (REVIEW-only), not the original source."""
+        folder = project_path(project_id)
+        sequence = read_json(folder / "sequence.json")
+        scope = request.scope or {"mode": "entire"}
+        try:
+            spans = plan_spans(sequence, scope)
+        except PipelineError as exc:
+            raise HTTPException(400, str(exc))
+        except (ValueError, TypeError) as exc:
+            raise HTTPException(400, f"Timeline analysis has nothing to process: bad scope ({exc})")
+        sampled = round(sum(s["timeline_end"] - s["timeline_start"] for s in spans), 1)
+        engine = brain()
+        return start_task(
+            f"Timeline analysis ({scope.get('mode', 'entire')} · {sampled}s)",
+            lambda progress: engine.analyze_timeline(
+                folder, sequence, scope, refresh=request.refresh,
+                stages=request.stages, progress=progress),
+            with_progress=True)
+
+    @app.get("/api/projects/{project_id}/timeline/analysis")
+    def project_timeline_analysis(project_id: str):
+        folder = project_path(project_id)
+        cached = safe_read_json(folder / "timeline_analysis.json") or {}
+        if cached:
+            cached["stale"] = (cached.get("sequence_revision")
+                               != read_json(folder / "sequence.json").get("revision"))
+        else:
+            partial = safe_read_json(folder / "timeline_analysis.partial.json") or {}
+            if partial.get("observations"):
+                cached = {"partial": True,
+                          "judged_count": len(partial["observations"])}
+        return cached
+
+    @app.post("/api/projects/{project_id}/timeline/decisions")
+    def project_timeline_decision(project_id: str, request: TimelineDecisionRequest):
+        """Record accept/keep on a timeline finding. REVIEW-only: the cutter
+        never reads this file and source evidence is untouched."""
+        with sequence_lock:
+            folder = project_path(project_id)
+            cached = safe_read_json(folder / "timeline_analysis.json")
+            if not cached or request.index >= len(cached.get("review_intervals", [])):
+                raise HTTPException(404, "Timeline finding not found; re-run timeline analysis")
+            if cached.get("sequence_revision") != read_json(folder / "sequence.json").get("revision"):
+                raise HTTPException(409, "Sequence changed since this analysis — re-run timeline analysis before deciding")
+            decisions = cached.setdefault("decisions", {})
+            decisions[str(request.index)] = {"action": request.action, "at": utc_now()}
+            write_json(folder / "timeline_analysis.json", cached)
+            return {"ok": True, "decisions": decisions}
 
     @app.put("/api/projects/{project_id}/sequence")
     def project_save_sequence(project_id: str, payload: Sequence, dry_run: bool = False):
@@ -1161,6 +1263,184 @@ def create_app(config_path: str | Path = DEFAULT_CONFIG) -> FastAPI:
         write_json(folder / "sequence.json", sequence.model_dump())
         write_json(folder / "project.json", data)
         return project_view(project_id)
+
+    @app.get("/api/creator")
+    def creator_get() -> dict[str, Any]:
+        """Brand kits, export profiles, caption defaults. Survives restarts."""
+        return creator_library()
+
+    def _save_creator(lib: dict[str, Any]) -> dict[str, Any]:
+        lib["updated_at"] = utc_now()
+        save_library(creator_file(), lib)
+        return lib
+
+    @app.post("/api/creator/kits")
+    def creator_kit_create(request: CreatorKitRequest) -> dict[str, Any]:
+        with sequence_lock:
+            lib = creator_library()
+            try:
+                cleaned, warnings = validate_kit(
+                    {**request.kit, "id": request.kit.get("id") or uuid.uuid4().hex[:12]})
+            except CreatorError as exc:
+                raise HTTPException(400, str(exc))
+            lib["kits"].append(cleaned)
+            return {"ok": True, "kit": cleaned, "warnings": warnings,
+                    "library": _save_creator(lib)}
+
+    @app.put("/api/creator/kits/{kit_id}")
+    def creator_kit_update(kit_id: str, request: CreatorKitRequest) -> dict[str, Any]:
+        with sequence_lock:
+            lib = creator_library()
+            ids = [k.get("id") for k in lib["kits"]]
+            if kit_id not in ids:
+                raise HTTPException(404, f"Unknown brand kit: {kit_id}")
+            try:
+                cleaned, warnings = validate_kit({**request.kit, "id": kit_id})
+            except CreatorError as exc:
+                raise HTTPException(400, str(exc))
+            lib["kits"][ids.index(kit_id)] = cleaned
+            return {"ok": True, "kit": cleaned, "warnings": warnings,
+                    "library": _save_creator(lib)}
+
+    @app.delete("/api/creator/kits/{kit_id}")
+    def creator_kit_delete(kit_id: str) -> dict[str, Any]:
+        with sequence_lock:
+            lib = creator_library()
+            kept = [k for k in lib["kits"] if k.get("id") != kit_id]
+            if len(kept) == len(lib["kits"]):
+                raise HTTPException(404, f"Unknown brand kit: {kit_id}")
+            lib["kits"] = kept
+            swept = _sweep_creator_reference("kit_id", kit_id)
+            saved = _save_creator(lib)
+            if swept:
+                saved["swept_projects"] = swept
+            return {"ok": True, "library": saved}
+
+    @app.post("/api/creator/profiles")
+    def creator_profile_create(request: CreatorProfileRequest) -> dict[str, Any]:
+        with sequence_lock:
+            lib = creator_library()
+            try:
+                cleaned, warnings = validate_profile(request.profile)
+            except CreatorError as exc:
+                raise HTTPException(400, str(exc))
+            if is_builtin_profile(cleaned["name"]) or any(
+                    p.get("name") == cleaned["name"] for p in lib["profiles"]):
+                raise HTTPException(409, f"Export profile already exists: {cleaned['name']}")
+            lib["profiles"].append(cleaned)
+            return {"ok": True, "profile": cleaned, "warnings": warnings,
+                    "library": _save_creator(lib)}
+
+    @app.put("/api/creator/profiles/{name}")
+    def creator_profile_update(name: str, request: CreatorProfileRequest) -> dict[str, Any]:
+        with sequence_lock:
+            lib = creator_library()
+            names = [p.get("name") for p in lib["profiles"]]
+            if name not in names:
+                raise HTTPException(404, f"Unknown export profile: {name}")
+            if is_builtin_profile(name):
+                raise HTTPException(400, "Built-in profiles cannot be edited")
+            try:
+                cleaned, warnings = validate_profile({**request.profile, "name": name})
+            except CreatorError as exc:
+                raise HTTPException(400, str(exc))
+            lib["profiles"][names.index(name)] = cleaned
+            return {"ok": True, "profile": cleaned, "warnings": warnings,
+                    "library": _save_creator(lib)}
+
+    @app.delete("/api/creator/profiles/{name}")
+    def creator_profile_delete(name: str) -> dict[str, Any]:
+        with sequence_lock:
+            lib = creator_library()
+            if is_builtin_profile(name):
+                raise HTTPException(400, "Built-in profiles cannot be deleted")
+            kept = [p for p in lib["profiles"] if p.get("name") != name]
+            if len(kept) == len(lib["profiles"]):
+                raise HTTPException(404, f"Unknown export profile: {name}")
+            lib["profiles"] = kept
+            if lib.get("default_profile") == name:
+                lib["default_profile"] = "YouTube 16:9"
+            swept = _sweep_creator_reference("export_profile", name)
+            saved = _save_creator(lib)
+            if swept:
+                saved["swept_projects"] = swept
+            return {"ok": True, "library": saved}
+
+    @app.put("/api/creator/default")
+    def creator_default_set(request: CreatorDefaultRequest) -> dict[str, Any]:
+        with sequence_lock:
+            lib = creator_library()
+            if request.name not in [p.get("name") for p in lib["profiles"]]:
+                raise HTTPException(404, f"Unknown export profile: {request.name}")
+            lib["default_profile"] = request.name
+            return {"ok": True, "library": _save_creator(lib)}
+
+    @app.put("/api/creator/captions")
+    def creator_captions_set(request: CreatorCaptionsRequest) -> dict[str, Any]:
+        with sequence_lock:
+            lib = creator_library()
+            lib["captions"] = {"sidecar": bool(request.sidecar)}
+            return {"ok": True, "library": _save_creator(lib)}
+
+    @app.post("/api/creator/import")
+    def creator_import(request: CreatorImportRequest) -> dict[str, Any]:
+        """One-time merge of browser-localStorage state. Never discards."""
+        with sequence_lock:
+            lib = creator_library()
+            report = migrate_browser_state(lib, {
+                "kits": request.kits, "profiles": request.profiles,
+                "default_profile": request.default_profile, "captions": request.captions})
+            return {"ok": True, "report": report, "library": _save_creator(lib)}
+
+    def _sweep_creator_reference(field: str, value: str) -> int:
+        """Drop a deleted kit/profile from every project's assignment.
+
+        Returns the number of projects cleaned so callers can report it.
+        """
+        cleaned = 0
+        for path in sorted((work_dir() / "projects").glob("*/project.json")):
+            try:
+                data = read_json(path)
+            except (OSError, ValueError):
+                continue
+            if data.get(field) == value:
+                data.pop(field, None)
+                data["updated_at"] = utc_now()
+                write_json(path, data)
+                cleaned += 1
+        return cleaned
+
+    @app.put("/api/projects/{project_id}/creator")
+    def project_creator_set(project_id: str, request: ProjectCreatorRequest) -> dict[str, Any]:
+        """Per-project kit assignment + export profile override.
+
+        Validated on the way in. Absent (null) fields mean "leave
+        unchanged"; an explicit empty string clears that assignment.
+        """
+        with sequence_lock:
+            folder = project_path(project_id)
+            lib = creator_library()
+            if request.kit_id is not None and request.kit_id != "" and request.kit_id not in [
+                    k.get("id") for k in lib["kits"]]:
+                raise HTTPException(404, f"Unknown brand kit: {request.kit_id}")
+            if request.export_profile is not None and request.export_profile != "" and request.export_profile not in [
+                    p.get("name") for p in lib["profiles"]]:
+                raise HTTPException(404, f"Unknown export profile: {request.export_profile}")
+            data = read_json(folder / "project.json")
+            # absent fields mean "leave unchanged" — a partial PUT must never
+            # wipe the field it didn't mention; explicit "" clears it.
+            if request.kit_id is not None or "kit_id" not in data:
+                data["kit_id"] = request.kit_id
+            if request.export_profile is not None or "export_profile" not in data:
+                data["export_profile"] = request.export_profile
+            if data.get("kit_id") == "":
+                data.pop("kit_id", None)
+            if data.get("export_profile") == "":
+                data.pop("export_profile", None)
+            data["updated_at"] = utc_now()
+            write_json(folder / "project.json", data)
+            return {"ok": True, "kit_id": data.get("kit_id"),
+                    "export_profile": data.get("export_profile")}
 
     @app.post("/api/projects/{project_id}/highlights/plan")
     def highlights_plan(project_id: str, request: SpotlightRequest):

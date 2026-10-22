@@ -712,6 +712,9 @@ kbd {
 .flag.waste.accepted, .flag-strip .waste.accepted { background: rgb(var(--color-err-rgb) / .75); }
 .flag.waste.rejected, .flag-strip .waste.rejected { background: rgb(var(--color-ok-rgb) / .35); }
 .flag.review, .flag-strip .review { background: rgb(var(--color-warn-rgb) / .55); }
+.timeline-lane .flag { top: 6px; bottom: 2px; border-radius: 2px; cursor: pointer; outline: 1px dashed color-mix(in srgb, var(--color-warn) 70%, transparent); outline-offset: -1px; }
+.timeline-lane .flag.accept { background: rgb(var(--color-err-rgb) / .55); }
+.timeline-lane .flag.keep { background: rgb(var(--color-ok-rgb) / .35); }
 [data-proposal-start] { cursor: pointer; }
 .scene-tick { position: absolute; top: 0; bottom: 0; width: 1px; background: color-mix(in srgb, var(--color-fg) 32%, transparent); pointer-events: none; }
 

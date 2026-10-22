@@ -1505,7 +1505,7 @@ def test_truncated_batch_halves_and_retries(tmp_path):
     )
     calls = []
 
-    def fake_ask_batch(frames, prompt, *, frame_hints=None, transcript_segments=None):
+    def fake_ask_batch(frames, prompt, *, frame_hints=None, transcript_segments=None, **kwargs):
         calls.append(len(frames))
         if len(frames) > 1:
             raise eye_module.TruncatedBatchError("truncated")
@@ -1578,21 +1578,83 @@ def test_story_map_reports_section_progress(tmp_path, monkeypatch):
     assert updates == [(0, 2), (1, 2), (2, 2)]
 
 
-def test_truncated_single_frame_still_raises(tmp_path):
+def _vision_eye(tmp_path, **kwargs):
+    from pipeline.eye import VisionEye
+    params = dict(base_url="http://127.0.0.1:1234/v1", model="test-model",
+                  interval=2.0, cache_dir=tmp_path, max_width=1024)
+    params.update(kwargs)
+    return VisionEye(**params)
+
+
+def _ok_payload(ts):
+    return {"timestamp": ts, "score": 7.0, "description": "ok", "keep": True,
+            "dark": False, "cull_reason": "", "confidence": 0.9}
+
+
+def test_truncated_single_frame_recovers_at_reduced_width(tmp_path):
     from pipeline import eye as eye_module
 
-    vision = VisionEye(
-        base_url="http://127.0.0.1:1234/v1", model="test-model",
-        interval=2.0, cache_dir=tmp_path, max_width=512,
-    )
+    vision = _vision_eye(tmp_path)
+    seen_widths = []
 
-    def fake_ask_batch(frames, prompt, *, frame_hints=None, transcript_segments=None):
+    def fake_ask_batch(frames, prompt, *, frame_hints=None, transcript_segments=None,
+                       max_width=None, max_tokens=4000):
+        seen_widths.append(max_width or vision.max_width)
+        if (max_width or vision.max_width) > 480:
+            raise eye_module.TruncatedBatchError("truncated")
+        return [_ok_payload(ts) for ts, _ in frames]
+
+    vision._ask_batch = fake_ask_batch
+    frame = np.zeros((32, 18, 3), dtype=np.uint8)
+    observations = []
+    pending = [(150.0, frame)]
+    vision._flush_batch(tmp_path / "cache.json", observations, pending, None, None, None)
+
+    assert [o.timestamp for o in observations] == [150.0]
+    assert vision.failed_frames == []
+    assert seen_widths[0] == 1024 and seen_widths[-1] <= 480
+
+
+def test_truncated_single_frame_unrecoverable_skips_without_verdict(tmp_path):
+    from pipeline import eye as eye_module
+
+    vision = _vision_eye(tmp_path)
+
+    def fake_ask_batch(frames, prompt, *, frame_hints=None, transcript_segments=None, **kwargs):
         raise eye_module.TruncatedBatchError("truncated")
 
     vision._ask_batch = fake_ask_batch
     frame = np.zeros((32, 18, 3), dtype=np.uint8)
-    with pytest.raises(eye_module.TruncatedBatchError):
-        vision._flush_batch(tmp_path / "cache.json", [], [(0.0, frame)], None, None, None)
+    observations = []
+    pending = [(150.0, frame)]
+    vision._flush_batch(tmp_path / "cache.json", observations, pending, None, None, None)
+
+    assert observations == []  # never invent a verdict for a failed frame
+    assert pending == []
+    assert len(vision.failed_frames) == 1
+    assert vision.failed_frames[0]["timestamp"] == 150.0
+    assert "No verdict was invented" in vision.failed_frames[0]["error"]
+
+
+def test_truncation_error_carries_usage_diagnosis(tmp_path, monkeypatch):
+    from pipeline import eye as eye_module
+
+    class LengthResponse:
+        def json(self):
+            return {"choices": [{"message": {"content": "..."}, "finish_reason": "length"}],
+                    "usage": {"prompt_tokens": 7500, "completion_tokens": 12, "total_tokens": 7512}}
+
+    monkeypatch.setattr("pipeline.eye.post_json_with_retry",
+                        lambda url, payload, timeout, headers=None: LengthResponse())
+    vision = _vision_eye(tmp_path)
+    frame = np.zeros((32, 18, 3), dtype=np.uint8)
+    with pytest.raises(eye_module.TruncatedBatchError) as excinfo:
+        vision._ask_batch([(150.0, frame)], None)
+    assert "150.0s" in str(excinfo.value)
+    assert "prompt_tokens=7500" in str(excinfo.value)
+    assert "input budget" in str(excinfo.value)
+    assert excinfo.value.usage["completion_tokens"] == 12
+
 
 
 def test_evaluate_proposals_scores_plan_level_waste():
