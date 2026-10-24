@@ -1406,18 +1406,18 @@ function timelineSection(){
         ${d?`<span class="proposal-state">${d.action}</span>`:stale?'':`${button('timeline-accept',icon('check'),'icon-button ok',`data-index="${i}" aria-label="Accept timeline finding ${i+1}" title="Accept"}`)}${button('timeline-keep',icon('x'),'icon-button',`data-index="${i}" aria-label="Keep timeline finding ${i+1}" title="Keep"`)}`}
       </div>`;}).join('')}</div>`
     +timelineDecisionsBrowser(a,stale)
-    +((a.eye_failed_frames||[]).length?((a.observations||[]).length||(a.archived_decisions||[]).length?`<h3>Unresolved frames <small>${a.eye_failed_frames.length}</small></h3><p>These frames beat the server budget at every retry. See them under the Failed filter above — nothing auto-cuts them.</p><div class="review-buttons">${button('timeline-retry','Retry unresolved frames','accent')}</div>`:`<h3>Unresolved frames <small>${a.eye_failed_frames.length}</small></h3><p>These frames beat the server budget at every retry. No verdict was invented — they stay visible until retried, and nothing auto-cuts them.</p>${a.eye_failed_frames.map(f=>`<div class="proposal queue-item review"><button class="proposal-seek" data-timeline-seek="${f.timestamp}" title="Jump to this frame"><span>UNRESOLVED · ${tc(f.timestamp)}</span><small>${esc(String(f.error||'').slice(0,220))}</small></button></div>`).join('')}<div class="review-buttons">${button('timeline-retry','Retry unresolved frames','accent')}</div>`):'')
+    +((a.eye_failed_frames||[]).length?`<h3>Unresolved frames <small>${a.eye_failed_frames.length}</small></h3><p>These frames beat the server budget at every retry. See them under the Failed filter above — nothing auto-cuts them.</p><div class="review-buttons">${button('timeline-retry','Retry unresolved frames','accent')}</div>`:'')
     +`</details>`;
 }
 function timelineDecisionsBrowser(a,stale){
   const obs=[...(a.observations||[])].sort((x,y)=>x.timestamp-y.timestamp);
   const archived=[...(a.archived_decisions||[])];
-  if(!obs.length&&!archived.length)return '';
+  const failedFrames=[...(a.eye_failed_frames||[])].sort((x,y)=>Number(x.timestamp)-Number(y.timestamp));
+  if(!obs.length&&!archived.length&&!failedFrames.length)return '';
   const inReview=t=>(a.review_intervals||[]).some(r=>t>=r.start-.01&&t<=r.end+.01);
   const keep=obs.filter(o=>o.keep===true), cut=obs.filter(o=>o.keep===false);
   const unjudged=obs.filter(o=>o.keep!==true&&o.keep!==false);
   const reviewObs=obs.filter(o=>inReview(o.timestamp));
-  const failedFrames=[...(a.eye_failed_frames||[])].sort((x,y)=>Number(x.timestamp)-Number(y.timestamp));
   const counts={total:obs.length,keep:keep.length,cut:cut.length,
     review:(a.review_intervals||[]).length,reviewSamples:reviewObs.length,
     failed:failedFrames.length,unjudged:unjudged.length};
@@ -1426,9 +1426,11 @@ function timelineDecisionsBrowser(a,stale){
   const cls=o=>o.keep===false?'cut':o.keep===true?'keep':'review';
   const verdict=o=>o.keep===false?'CUT':o.keep===true?'KEEP':'UNJUDGED';
   const reason=o=>String(o.cull_reason||o.reason||(o.keep===false?'cut':o.keep===true?'keep':'no verdict')).replace(/_/g,' ');
+  const scoreTxt=o=>o.score==null?'score n/a':`AI ${o.score}/10`;
+  const confTxt=o=>o.confidence==null?'confidence n/a':`confidence ${Math.round(o.confidence*100)}%`;
   const row=o=>{const pr=prov(o.timestamp);const rev=inReview(o.timestamp);return `
       <div class="proposal queue-item ${cls(o)} ${rev?'review':''}" role="listitem">
-        <button class="proposal-seek" data-timeline-seek="${o.timestamp}" title="Jump to this frame"><span>${verdict(o)} · ${tc(o.timestamp)} · AI ${o.score}/10</span><small>${esc(reason(o))} · confidence ${Math.round((o.confidence??1)*100)}%${rev?' · needs review':''}</small><small class="queue-meta">${esc(String(o.description||'').slice(0,160))}</small>${pr?`<small class="queue-meta">source ${tc(pr.st)} · ${esc(pr.src.split(/[\/]/).pop())} · clip ${esc(pr.clip)}</small>`:'<small class="queue-meta">provenance missing</small>'}</button>
+        <button class="proposal-seek" data-timeline-seek="${o.timestamp}" title="Jump to this frame"><span>${verdict(o)} · ${tc(o.timestamp)} · ${scoreTxt(o)}</span><small>${esc(reason(o))} · ${confTxt(o)}${rev?' · needs review':''}</small><small class="queue-meta">${esc(String(o.description||'').slice(0,160))}</small>${pr?`<small class="queue-meta">source ${tc(pr.st)} · ${esc(pr.src.split(/[\/]/).pop())} · clip ${esc(pr.clip)}</small>`:'<small class="queue-meta">provenance missing</small>'}</button>
       </div>`;};
   const failRow=fr=>{const ts=Number(fr.timestamp);const pr=prov(ts);return `
       <div class="proposal queue-item review" role="listitem">
@@ -1445,7 +1447,7 @@ function timelineDecisionsBrowser(a,stale){
   return `<details class="inspector-section" open><summary>All sampled decisions <small>${counts.total} frames · ${counts.keep} keep · ${counts.cut} cut${counts.unjudged?` · ${counts.unjudged} unjudged`:''}${counts.failed?` · ${counts.failed} unresolved`:''}</small></summary>`
     +`<p>Every sampled frame and its AI classification. <b>Recommendations only — no cuts have been applied</b> and nothing here edits the timeline. Frame verdicts differ from review findings above: findings group uncertain frames for decisions (${counts.review} findings), while this list shows each judgment including confident ones. A verdict of UNJUDGED means the frame carries no keep/cut classification.</p>`
     +(stale?`<p>${badge('Stale — sequence changed','warn')} These verdicts describe an older edit.</p>`:'')
-    +(counts.total>0&&counts.keep===0?`<p>${badge('All CUT','warn')} Every analyzed sample was classified CUT. Review the list before acting — some may deserve a human keep.</p>`:'')
+    +(counts.total>0&&counts.cut===counts.total?`<p>${badge('All CUT','warn')} Every analyzed sample was classified CUT. Review the list before acting — some may deserve a human keep.</p>`:'')
     +`<div class="review-buttons" role="group" aria-label="Filter sampled decisions">${fbtn('all','All',counts.total)}${fbtn('keep','Keep',counts.keep)}${fbtn('cut','Cut',counts.cut)}${fbtn('review','Uncertain',counts.reviewSamples)}${fbtn('failed','Failed',counts.failed)}</div>`
     +`<div class="queue-list" role="list" aria-label="Sampled AI decisions">${body}</div>`
     +(archived.length?`<h3>Archived human decisions <small>${archived.length} · read-only</small></h3><p>Past Keep/Accept calls superseded by later analyses. They no longer apply, are never re-applied automatically, and are shown only for audit — even when the current analysis has no new observations.</p>${archived.map(e=>{const iv=e.interval||{};return `<div class="proposal queue-item"><button class="proposal-seek" data-timeline-seek="${iv.start??0}" title="Jump to this archived finding"><span>ARCHIVED · ${esc(String(e.action||'?'))} · ${tc(iv.start??0)} → ${tc(iv.end??0)}</span><small>${esc(String(e.reason||''))}${e.at?' · '+esc(String(e.at).slice(0,10)):''}</small></button></div>`;}).join('')}`:'')
