@@ -705,3 +705,42 @@ def test_malformed_timeline_scope_is_400_not_500(tmp_path, monkeypatch):
     response = client.post("/api/projects/badsc/timeline/analyze",
                            json={"scope": {"mode": "in_out", "in": "soon", "out": "later"}})
     assert response.status_code == 400
+
+
+def test_analysis_response_exposes_full_decision_evidence(tmp_path, monkeypatch):
+    """The decision browser depends on this contract: observations with
+    timeline+source provenance, human decisions, and archived decisions."""
+    import json as jsonlib
+    client = _web_client(tmp_path, monkeypatch)
+    folder = _write_project(tmp_path, "contract1", [])
+    folder.joinpath("timeline_analysis.json").write_text(jsonlib.dumps({
+        "scope": {"mode": "entire"}, "sequence_revision": 1,
+        "settings": {}, "sample_count": 2, "judged_count": 2,
+        "observations": [
+            {"timestamp": 0.0, "score": 3.0, "description": "setup",
+             "keep": False, "dark": False, "cull_reason": "setup",
+             "confidence": 0.9},
+            {"timestamp": 2.0, "score": 8.0, "description": "action",
+             "keep": True, "dark": False, "cull_reason": "",
+             "confidence": 0.85}],
+        "provenance": [
+            {"timeline": 0.0, "source": "s.mp4", "source_timestamp": 10.0,
+             "clip_id": "a", "speed": 1.0},
+            {"timeline": 2.0, "source": "s.mp4", "source_timestamp": 12.0,
+             "clip_id": "a", "speed": 1.0}],
+        "review_intervals": [
+            {"start": 0.0, "end": 2.0, "reasons": ["vision-review: setup"]}],
+        "eye_failed_frames": [],
+        "decisions": {"0": {"action": "keep", "at": "2026-10-21T00:00:00Z"}},
+        "archived_decisions": [
+            {"interval": {"start": 4.0, "end": 6.0, "reasons": ["old"]},
+             "action": "accept", "at": "2026-10-20T00:00:00Z",
+             "reason": "finding-changed"}],
+    }))
+    cached = client.get("/api/projects/contract1/timeline/analysis").json()
+    assert len(cached["observations"]) == 2
+    cut = [o for o in cached["observations"] if o["keep"] is False]
+    assert cut and cut[0]["timestamp"] == 0.0
+    assert cached["provenance"][0]["source_timestamp"] == 10.0
+    assert cached["decisions"]["0"]["action"] == "keep"
+    assert cached["archived_decisions"][0]["action"] == "accept"
