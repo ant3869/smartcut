@@ -100,6 +100,15 @@ test('All CUT appears only when every sample is truly CUT', () => {
   assert.ok(!loadFns(withKeep).timelineSection().includes('All CUT'), 'no banner with a KEEP present');
 });
 
+test('All CUT requires zero failed frames', () => {
+  const allCut = { ...ALL_CUT, observations: [obs(0, { keep: false }), obs(2, { keep: false })],
+    eye_failed_frames: [] };
+  assert.ok(loadFns(allCut).timelineSection().includes('All CUT'), 'banner with zero failed');
+  const oneFailed = { ...allCut, eye_failed_frames: [{ timestamp: 4, error: 'budget hit' }] };
+  assert.ok(!loadFns(oneFailed).timelineSection().includes('All CUT'), 'no banner with one failed');
+  assert.ok(loadFns(oneFailed).timelineSection().includes('1 unresolved'), 'failed still counted');
+});
+
 test('missing score/confidence are never invented', () => {
   const thin = { ...ALL_CUT, observations: [obs(0, { keep: false, score: undefined, confidence: undefined })] };
   delete thin.observations[0].score;
